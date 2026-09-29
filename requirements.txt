@@ -1,0 +1,22 @@
+# Portfolio Financials Studio — core is fully local & deterministic.
+# The LLM providers are optional; install only what you use.
+
+# --- core (required) ---
+fastapi>=0.110
+uvicorn>=0.29
+jinja2>=3.1
+pdfplumber>=0.11
+openpyxl>=3.1
+pandas>=2.0
+pydantic>=2.6
+pydantic-settings>=2.2
+python-multipart>=0.0.9
+requests>=2.31
+
+# --- optional: LLM fallback providers ---
+# Azure OpenAI (customer Microsoft model) and public OpenAI both use this SDK:
+openai>=1.40          # needed only for LLM_PROVIDER=azure or openai
+azure-identity>=1.17  # needed only for Azure keyless auth (AZURE_USE_ENTRA_ID=true)
+
+# --- optional: sample data generation ---
+fpdf2>=2.7            # only used by samples/make_samples.py

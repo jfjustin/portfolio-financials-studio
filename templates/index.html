@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Portfolio Financials Studio</title>
+  <link rel="stylesheet" href="/static/css/styles.css">
+</head>
+<body>
+  <header class="top">
+    <h1>Portfolio Financials Studio</h1>
+    <span class="sub">confidential · human-in-the-loop · pluggable model</span>
+    <span class="spacer"></span>
+    <span id="llm-badge" class="badge">…</span>
+    <a class="btn sm" href="/api/export.csv">Export trusted CSV</a>
+    <button id="refresh-btn" class="btn sm">Refresh</button>
+  </header>
+
+  <div class="wrap grid" style="gap:20px">
+
+    <!-- KPIs -->
+    <section class="grid cols-4">
+      <div class="card tile"><div class="n" id="t-subs">0</div><div class="l">Files ingested</div></div>
+      <div class="card tile"><div class="n" id="t-facts">0</div><div class="l">Trusted data points</div></div>
+      <div class="card tile"><div class="n" id="t-entities">0</div><div class="l">Entities</div></div>
+      <div class="card tile"><div class="n" id="t-review">0</div><div class="l">Values to review</div></div>
+    </section>
+
+    <!-- Upload -->
+    <section class="card">
+      <h2>Upload reports (PDF · XLSX · XLSM · XLS)</h2>
+      <div class="drop" id="drop">
+        <div style="font-size:15px;font-weight:600">Drop files here or click to browse</div>
+        <div class="small">Fund financials · Joint venture · JV equity income · Direct investment</div>
+        <input type="file" id="file-input" multiple accept=".pdf,.xlsx,.xlsm,.xls">
+      </div>
+      <div id="upload-status" class="small muted" style="margin-top:8px"></div>
+      <div id="upload-results"></div>
+    </section>
+
+    <!-- Charts -->
+    <section class="grid cols-2">
+      <div class="card"><h2>Value by report type</h2><div id="chart-type"></div>
+        <div class="legend">Sums NAV / fair value / carrying value / JV equity of confirmed data.</div></div>
+      <div class="card"><h2>Value by entity (top 12)</h2><div id="chart-entity"></div></div>
+    </section>
+
+    <!-- Submissions -->
+    <section class="card">
+      <h2>Submissions</h2>
+      <table>
+        <thead><tr><th>#</th><th>File</th><th>Type</th><th>Entity</th><th>Period</th>
+          <th class="num">Facts</th><th>Status</th></tr></thead>
+        <tbody id="subs-body"></tbody>
+      </table>
+    </section>
+  </div>
+
+  <!-- Review modal -->
+  <div class="modal-bg" id="modal-bg"></div>
+  <div class="modal" id="modal">
+    <div class="mhead">
+      <b id="m-title">Submission</b>
+      <span id="m-meta"></span>
+      <span class="spacer"></span>
+      <button class="btn primary sm" id="m-confirm-all">Confirm all &amp; lock in</button>
+      <button class="btn sm" id="m-close">Close</button>
+    </div>
+    <div class="mbody">
+      <div id="m-warns"></div>
+      <hr class="hr">
+      <h2 style="margin:0 0 8px">Extracted values — confirm, edit, or reject each</h2>
+      <p class="small muted" style="margin-top:0">Editing a value or metric, or confirming/rejecting, writes an audit-trail entry. Only <b>auto</b>/<b>confirmed</b> values feed the dashboard &amp; export.</p>
+      <table>
+        <thead><tr><th>Metric (mapped from source)</th><th>Value</th><th class="num">Conf.</th>
+          <th>Status</th><th>Actions</th></tr></thead>
+        <tbody id="facts-body"></tbody>
+      </table>
+      <div id="m-unmapped" style="margin-top:14px"></div>
+      <hr class="hr">
+      <h2 style="margin:0 0 8px">Audit trail</h2>
+      <div id="m-audit"></div>
+    </div>
+  </div>
+
+  <div class="toast" id="toast"></div>
+
+  <script src="/static/js/charts.js"></script>
+  <script src="/static/js/app.js"></script>
+</body>
+</html>

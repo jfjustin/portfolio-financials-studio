@@ -1,0 +1,15 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+# Local data (confidential) — keep the dirs, ignore contents
+data/pipeline.db
+data/uploads/*
+data/processed/*
+!data/**/.gitkeep
+# Secrets & env
+.env
+# OS / editor
+.DS_Store
+.Rhistory
