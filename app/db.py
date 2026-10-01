@@ -80,6 +80,56 @@ audit = Table(
     Column("note", Text),
 )
 
+# --------------------------------------------------------------------------
+# Investment read-model (ported from the lam-fund-intelligence schema).
+# These are a projection of TRUSTED facts (auto+confirmed), rebuilt on demand,
+# so they always agree with the reviewed data and never drift.
+# --------------------------------------------------------------------------
+investment_entities = Table(
+    "investment_entities", metadata,
+    Column("entity_id", Integer, primary_key=True, autoincrement=True),
+    Column("entity_name", String(512), unique=True),
+    Column("entity_type", String(64)),
+    Column("accounting_method", String(64)),
+    Column("investment_balance", Float),
+    Column("equity_income_loss", Float),
+    Column("return_of_capital", Float),
+    Column("total_commitment", Float),
+    Column("remaining_commitment", Float),
+    Column("ownership_value", Float),
+    Column("ownership_text", String(64)),
+    Column("initial_investment_date", String(40)),
+    Column("gl_account", String(64)),
+    Column("company_code", String(64)),
+    Column("country", String(64)),
+    Column("latest_period", String(64)),
+    Column("updated_at", String(40)),
+)
+
+investment_quarters = Table(
+    "investment_quarters", metadata,
+    Column("record_id", Integer, primary_key=True, autoincrement=True),
+    Column("entity_name", String(512)),
+    Column("period_label", String(64)),
+    Column("period_order", Integer),
+    Column("accounting_method", String(64)),
+    Column("beginning_balance", Float),
+    Column("funding", Float),
+    Column("equity_income_loss", Float),
+    Column("return_of_capital", Float),
+    Column("dividends", Float),
+    Column("other", Float),
+    Column("investment_mtm", Float),
+    Column("sale_of_investment", Float),
+    Column("accrued_interest", Float),
+    Column("note_conversion", Float),
+    Column("gain_loss_on_conversion", Float),
+    Column("acquisition_impact", Float),
+    Column("impairment", Float),
+    Column("change", Float),
+    Column("ending_balance", Float),
+)
+
 
 # --------------------------------------------------------------------------
 # Engine (lazy singleton)
@@ -305,3 +355,116 @@ def dashboard_summary() -> dict[str, Any]:
         "value_by_entity": {k: str(v) for k, v in sorted(
             by_entity.items(), key=lambda kv: kv[1], reverse=True)[:12]},
     }
+
+
+# --------------------------------------------------------------------------
+# Investment read-model projection (lam-fund-intelligence shape)
+# --------------------------------------------------------------------------
+_QUARTER_KEYS = ("beginning_balance", "funding", "equity_income_loss",
+                 "return_of_capital", "dividends", "other", "investment_mtm",
+                 "sale_of_investment", "accrued_interest", "note_conversion",
+                 "gain_loss_on_conversion", "acquisition_impact", "impairment",
+                 "change", "ending_balance")
+_BALANCE_KEYS = ("ending_balance", "nav", "fair_value", "carrying_value",
+                 "jv_total_equity")
+
+
+def _period_order(period: str) -> int:
+    """Sortable integer from a normalized period (YYYY-Qn / YYYY-MM-DD / YYYY-FY)."""
+    import re
+    if not period:
+        return 0
+    y = re.search(r"(20\d{2})", period)
+    year = int(y.group(1)) if y else 0
+    q = re.search(r"Q([1-4])", period)
+    if q:
+        return year * 100 + int(q.group(1))
+    m = re.search(r"-(\d{2})-\d{2}", period) or re.search(r"-(\d{2})$", period)
+    if m:
+        return year * 100 + (int(m.group(1)) - 1) // 3 + 1
+    return year * 100
+
+
+def _as_float(v):
+    try:
+        return float(Decimal(v))
+    except Exception:
+        return None
+
+
+def rebuild_investment_views() -> None:
+    """Rebuild investment_entities / investment_quarters from trusted facts."""
+    facts_ = trusted_facts()
+    # group facts by (entity, period)
+    groups: dict[tuple[str, str], dict[str, str]] = {}
+    for f in facts_:
+        key = (f["entity_name"], f["period"])
+        groups.setdefault(key, {})[f["metric_key"]] = f["value"]
+    report_type_by_key: dict[tuple[str, str], str] = {}
+    kind_by_entity: dict[str, str] = {}
+    for f in facts_:
+        report_type_by_key[(f["entity_name"], f["period"])] = f["report_type"]
+        kind_by_entity.setdefault(f["entity_name"], f["entity_kind"])
+
+    quarter_rows = []
+    for (entity, period), metrics in groups.items():
+        if report_type_by_key.get((entity, period)) != "investment_roll_forward":
+            continue
+        row = {"entity_name": entity, "period_label": period,
+               "period_order": _period_order(period), "accounting_method": None}
+        for k in _QUARTER_KEYS:
+            row[k] = _as_float(metrics[k]) if k in metrics else None
+        quarter_rows.append(row)
+
+    # one entity row each, using the latest period's balance
+    entity_rows = []
+    by_entity: dict[str, list[tuple[int, str, dict]]] = {}
+    for (entity, period), metrics in groups.items():
+        by_entity.setdefault(entity, []).append((_period_order(period), period, metrics))
+    for entity, periods_ in by_entity.items():
+        periods_.sort(key=lambda t: t[0])
+        latest_order, latest_period, _ = periods_[-1]
+        merged: dict[str, str] = {}
+        for _o, _p, metrics in periods_:
+            merged.update(metrics)
+        bal = next((_as_float(merged[k]) for k in _BALANCE_KEYS if k in merged), None)
+        own = _as_float(merged.get("ownership_pct")) if "ownership_pct" in merged else None
+        entity_rows.append({
+            "entity_name": entity, "entity_type": kind_by_entity.get(entity, "unknown"),
+            "accounting_method": None,
+            "investment_balance": bal,
+            "equity_income_loss": _as_float(merged.get("equity_income_loss")
+                                            or merged.get("equity_income")),
+            "return_of_capital": _as_float(merged.get("return_of_capital")),
+            "total_commitment": _as_float(merged.get("commitment")
+                                          or merged.get("cost_basis")),
+            "remaining_commitment": None,
+            "ownership_value": own, "ownership_text": (f"{own}" if own is not None else None),
+            "initial_investment_date": None, "gl_account": None, "company_code": None,
+            "country": None, "latest_period": latest_period, "updated_at": _now(),
+        })
+
+    eng = get_engine()
+    with eng.begin() as conn:
+        conn.execute(investment_quarters.delete())
+        conn.execute(investment_entities.delete())
+        if quarter_rows:
+            conn.execute(insert(investment_quarters), quarter_rows)
+        if entity_rows:
+            conn.execute(insert(investment_entities), entity_rows)
+
+
+def get_investments() -> dict[str, Any]:
+    """Return the investment read-model (rebuilt from trusted facts)."""
+    rebuild_investment_views()
+    eng = get_engine()
+    with eng.connect() as conn:
+        entities = [dict(r) for r in conn.execute(
+            select(investment_entities)
+            .order_by(investment_entities.c.entity_type.desc(),
+                      investment_entities.c.entity_name)).mappings().all()]
+        quarters = [dict(r) for r in conn.execute(
+            select(investment_quarters)
+            .order_by(investment_quarters.c.entity_name,
+                      investment_quarters.c.period_order)).mappings().all()]
+    return {"entities": entities, "quarters": quarters}

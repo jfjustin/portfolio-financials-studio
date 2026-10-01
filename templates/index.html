@@ -50,6 +50,37 @@
       <div class="card"><h2>Value by entity (top 12)</h2><div id="chart-entity"></div></div>
     </section>
 
+    <!-- Investments (ported investment_entities / investment_quarters model) -->
+    <section class="card">
+      <div class="sec-head">
+        <h2>Investment portfolio</h2>
+        <span class="small muted" id="inv-count"></span>
+      </div>
+      <table class="tbl-tight">
+        <thead><tr>
+          <th>Entity</th><th>Type</th><th class="num">Investment balance</th>
+          <th class="num">Equity income / (loss)</th><th class="num">Return of capital</th>
+          <th class="num">Ownership</th><th>Latest period</th>
+        </tr></thead>
+        <tbody id="inv-entities"></tbody>
+      </table>
+
+      <h2 style="margin:18px 0 8px">Quarterly roll-forward
+        <span class="small muted" id="rf-scope"></span></h2>
+      <div style="overflow-x:auto">
+      <table class="tbl-tight rf">
+        <thead><tr>
+          <th>Entity</th><th>Period</th>
+          <th class="num">Beginning</th><th class="num">Funding</th>
+          <th class="num">Equity inc/(loss)</th><th class="num">Return of cap.</th>
+          <th class="num">Dividends</th><th class="num">MTM</th><th class="num">Other</th>
+          <th class="num">Change</th><th class="num">Ending</th>
+        </tr></thead>
+        <tbody id="inv-quarters"></tbody>
+      </table>
+      </div>
+    </section>
+
     <!-- Submissions -->
     <section class="card">
       <h2>Submissions</h2>

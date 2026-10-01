@@ -40,7 +40,63 @@
 
     const s = await api("/api/submissions");
     renderSubs(s.submissions);
+
+    const inv = await api("/api/investments");
+    renderInvestments(inv);
   }
+
+  let RF_FILTER = null;  // entity filter for the roll-forward table
+  function renderInvestments(inv) {
+    const ents = inv.entities || [], qtrs = inv.quarters || [];
+    $("#inv-count").textContent =
+      `${ents.length} entit${ents.length === 1 ? "y" : "ies"} · ${qtrs.length} quarter rows`;
+    const et = $("#inv-entities"); et.innerHTML = "";
+    if (!ents.length) {
+      et.innerHTML = '<tr><td colspan="7" class="muted">No trusted investment data yet. Upload and confirm a capital-account / roll-forward file.</td></tr>';
+    }
+    ents.forEach(e => {
+      const tr = document.createElement("tr");
+      tr.className = "clickable";
+      const own = e.ownership_value == null ? "" :
+        (e.ownership_value < 1 ? (e.ownership_value * 100).toFixed(3) + "%" : e.ownership_value + "%");
+      tr.innerHTML = `<td><b>${esc(e.entity_name)}</b></td>
+        <td><span class="tag ${esc(e.entity_type)}">${esc(e.entity_type)}</span></td>
+        <td class="num">${mv(e.investment_balance)}</td>
+        <td class="num ${neg(e.equity_income_loss)}">${mv(e.equity_income_loss)}</td>
+        <td class="num ${neg(e.return_of_capital)}">${mv(e.return_of_capital)}</td>
+        <td class="num">${own}</td><td>${esc(e.latest_period || "")}</td>`;
+      tr.onclick = () => { RF_FILTER = (RF_FILTER === e.entity_name) ? null : e.entity_name;
+        renderQuarters(qtrs); };
+      et.appendChild(tr);
+    });
+    renderQuarters(qtrs);
+  }
+
+  function renderQuarters(qtrs) {
+    const rows = RF_FILTER ? qtrs.filter(q => q.entity_name === RF_FILTER) : qtrs;
+    $("#rf-scope").textContent = RF_FILTER ? `— ${RF_FILTER} (click row again to clear)` : "";
+    const tb = $("#inv-quarters"); tb.innerHTML = "";
+    if (!rows.length) {
+      tb.innerHTML = '<tr><td colspan="11" class="muted">No roll-forward quarters yet.</td></tr>'; return;
+    }
+    rows.forEach(q => {
+      const tr = document.createElement("tr");
+      tr.innerHTML = `<td>${esc(q.entity_name)}</td><td>${esc(q.period_label)}</td>
+        <td class="num">${mv(q.beginning_balance)}</td>
+        <td class="num ${neg(q.funding)}">${mv(q.funding)}</td>
+        <td class="num ${neg(q.equity_income_loss)}">${mv(q.equity_income_loss)}</td>
+        <td class="num ${neg(q.return_of_capital)}">${mv(q.return_of_capital)}</td>
+        <td class="num ${neg(q.dividends)}">${mv(q.dividends)}</td>
+        <td class="num ${neg(q.investment_mtm)}">${mv(q.investment_mtm)}</td>
+        <td class="num ${neg(q.other)}">${mv(q.other)}</td>
+        <td class="num ${neg(q.change)}">${mv(q.change)}</td>
+        <td class="num"><b>${mv(q.ending_balance)}</b></td>`;
+      tb.appendChild(tr);
+    });
+  }
+
+  const neg = v => (v != null && v < 0) ? "is-neg" : "";
+  const mv = v => (v == null || v === "") ? '<span class="muted">—</span>' : money(v);
 
   function renderSubs(subs) {
     const tb = $("#subs-body"); tb.innerHTML = "";

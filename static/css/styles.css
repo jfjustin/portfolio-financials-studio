@@ -155,3 +155,15 @@ svg .bar:hover { opacity: .8; }
 .login-error { background: color-mix(in srgb, var(--err) 10%, var(--panel));
   border: 1px solid color-mix(in srgb, var(--err) 35%, var(--line)); color: var(--err);
   border-radius: 9px; padding: 9px 12px; font-size: 13px; margin-bottom: 14px; }
+
+/* ---------------- investment tables ---------------- */
+.sec-head { display: flex; align-items: baseline; justify-content: space-between; }
+.tbl-tight th, .tbl-tight td { padding: 7px 10px; }
+.tbl-tight.rf { font-size: 12.5px; white-space: nowrap; }
+.tbl-tight.rf thead th { position: sticky; top: 0; background: var(--panel); }
+.is-neg { color: var(--err); }
+.tag { font-size: 11px; padding: 2px 8px; border-radius: 999px; font-weight: 600;
+  background: var(--chip); color: var(--muted); border: 1px solid var(--line); text-transform: capitalize; }
+.tag.fund { color: var(--brand-2); border-color: color-mix(in srgb, var(--brand-2) 40%, var(--line)); }
+.tag.direct_investment { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 45%, var(--line)); }
+.tag.joint_venture { color: var(--ok); border-color: color-mix(in srgb, var(--ok) 40%, var(--line)); }

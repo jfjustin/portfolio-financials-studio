@@ -153,6 +153,12 @@ def dashboard():
     return db.dashboard_summary()
 
 
+@app.get("/api/investments")
+def investments():
+    """Investment read-model (entities + quarterly roll-forward), ported schema."""
+    return db.get_investments()
+
+
 @app.get("/api/submissions")
 def submissions():
     return {"submissions": db.list_submissions()}
