@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Sign in · Portfolio Financials Studio</title>
+  <link rel="stylesheet" href="/static/css/styles.css">
+</head>
+<body class="login-body">
+  <main class="login-card">
+    <div class="brand-row">
+      <span class="brand-mark">PF</span>
+      <span class="brand-name">Portfolio Financials Studio</span>
+    </div>
+    <h1 class="login-title">Private workspace</h1>
+    <p class="login-sub">Sign in to continue</p>
+    <p class="login-desc">
+      Enter the workspace password to access fund reports, evidence, and
+      workbook summaries.
+    </p>
+
+    {% if error %}
+    <div class="login-error">Incorrect password — try again.</div>
+    {% endif %}
+
+    {% if auth_mode == "entra" %}
+      <a class="btn primary block" href="/auth/login">
+        Sign in with Microsoft
+      </a>
+      <p class="login-foot">Authorized users only · Microsoft Entra ID</p>
+    {% else %}
+      <form method="post" action="/api/login" class="login-form">
+        <input class="login-input" type="password" name="password"
+               placeholder="Password" autofocus autocomplete="current-password">
+        <button class="btn primary" type="submit">Sign in</button>
+      </form>
+      <p class="login-foot">Authorized users only</p>
+    {% endif %}
+  </main>
+</body>
+</html>

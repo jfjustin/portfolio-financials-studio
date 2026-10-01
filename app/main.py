@@ -9,15 +9,17 @@ from __future__ import annotations
 
 import csv
 import io
+import secrets
 from pathlib import Path
 from typing import Optional
 
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
-from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
+from fastapi.responses import (HTMLResponse, JSONResponse, RedirectResponse,
+                               StreamingResponse)
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
-from . import db
+from . import auth, db
 from .config import settings
 from .llm import get_provider
 from .pipeline import process_upload
@@ -26,6 +28,7 @@ from .report_types import REPORT_TYPES, all_report_types
 BASE_DIR = Path(__file__).resolve().parent.parent
 
 app = FastAPI(title="Portfolio Financials Studio", version="1.0.0")
+app.add_middleware(auth.AuthMiddleware)
 app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
 templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 
@@ -45,7 +48,67 @@ def index(request: Request):
         "report_types": all_report_types(),
         "llm_provider": settings.llm_provider,
         "llm_enabled": settings.llm_enabled,
+        "auth_mode": settings.auth_mode,
+        "user": auth.current_user(request) or "",
     })
+
+
+# --------------------------------------------------------------------------
+# Auth pages / routes (active only when AUTH_MODE != none)
+# --------------------------------------------------------------------------
+@app.get("/login", response_class=HTMLResponse)
+def login_page(request: Request, error: str = ""):
+    if auth.current_user(request):
+        return RedirectResponse("/", status_code=302)
+    return templates.TemplateResponse("login.html", {
+        "request": request, "auth_mode": settings.auth_mode, "error": error,
+    })
+
+
+@app.post("/api/login")
+def login_submit(password: str = Form("")):
+    if settings.auth_mode != "password":
+        raise HTTPException(400, "password login is not enabled")
+    if not auth.verify_password(password):
+        return RedirectResponse("/login?error=1", status_code=302)
+    resp = RedirectResponse("/", status_code=302)
+    auth.issue_session(resp, "workspace")
+    return resp
+
+
+@app.get("/logout")
+def logout():
+    resp = RedirectResponse("/login", status_code=302)
+    auth.clear_session(resp)
+    return resp
+
+
+@app.get("/auth/login")
+def entra_login(request: Request):
+    if settings.auth_mode != "entra":
+        raise HTTPException(400, "entra login is not enabled")
+    redirect_uri = str(request.base_url).rstrip("/") + settings.entra_redirect_path
+    state = secrets.token_urlsafe(16)
+    url = auth.entra_auth_url(redirect_uri, state)
+    resp = RedirectResponse(url, status_code=302)
+    resp.set_cookie("pfs_oauth_state", state, httponly=True, samesite="lax", path="/")
+    return resp
+
+
+@app.get(settings.entra_redirect_path)
+def entra_callback(request: Request, code: str = "", state: str = ""):
+    if settings.auth_mode != "entra":
+        raise HTTPException(400, "entra login is not enabled")
+    if not code or state != request.cookies.get("pfs_oauth_state"):
+        return RedirectResponse("/login?error=1", status_code=302)
+    redirect_uri = str(request.base_url).rstrip("/") + settings.entra_redirect_path
+    user = auth.entra_exchange_code(code, redirect_uri)
+    if not user:
+        return RedirectResponse("/login?error=1", status_code=302)
+    resp = RedirectResponse("/", status_code=302)
+    auth.issue_session(resp, user)
+    resp.delete_cookie("pfs_oauth_state", path="/")
+    return resp
 
 
 # --------------------------------------------------------------------------

@@ -80,6 +80,54 @@ authenticate with `azure-identity` (`DefaultAzureCredential`: managed identity,
 ./run.sh            # LLM_PROVIDER defaults to none
 ```
 
+## Authentication (private workspace)
+
+Set `AUTH_MODE`:
+
+| `AUTH_MODE` | Gate | Use when |
+|---|---|---|
+| `none` *(default)* | open | local / single user |
+| `password` | one shared workspace password (`APP_PASSWORD`) | quick private deployments, demos |
+| `entra` | **Microsoft Entra ID SSO** (OIDC auth-code flow via MSAL) | enterprise |
+
+```bash
+# shared-password workspace
+AUTH_MODE=password APP_PASSWORD='choose-one' SESSION_SECRET=$(openssl rand -hex 32) ./run.sh
+
+# Microsoft Entra ID SSO
+AUTH_MODE=entra ENTRA_TENANT_ID=... ENTRA_CLIENT_ID=... ENTRA_CLIENT_SECRET=... ./run.sh
+# register the redirect URI <your-host>/auth/callback in the Entra app registration
+```
+
+Sessions are signed HttpOnly cookies. Static assets, the login page, and the
+health check are the only unauthenticated routes.
+
+## Deploy to Azure (Microsoft-environment target)
+
+For a Microsoft shop (Entra ID + Fabric + Azure), the coherent combo is the
+**Azure OpenAI model** + the app on **Azure Container Apps**, both inside the
+tenant, reached over the corporate VPN:
+
+- Container image: `Dockerfile` (multi-stage; injects `$PORT`).
+- One-shot reference deploy: [`deploy/azure-container-apps.sh`](deploy/azure-container-apps.sh)
+  — builds the image, creates a Container App with a **system-assigned managed
+  identity**, and grants it `Cognitive Services OpenAI User` + `Storage Blob
+  Data Contributor` (keyless; no secrets stored).
+- Storage: `DATABASE_URL` → **Azure SQL / PostgreSQL**; `STORAGE_BACKEND=azure`
+  → **Blob** for source docs. Both support Entra ID / managed identity.
+- Network: deploy with **internal ingress** + a **Private Endpoint** on Azure
+  OpenAI, so model traffic stays on the Azure backbone and the app is only
+  reachable on the VPN.
+- **Microsoft Fabric**: export trusted facts (`/api/export.csv` or the
+  `fact`-level tables) into OneLake / a Lakehouse and surface them in Power BI.
+
+```bash
+docker build -t portfolio-financials-studio .
+docker run -p 8000:8000 -e LLM_PROVIDER=none portfolio-financials-studio   # local container
+# full Azure deploy:
+bash deploy/azure-container-apps.sh        # edit the names/SKUs at the top first
+```
+
 ## Report types supported
 
 - **Fund Financials** — assets, liabilities, NAV, income, expenses, contributions, distributions…
@@ -121,9 +169,13 @@ app/
     ollama.py         local, on-machine model
   validate.py         reconciliation / sanity checks
   pipeline.py         orchestrator (ingest → extract → validate → store)
-  db.py               SQLite storage + append-only audit trail
-  main.py             FastAPI app + JSON API
-templates/index.html, static/  dashboard UI (upload, review, offline SVG charts)
+  db.py               SQLAlchemy Core storage + append-only audit (SQLite / Azure SQL / Postgres)
+  storage.py          source-document storage (local folder or Azure Blob)
+  auth.py             AuthMiddleware + password gate / Entra ID SSO (optional)
+  main.py             FastAPI app + JSON API + auth routes
+templates/            index.html (dashboard) + login.html (private-workspace gate)
+static/               dashboard UI (upload, review, offline SVG charts)
+Dockerfile, deploy/   container image + Azure Container Apps deploy script
 samples/              demo report generator
 ```
 

@@ -1,0 +1,15 @@
+.git
+.gitignore
+__pycache__/
+*.pyc
+.venv/
+venv/
+data/pipeline.db
+data/uploads/*
+data/processed/*
+.env
+.DS_Store
+.Rhistory
+tests/
+*.md
+deploy/

@@ -8,12 +8,11 @@ and rows in the SQLite DB.
 """
 from __future__ import annotations
 
-import shutil
-from datetime import datetime, timezone
+import tempfile
 from pathlib import Path
 from typing import Any, Optional
 
-from . import db
+from . import db, storage
 from .config import settings
 from .extractors.registry import extract_file
 from .validate import validate_facts
@@ -38,13 +37,10 @@ def process_path(path: Path, *, save_copy: bool = True,
     # run validation (mutates fact flags/status in place)
     checks = validate_facts(result.detected_report_type, result.facts)
 
-    # optionally keep an immutable copy of the source next to the DB
+    # optionally keep an immutable copy of the source (local dir or Azure Blob)
     if save_copy:
         try:
-            ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S")
-            dest = settings.upload_dir / f"{ts}__{path.name}"
-            if path.resolve() != dest.resolve():
-                shutil.copy2(path, dest)
+            storage.store_source(path.read_bytes(), path.name)
         except Exception:
             pass  # copy is best-effort; extraction already succeeded
 
@@ -78,11 +74,20 @@ def process_upload(filename: str, raw_bytes: bytes,
                    allow_duplicate: bool = False) -> dict[str, Any]:
     """Process bytes received from the web upload endpoint."""
     settings.ensure_dirs()
-    ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S")
     safe_name = Path(filename).name
-    tmp = settings.upload_dir / f"{ts}__{safe_name}"
-    with open(tmp, "wb") as f:
-        f.write(raw_bytes)
-    # already saved the copy above; don't double-copy
-    return process_path(tmp, save_copy=False, allow_duplicate=allow_duplicate,
-                        display_name=safe_name)
+    # keep the canonical immutable copy (local dir or Azure Blob)
+    storage.store_source(raw_bytes, safe_name)
+    # extractors need a path with the right suffix; use a short-lived temp file
+    suffix = Path(safe_name).suffix
+    with tempfile.NamedTemporaryFile(suffix=suffix, delete=False,
+                                     dir=settings.processed_dir) as tf:
+        tf.write(raw_bytes)
+        tmp = Path(tf.name)
+    try:
+        return process_path(tmp, save_copy=False, allow_duplicate=allow_duplicate,
+                            display_name=safe_name)
+    finally:
+        try:
+            tmp.unlink()
+        except Exception:
+            pass

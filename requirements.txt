@@ -12,11 +12,19 @@ pydantic>=2.6
 pydantic-settings>=2.2
 python-multipart>=0.0.9
 requests>=2.31
+SQLAlchemy>=2.0        # DB layer; SQLite out of the box, Azure SQL/Postgres via DATABASE_URL
 
 # --- optional: LLM fallback providers ---
 # Azure OpenAI (customer Microsoft model) and public OpenAI both use this SDK:
-openai>=1.40          # needed only for LLM_PROVIDER=azure or openai
-azure-identity>=1.17  # needed only for Azure keyless auth (AZURE_USE_ENTRA_ID=true)
+openai>=1.40           # needed only for LLM_PROVIDER=azure or openai
+azure-identity>=1.17   # needed only for Azure keyless auth (Entra ID)
+
+# --- optional: cloud database drivers (choose per DATABASE_URL) ---
+# psycopg[binary]>=3.1           # PostgreSQL  (postgresql+psycopg://...)
+# pyodbc>=5.1                    # Azure SQL   (mssql+pyodbc://...; needs msodbcsql18)
+
+# --- optional: Azure Blob storage for source documents ---
+# azure-storage-blob>=12.19      # needed only for STORAGE_BACKEND=azure
 
 # --- optional: sample data generation ---
-fpdf2>=2.7            # only used by samples/make_samples.py
+fpdf2>=2.7             # only used by samples/make_samples.py

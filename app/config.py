@@ -34,11 +34,41 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore",
                                       case_sensitive=False)
 
-    # --- Storage (all local files, no external DB) ---
+    # --- Storage (local files by default) ---
     data_dir: Path = BASE_DIR / "data"
     upload_dir: Path = BASE_DIR / "data" / "uploads"
     processed_dir: Path = BASE_DIR / "data" / "processed"
     db_path: Path = BASE_DIR / "data" / "pipeline.db"
+
+    # --- Database (SQLAlchemy URL) -------------------------------------------
+    # Default is the local SQLite file above. For Azure SQL / PostgreSQL set e.g.:
+    #   postgresql+psycopg://user:pass@host:5432/dbname
+    #   mssql+pyodbc://user:pass@server.database.windows.net/db?driver=ODBC+Driver+18+for+SQL+Server
+    # Leave blank to use the SQLite db_path.
+    database_url: str = ""
+
+    # --- Object storage for uploaded source documents -----------------------
+    #   local  -> keep copies under data/uploads (default)
+    #   azure  -> Azure Blob Storage container (confidential docs in the tenant)
+    storage_backend: str = "local"               # local | azure
+    azure_storage_account_url: str = ""          # https://<acct>.blob.core.windows.net
+    azure_storage_container: str = "fund-documents"
+    azure_storage_connection_string: str = ""    # optional; else uses Entra ID / managed identity
+
+    # --- Authentication ------------------------------------------------------
+    #   none      -> open (single local user; default for local/dev)
+    #   password  -> shared-password gate (a private workspace behind one password)
+    #   entra     -> Microsoft Entra ID SSO (OIDC auth-code flow via MSAL)
+    auth_mode: str = "none"                       # none | password | entra
+    session_secret: str = "change-me-in-production"
+    session_ttl_hours: int = 12
+    # password mode
+    app_password: str = ""                        # the shared workspace password
+    # entra mode
+    entra_tenant_id: str = ""
+    entra_client_id: str = ""
+    entra_client_secret: str = ""
+    entra_redirect_path: str = "/auth/callback"
 
     # --- LLM fallback provider (used ONLY for non-standard layouts) -------------
     # Its output is ALWAYS routed to human review; the accuracy guarantee never
@@ -78,6 +108,11 @@ class Settings(BaseSettings):
     def llm_enabled(self) -> bool:
         """True when any real model provider is configured."""
         return self.llm_provider != "none"
+
+    @property
+    def sqlalchemy_url(self) -> str:
+        """Effective SQLAlchemy URL: explicit DATABASE_URL, else the local SQLite file."""
+        return self.database_url or f"sqlite:///{self.db_path}"
 
     def ensure_dirs(self) -> None:
         for d in (self.data_dir, self.upload_dir, self.processed_dir):

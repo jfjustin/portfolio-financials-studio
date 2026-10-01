@@ -8,10 +8,15 @@
 </head>
 <body>
   <header class="top">
+    <span class="brand-mark">PF</span>
     <h1>Portfolio Financials Studio</h1>
     <span class="sub">confidential · human-in-the-loop · pluggable model</span>
     <span class="spacer"></span>
     <span id="llm-badge" class="badge">…</span>
+    {% if auth_mode != "none" and user %}
+      <span class="user-chip"><span class="dot"></span>{{ user }}</span>
+      <a class="btn sm" href="/logout">Sign out</a>
+    {% endif %}
     <a class="btn sm" href="/api/export.csv">Export trusted CSV</a>
     <button id="refresh-btn" class="btn sm">Refresh</button>
   </header>
