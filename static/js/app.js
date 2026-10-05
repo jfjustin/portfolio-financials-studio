@@ -21,6 +21,7 @@
     else if (ps.available) { b.textContent = h.llm_provider + " ✓"; b.className = "badge on"; }
     else { b.textContent = h.llm_provider + " unavailable"; b.className = "badge off"; }
     if (ps.detail) b.title = ps.detail;
+    $("#ledger-filter").addEventListener("input", renderLedger);
     await refresh();
   }
 
@@ -43,6 +44,39 @@
 
     const inv = await api("/api/investments");
     renderInvestments(inv);
+
+    const ts = await api("/api/timeseries");
+    window.Charts.lineChart($("#chart-time"), ts, { title: "Portfolio value over time" });
+
+    const lg = await api("/api/ledger");
+    LEDGER = lg.rows;
+    renderLedger();
+  }
+
+  let LEDGER = [];
+  function renderLedger() {
+    const q = ($("#ledger-filter").value || "").toLowerCase();
+    const rows = LEDGER.filter(r => !q ||
+      (r.entity_name + " " + r.metric_label + " " + r.period + " " + r.report_type)
+        .toLowerCase().includes(q));
+    $("#ledger-count").textContent = `${rows.length} of ${LEDGER.length} entries`;
+    const tb = $("#ledger-body"); tb.innerHTML = "";
+    if (!rows.length) {
+      tb.innerHTML = '<tr><td colspan="7" class="muted">No trusted ledger entries yet — upload and confirm reports.</td></tr>';
+      return;
+    }
+    rows.slice(0, 600).forEach(r => {
+      const tr = document.createElement("tr");
+      const rt = (REPORT_TYPES[r.report_type] && REPORT_TYPES[r.report_type].label) || r.report_type;
+      const val = r.unit === "currency" ? mv(r.value)
+        : (r.value == null ? '<span class="muted">—</span>'
+           : esc(r.value) + (r.unit === "percent" ? "%" : ""));
+      tr.innerHTML = `<td>${esc(r.period)}</td><td><b>${esc(r.entity_name)}</b></td>
+        <td><span class="small muted">${esc(rt)}</span></td><td>${esc(r.metric_label)}</td>
+        <td class="num">${val}</td><td>${esc(r.currency || "")}</td>
+        <td class="small muted">${esc(r.source || "")}</td>`;
+      tb.appendChild(tr);
+    });
   }
 
   let RF_FILTER = null;  // entity filter for the roll-forward table

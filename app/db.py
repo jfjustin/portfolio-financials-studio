@@ -454,6 +454,51 @@ def rebuild_investment_views() -> None:
             conn.execute(insert(investment_entities), entity_rows)
 
 
+def grand_ledger() -> list[dict[str, Any]]:
+    """Every TRUSTED fact across all companies/periods as one consolidated ledger,
+    normalized to a common shape regardless of the original report format."""
+    out = []
+    for f in trusted_facts():
+        out.append({
+            "entity_name": f["entity_name"], "entity_kind": f["entity_kind"],
+            "report_type": f["report_type"], "period": f["period"],
+            "period_order": _period_order(f["period"]),
+            "metric_key": f["metric_key"], "metric_label": f["metric_label"],
+            "value": f["value"], "unit": f["unit"], "currency": f["currency"],
+            "source": f["provenance"],
+        })
+    out.sort(key=lambda r: (r["period_order"], r["entity_name"], r["metric_key"]))
+    return out
+
+
+def timeseries() -> dict[str, Any]:
+    """Portfolio value over time: one balance per (entity, period) chosen by the
+    preferred balance metric, giving a Total line plus per-entity series."""
+    rank = {k: i for i, k in enumerate(_BALANCE_KEYS)}
+    best: dict[tuple[str, str], tuple[int, float]] = {}
+    for f in trusted_facts():
+        if f["unit"] != "currency" or f["metric_key"] not in rank:
+            continue
+        val = _as_float(f["value"])
+        if val is None:
+            continue
+        key = (f["entity_name"], f["period"])
+        r = rank[f["metric_key"]]
+        if key not in best or r < best[key][0]:
+            best[key] = (r, val)
+    periods = sorted({p for (_e, p) in best}, key=_period_order)
+    entities = sorted({e for (e, _p) in best})
+    series = []
+    for e in entities:
+        pts = [{"period": p, "value": best[(e, p)][1]} for p in periods if (e, p) in best]
+        if pts:
+            series.append({"name": e, "points": pts})
+    total = [{"period": p,
+              "value": sum(best[(e, p)][1] for e in entities if (e, p) in best)}
+             for p in periods]
+    return {"periods": periods, "total": total, "series": series}
+
+
 def get_investments() -> dict[str, Any]:
     """Return the investment read-model (rebuilt from trusted facts)."""
     rebuild_investment_views()

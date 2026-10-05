@@ -31,6 +31,15 @@
       <div class="card tile"><div class="n" id="t-review">0</div><div class="l">Values to review</div></div>
     </section>
 
+    <!-- Portfolio value over time (the grand-ledger trend) -->
+    <section class="card">
+      <div class="sec-head">
+        <h2>Portfolio value over time</h2>
+        <span class="small muted">Total investment balance per period · thin lines = entities</span>
+      </div>
+      <div id="chart-time"></div>
+    </section>
+
     <!-- Upload -->
     <section class="card">
       <h2>Upload reports (PDF · XLSX · XLSM · XLS)</h2>
@@ -77,6 +86,25 @@
           <th class="num">Change</th><th class="num">Ending</th>
         </tr></thead>
         <tbody id="inv-quarters"></tbody>
+      </table>
+      </div>
+    </section>
+
+    <!-- Grand ledger: every company's report, one consolidated ledger -->
+    <section class="card">
+      <div class="sec-head">
+        <h2>Grand ledger</h2>
+        <span class="small muted">
+          <span id="ledger-count"></span>
+          &nbsp;·&nbsp; <a href="/api/ledger.csv">Export ledger CSV</a>
+        </span>
+      </div>
+      <input id="ledger-filter" class="ledger-filter" placeholder="Filter by company, metric, or period…">
+      <div class="scroll" style="max-height:420px;overflow-y:auto">
+      <table class="tbl-tight">
+        <thead><tr><th>Period</th><th>Company / entity</th><th>Report</th>
+          <th>Metric</th><th class="num">Value</th><th>Cur.</th><th>Source</th></tr></thead>
+        <tbody id="ledger-body"></tbody>
       </table>
       </div>
     </section>

@@ -158,6 +158,36 @@ def investments():
     return db.get_investments()
 
 
+@app.get("/api/ledger")
+def ledger():
+    """The grand ledger — all trusted facts across companies/periods, consolidated."""
+    rows = db.grand_ledger()
+    return {"rows": rows, "n": len(rows)}
+
+
+@app.get("/api/timeseries")
+def timeseries():
+    """Portfolio value over time (Total + per-entity series)."""
+    return db.timeseries()
+
+
+@app.get("/api/ledger.csv")
+def ledger_csv():
+    rows = db.grand_ledger()
+    buf = io.StringIO()
+    w = csv.writer(buf)
+    w.writerow(["period", "entity_name", "entity_kind", "report_type",
+                "metric_key", "metric_label", "value", "unit", "currency", "source"])
+    for r in rows:
+        w.writerow([r["period"], r["entity_name"], r["entity_kind"], r["report_type"],
+                    r["metric_key"], r["metric_label"], r["value"], r["unit"],
+                    r["currency"], r["source"]])
+    buf.seek(0)
+    return StreamingResponse(
+        iter([buf.getvalue()]), media_type="text/csv",
+        headers={"Content-Disposition": "attachment; filename=grand_ledger.csv"})
+
+
 @app.get("/api/submissions")
 def submissions():
     return {"submissions": db.list_submissions()}

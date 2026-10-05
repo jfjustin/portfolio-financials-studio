@@ -167,3 +167,7 @@ svg .bar:hover { opacity: .8; }
 .tag.fund { color: var(--brand-2); border-color: color-mix(in srgb, var(--brand-2) 40%, var(--line)); }
 .tag.direct_investment { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 45%, var(--line)); }
 .tag.joint_venture { color: var(--ok); border-color: color-mix(in srgb, var(--ok) 40%, var(--line)); }
+.ledger-filter { width: 100%; max-width: 360px; margin-bottom: 12px; padding: 8px 11px;
+  border: 1px solid var(--line); border-radius: 8px; background: var(--bg); color: var(--ink); font: inherit; }
+.ledger-filter:focus { outline: none; border-color: var(--brand);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--brand) 20%, transparent); }
