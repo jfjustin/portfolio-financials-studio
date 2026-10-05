@@ -43,8 +43,7 @@ def _startup() -> None:
 # --------------------------------------------------------------------------
 @app.get("/", response_class=HTMLResponse)
 def index(request: Request):
-    return templates.TemplateResponse("index.html", {
-        "request": request,
+    return templates.TemplateResponse(request, "index.html", {
         "report_types": all_report_types(),
         "llm_provider": settings.llm_provider,
         "llm_enabled": settings.llm_enabled,
@@ -60,8 +59,8 @@ def index(request: Request):
 def login_page(request: Request, error: str = ""):
     if auth.current_user(request):
         return RedirectResponse("/", status_code=302)
-    return templates.TemplateResponse("login.html", {
-        "request": request, "auth_mode": settings.auth_mode, "error": error,
+    return templates.TemplateResponse(request, "login.html", {
+        "auth_mode": settings.auth_mode, "error": error,
     })
 
 
