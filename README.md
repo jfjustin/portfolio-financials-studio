@@ -11,13 +11,35 @@ provider — including a **customer's own Microsoft model (Azure OpenAI)** runni
 inside their Azure tenant, so data never goes to a public vendor.
 
 ```
- upload ─▶ extract ─▶ classify + map ─▶ validate ─▶ human review ─▶ trusted data ─▶ dashboard / CSV
-          (PDF/Excel)  (entity + metric)  (reconcile)  (confirm/edit)   (audited)
+ upload ─▶ extract ─▶ classify+map ─▶ validate ─▶ human review ─▶ GRAND LEDGER ─▶ trend over time
+ (any co,  (PDF/Excel) (entity+metric) (reconcile) (confirm/edit)  (consolidated   (+ CSV export)
+  any fmt)                                                          all companies)
 ```
 
-This project combines two lineages: the rigor of a deterministic, audit-trailed
-extraction pipeline, and the domain model of an investment-intelligence app
-(entity classification, capital-account roll-forwards, workbook field mapping).
+The end goal: take every company's report — **different companies, different
+formats** — normalize them into one **grand ledger**, and **visualize value over
+time**. This project combines two lineages: the rigor of a deterministic,
+audit-trailed extraction pipeline, and the domain model of an
+investment-intelligence app (entity classification, capital-account
+roll-forwards, workbook field mapping).
+
+**📖 New here? Read the [User Guidebook (GUIDE.md)](GUIDE.md)** for a
+screen-by-screen walkthrough.
+
+## Dashboard & the grand ledger
+
+- **Portfolio value over time** — a line chart of total investment balance per
+  period (plus a thin line per entity); the headline trend view.
+- **Investment portfolio** — the consolidated entities table (`investment_entities`).
+- **Quarterly roll-forward** — Beginning → Funding → … → Ending per entity/period
+  (`investment_quarters`), with entity drill-down.
+- **Grand ledger** — every trusted fact from every company/period in one
+  normalized, filterable table; **Export ledger CSV**.
+- **KPI tiles**, value-by-type / value-by-entity bars, submissions list, and a
+  per-submission review modal with the audit trail.
+
+Only `auto` + human-`confirmed` values appear in these views — unreviewed or
+unreconciled figures stay out until a person accepts them.
 
 ## Why the numbers are trustworthy
 
@@ -128,6 +150,25 @@ docker run -p 8000:8000 -e LLM_PROVIDER=none portfolio-financials-studio   # loc
 bash deploy/azure-container-apps.sh        # edit the names/SKUs at the top first
 ```
 
+### No Docker / restricted subscription? Deploy from source on App Service
+
+If your subscription disables ACR Tasks (common on trial/sponsored accounts) or
+you have no local Docker, deploy straight from source — no image build:
+
+```bash
+# in Azure Cloud Shell (has az + git); region must be allowed by your subscription
+az group create -n rg-pfs -l swedencentral
+APP=pfs-$RANDOM; echo "https://$APP.azurewebsites.net"
+az webapp up --name "$APP" --resource-group rg-pfs --runtime "PYTHON:3.12" --sku B1
+az webapp config set -g rg-pfs -n "$APP" \
+  --startup-file "python -m uvicorn app.main:app --host 0.0.0.0 --port 8000"
+az webapp config appsettings set -g rg-pfs -n "$APP" --settings WEBSITES_PORT=8000 LLM_PROVIDER=none
+```
+Set env vars (`LLM_PROVIDER=azure …`, `AUTH_MODE=password …`) with
+`az webapp config appsettings set`. App Service has a persistent filesystem, so
+the default SQLite DB survives restarts — add `DATABASE_URL` only for multi-user.
+See **[GUIDE.md](GUIDE.md)** for the full step-by-step with Azure OpenAI + auth.
+
 ## Report types supported
 
 - **Fund Financials** — assets, liabilities, NAV, income, expenses, contributions, distributions…
@@ -195,4 +236,6 @@ samples/              demo report generator
   aggregation is a planned enhancement.
 - **OCR for scanned PDFs** — currently detected and flagged, not processed. Add a
   local OCR step (Tesseract/PaddleOCR) in `extractors/pdf_native.py`.
-- Multi-user auth (single local user today); period-over-period trend charts.
+- **Per-metric time series** — the trend view currently charts total balance;
+  charting an arbitrary metric (NAV, equity income) over time is a planned toggle.
+- Line-level aggregation for many-source-lines → one metric (see below).
