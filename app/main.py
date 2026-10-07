@@ -19,7 +19,7 @@ from fastapi.responses import (HTMLResponse, JSONResponse, RedirectResponse,
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
-from . import auth, db
+from . import auth, db, fabric_export
 from .config import settings
 from .llm import get_provider
 from .pipeline import process_upload
@@ -169,6 +169,39 @@ def ledger():
 def timeseries():
     """Portfolio value over time (Total + per-entity series)."""
     return db.timeseries()
+
+
+@app.get("/api/fabric/schema")
+def fabric_schema():
+    """Machine-readable export contract (tables, columns, types, grain)."""
+    return fabric_export.schema_manifest()
+
+
+@app.get("/api/fabric/{table}.csv")
+def fabric_table_csv(table: str):
+    """Fabric-ready table as CSV. table = fact_financial_metric | dim_entity."""
+    if table not in (fabric_export.FACT_TABLE, fabric_export.DIM_TABLE):
+        raise HTTPException(404, f"unknown table '{table}'")
+    body = fabric_export.to_csv(table)
+    return StreamingResponse(
+        iter([body]), media_type="text/csv",
+        headers={"Content-Disposition": f"attachment; filename={table}.csv"})
+
+
+@app.get("/api/fabric/{table}.parquet")
+def fabric_table_parquet(table: str):
+    """Fabric-ready table as Parquet (typed; decimal money preserved)."""
+    if table not in (fabric_export.FACT_TABLE, fabric_export.DIM_TABLE):
+        raise HTTPException(404, f"unknown table '{table}'")
+    try:
+        body = fabric_export.to_parquet(table)
+    except ImportError:
+        raise HTTPException(
+            501, "Parquet export needs pyarrow — pip install 'pyarrow>=15' "
+                 "(or use the .csv endpoint)")
+    return StreamingResponse(
+        iter([body]), media_type="application/vnd.apache.parquet",
+        headers={"Content-Disposition": f"attachment; filename={table}.parquet"})
 
 
 @app.get("/api/ledger.csv")

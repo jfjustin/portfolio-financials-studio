@@ -98,6 +98,35 @@ Scroll the dashboard top-to-bottom:
 - **Export trusted CSV** (header) — the flat trusted-facts table.
 - **Export ledger CSV** (in the Grand ledger card) — the consolidated ledger
   (period, entity, report, metric, value, currency, source).
+- **For BI tools (Fabric / Power BI)** — use the versioned export tables instead
+  of the ad-hoc CSVs; see §5b below.
+
+### ⑤b Feeding a BI tool (Fabric, Power BI, Excel)
+
+For reporting, don't hand over the ad-hoc CSVs — use the **stable export
+contract**, whose column names and types are frozen so your dashboards don't
+break when the app is updated:
+
+| What | Where |
+|---|---|
+| Fact table (the grand ledger) | `/api/fabric/fact_financial_metric.parquet` (or `.csv`) |
+| Entity dimension | `/api/fabric/dim_entity.parquet` (or `.csv`) |
+| The contract itself (columns, types, grain) | `/api/fabric/schema` |
+
+Give your BI/platform team the **[Fabric / Power BI Integration
+Spec](docs/FABRIC_INTEGRATION.md)** — it documents every column, the four
+landing options, refresh semantics, starter DAX, and SQL views. They won't need
+to read application code.
+
+Two things worth knowing:
+- **Prefer Parquet.** It keeps money as exact decimal; CSV can turn it into a float.
+- **The fact table is "tall."** One row per *metric*, so always filter by
+  `metric_key` before aggregating — never sum the whole value column, since
+  currency amounts, percentages, and ratios share it. The spec's DAX examples
+  show the correct pattern.
+
+**No Fabric access?** You don't need it. Power BI can connect directly to the
+app's database and deliver the same reports — option D in the spec.
 
 ---
 
@@ -213,5 +242,13 @@ Azure Blob) so every number traces back to its source.
 auto-accept requires high confidence *and* passing reconciliation; everything else
 waits for a human. The audit trail records every value and change.
 
-**How do I get data into Power BI / Fabric?** Export the **grand ledger CSV**, or
-(on Azure) point the DB at Azure SQL and connect Fabric/Power BI to it.
+**How do I get data into Power BI / Fabric?** Use the versioned export tables
+(`/api/fabric/fact_financial_metric.parquet` + `dim_entity.parquet`) and hand your
+BI team the [integration spec](docs/FABRIC_INTEGRATION.md). If Fabric isn't
+available, Power BI can read the app's Azure SQL database directly — same reports,
+no Fabric capacity needed.
+
+**What's the difference between Azure and Fabric here?** Azure *hosts the
+application* (App Service / Container Apps, the database, document storage).
+Fabric is a separate SaaS *analytics* platform that would *consume* the exported
+tables for reporting. Fabric is optional — the app is fully functional without it.

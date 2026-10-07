@@ -25,6 +25,33 @@ roll-forwards, workbook field mapping).
 
 **📖 New here? Read the [User Guidebook (GUIDE.md)](GUIDE.md)** for a
 screen-by-screen walkthrough.
+**🔌 Integrating BI?** See the
+**[Fabric / Power BI Integration Spec](docs/FABRIC_INTEGRATION.md)**.
+
+## Reporting integration (Microsoft Fabric / Power BI)
+
+The app is the **OLTP system**; Fabric/Power BI is the **reporting layer**. Output
+is published as two versioned tables with a frozen schema (`schema_version 1.0`):
+
+| Table | Grain | Key |
+|---|---|---|
+| `fact_financial_metric` | one row per entity × period × metric | `fact_key` |
+| `dim_entity` | one row per entity | `entity_name` |
+
+```bash
+curl -O http://127.0.0.1:8713/api/fabric/fact_financial_metric.parquet   # recommended
+curl -O http://127.0.0.1:8713/api/fabric/dim_entity.parquet
+curl    http://127.0.0.1:8713/api/fabric/schema                          # contract JSON
+# CSV variants exist at the same paths with .csv
+```
+
+- **Parquet preserves money as `decimal(38,6)`** — CSV can coerce it to float.
+- **Only `auto` + `confirmed` rows are exported**, so a dashboard can never show
+  an unreviewed figure.
+- Four landing options (file + OneLake shortcut, Azure SQL mirroring, Data Factory
+  pipeline, or **Power BI direct to Azure SQL with no Fabric at all**), plus DAX
+  starters and ready-made SQL views, are documented in the
+  [integration spec](docs/FABRIC_INTEGRATION.md).
 
 ## Dashboard & the grand ledger
 
@@ -140,8 +167,9 @@ tenant, reached over the corporate VPN:
 - Network: deploy with **internal ingress** + a **Private Endpoint** on Azure
   OpenAI, so model traffic stays on the Azure backbone and the app is only
   reachable on the VPN.
-- **Microsoft Fabric**: export trusted facts (`/api/export.csv` or the
-  `fact`-level tables) into OneLake / a Lakehouse and surface them in Power BI.
+- **Microsoft Fabric / Power BI**: publish the versioned export tables
+  (`/api/fabric/*.parquet`) into OneLake / a Lakehouse, or point Power BI straight
+  at the database. See **[docs/FABRIC_INTEGRATION.md](docs/FABRIC_INTEGRATION.md)**.
 
 ```bash
 docker build -t portfolio-financials-studio .
