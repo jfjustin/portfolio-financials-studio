@@ -57,8 +57,12 @@ Fabric ingests.
 | `period_order` | int64 | Sortable period key, `YYYYQ` form (e.g. `202601`) — **use for time axis ordering** |
 | `period_year` | int64 | Calendar year |
 | `period_quarter` | int64 | Calendar quarter 1–4 (`0` if not determinable) |
+| `fiscal_year` | int64 | Fiscal year, named by the calendar year it **ends** in (configurable via `FISCAL_YEAR_END_MONTH`; `0` if unknown). Default FYE = June, matching Lam Research's own fiscal calendar |
+| `fiscal_quarter` | int64 | Fiscal quarter 1–4 (`0` if not determinable) |
+| `fiscal_label` | string | Display label, e.g. `FY2026 Q3` |
 | `metric_key` | string | Canonical metric key (machine name) |
 | `metric_label` | string | Canonical metric label (display name) |
+| `metric_category` | string | `asset` \| `income` \| `distribution` \| `ratio` \| `other` — the same section grouping used in the app's review screen and ledger |
 | `metric_unit` | string | `currency` \| `percent` \| `ratio` \| `count` \| `text` |
 | `value_numeric` | decimal(38,6) | The value. **Exact decimal, never float.** Null when not found |
 | `currency_code` | string | ISO code; meaningful when `metric_unit = currency` |
@@ -192,10 +196,19 @@ CALCULATE(
     AVERAGE( fact_financial_metric[value_numeric] ),
     fact_financial_metric[metric_key] = "ownership_pct"
 )
+
+-- Any metric, filtered to fiscal year (matches the app's own FY labeling)
+FY Equity Income :=
+CALCULATE(
+    SUM( fact_financial_metric[value_numeric] ),
+    fact_financial_metric[metric_key] IN { "equity_income_loss", "equity_income" },
+    fact_financial_metric[fiscal_year] = SELECTEDVALUE( fact_financial_metric[fiscal_year] )
+)
 ```
 
-Order any time axis by **`period_order`**, not `period_label` (string sorting
-would place `2026-03-31` before `2026-Q1` incorrectly).
+Order any time axis by **`period_order`** (calendar) or **`fiscal_year` /
+`fiscal_quarter`** (fiscal) — not `period_label` / `fiscal_label` as plain text
+(string sorting would place `2026-03-31` before `2026-Q1` incorrectly).
 
 ---
 
@@ -207,6 +220,15 @@ never depend on internal table shapes.
 > **Dialect note:** the string concatenation below uses `||` (PostgreSQL / SQLite).
 > On **Azure SQL** use `CONCAT(f.entity_name, '|', f.period, '|', f.metric_key)`
 > instead, and `TRY_CAST` in place of `CAST` if any legacy rows may be non-numeric.
+
+> **`metric_category` and `fiscal_*` are not in these views.** Both are derived
+> in the application layer — category from a ~60-row lookup table in
+> `app/report_types.py`, fiscal year/quarter from month arithmetic in
+> `app/db.py:fiscal_info()`. Reproducing that logic as raw SQL would drift from
+> the Python source of truth every time a metric is added. If you need those
+> columns via Options B/C (direct DB read), pull them from the **file-based
+> export** instead (`/api/fabric/*.parquet`, Option A) and join on `fact_key`,
+> or ask us to materialize them as stored columns in a follow-up.
 
 ```sql
 CREATE VIEW v_fact_financial_metric AS

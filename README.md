@@ -55,18 +55,53 @@ curl    http://127.0.0.1:8713/api/fabric/schema                          # contr
 
 ## Dashboard & the grand ledger
 
+- **Lam Capital Overall Performance** — TVPI, DPI, and a money-weighted IRR
+  aggregated across all fund investments, computed from confirmed funding,
+  distributions, and NAV (`app/performance.py`).
+- **Direct Investments** — one row per company: investment cost, estimated FMV,
+  book value, unrealized gain/(loss), MOIC, ownership — mirroring Lam Capital's
+  own "Portfolio Value" report format.
+- **Fund Investments** — one row per fund: cumulative funding/distributions,
+  current balance, quarter-over-quarter change, and total % gain/(loss).
 - **Portfolio value over time** — a line chart of total investment balance per
-  period (plus a thin line per entity); the headline trend view.
+  period (plus a thin line per entity); each period shows both its calendar
+  label and fiscal-year label (e.g. "2026-Q1" / "FY2026 Q3").
 - **Investment portfolio** — the consolidated entities table (`investment_entities`).
 - **Quarterly roll-forward** — Beginning → Funding → … → Ending per entity/period
   (`investment_quarters`), with entity drill-down.
 - **Grand ledger** — every trusted fact from every company/period in one
-  normalized, filterable table; **Export ledger CSV**.
+  normalized, filterable table, grouped by **section** (Assets & Balances /
+  Income & Profit / Distributions & Capital Flows / Performance Ratios);
+  **Export ledger CSV**.
 - **KPI tiles**, value-by-type / value-by-entity bars, submissions list, and a
-  per-submission review modal with the audit trail.
+  per-submission **review modal sectioned the same way** so a reviewer checks
+  balances, P&L, and capital flows as distinct groups rather than one long list.
 
 Only `auto` + human-`confirmed` values appear in these views — unreviewed or
 unreconciled figures stay out until a person accepts them.
+
+### Metric sections (asset / income / distribution / ratio)
+
+Every metric across all five report types carries a `category` so the review
+screen, grand ledger, and Fabric export all group figures the same way:
+
+| Section | Examples |
+|---|---|
+| **Assets & Balances** | NAV, cost basis, fair value, beginning/ending balance |
+| **Income & Profit / (Loss)** | net income, realized/unrealized gain, equity income |
+| **Distributions & Capital Flows** | capital called, contributions, distributions, dividends |
+| **Performance Ratios** | ownership %, MOIC, IRR |
+
+Edit the taxonomy in `app/report_types.py` (`MetricCategory`, `CATEGORY_LABELS`) —
+every metric spec carries a `category=...` kwarg.
+
+### Fiscal year
+
+Every period shown in the app carries both its **calendar** label (e.g.
+`2026-Q1`) and a **fiscal-year** label (e.g. `FY2026 Q3`), computed from
+`FISCAL_YEAR_END_MONTH` (default `6`, matching Lam Research's own fiscal
+calendar — FY ends the Sunday closest to June 30). Set it to `12` for a pure
+calendar year. See `app/db.py:fiscal_info()`.
 
 ## Why the numbers are trustworthy
 
@@ -193,8 +228,19 @@ az webapp config set -g rg-pfs -n "$APP" \
 az webapp config appsettings set -g rg-pfs -n "$APP" --settings WEBSITES_PORT=8000 LLM_PROVIDER=none
 ```
 Set env vars (`LLM_PROVIDER=azure …`, `AUTH_MODE=password …`) with
-`az webapp config appsettings set`. App Service has a persistent filesystem, so
-the default SQLite DB survives restarts — add `DATABASE_URL` only for multi-user.
+`az webapp config appsettings set`.
+
+> **Data persistence.** App Service for Python/Linux unpacks the deployed app
+> into an **ephemeral path** on every container start/restart/redeploy — a
+> default SQLite DB placed relative to the app code is silently wiped each
+> time. The app auto-detects App Service (via `WEBSITE_INSTANCE_ID`) and
+> defaults storage to `/home/data`, the platform's **persistent** mount, so
+> this works with zero configuration on a current checkout. If you're
+> redeploying code that predates this fix, `git pull` first. For true
+> multi-instance production, use `DATABASE_URL` (Azure SQL/Postgres) instead
+> of SQLite — see [docs/FABRIC_INTEGRATION.md](docs/FABRIC_INTEGRATION.md) for
+> the same database feeding your BI layer.
+
 See **[GUIDE.md](GUIDE.md)** for the full step-by-step with Azure OpenAI + auth.
 
 ## Report types supported
@@ -237,13 +283,18 @@ app/
     openai_cloud.py   public OpenAI cloud
     ollama.py         local, on-machine model
   validate.py         reconciliation / sanity checks
+  performance.py      Direct/Fund Investment summaries + portfolio TVPI/DPI/IRR
+  fabric_export.py    versioned Fabric/Power BI export (fact + dim tables)
   pipeline.py         orchestrator (ingest → extract → validate → store)
   db.py               SQLAlchemy Core storage + append-only audit (SQLite / Azure SQL / Postgres)
+                      + fiscal_info() (calendar <-> fiscal-year period labels)
   storage.py          source-document storage (local folder or Azure Blob)
   auth.py             AuthMiddleware + password gate / Entra ID SSO (optional)
+  config.py           settings; auto-detects Azure App Service's persistent /home mount
   main.py             FastAPI app + JSON API + auth routes
 templates/            index.html (dashboard) + login.html (private-workspace gate)
 static/               dashboard UI (upload, review, offline SVG charts)
+docs/                 FABRIC_INTEGRATION.md — BI integration spec
 Dockerfile, deploy/   container image + Azure Container Apps deploy script
 samples/              demo report generator
 ```
@@ -266,4 +317,13 @@ samples/              demo report generator
   local OCR step (Tesseract/PaddleOCR) in `extractors/pdf_native.py`.
 - **Per-metric time series** — the trend view currently charts total balance;
   charting an arbitrary metric (NAV, equity income) over time is a planned toggle.
-- Line-level aggregation for many-source-lines → one metric (see below).
+- **Fund "Since" is not a true vintage.** The Fund Investments table shows the
+  earliest *confirmed* period on file, not the fund's legal vintage year — that
+  field isn't currently extracted from any source document.
+- **"# Invested" / per-holding schedules are not computed.** The Fund
+  Investments table doesn't yet show the number of underlying portfolio
+  companies within a fund (would need a schedule-of-investments extractor).
+- **IRR is a reasonable estimate, not GP-grade.** `app/performance.py:xirr()`
+  computes a money-weighted return from each period's net cash flows using the
+  period's calendar end-date as a proxy timestamp — it will differ from a GP's
+  own cash-flow-accurate IRR (exact call/distribution dates, carry waterfall).

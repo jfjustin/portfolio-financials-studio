@@ -40,8 +40,13 @@ FACT_COLUMNS: list[tuple[str, str, str]] = [
     ("period_order",   "int64",   "Sortable period key, YYYYQ (e.g. 202601)"),
     ("period_year",    "int64",   "Calendar year of the period"),
     ("period_quarter", "int64",   "Calendar quarter 1-4 (0 if not determinable)"),
+    ("fiscal_year",    "int64",   "Fiscal year, named by the calendar year it ENDS in "
+                                  "(configurable via FISCAL_YEAR_END_MONTH; 0 if unknown)"),
+    ("fiscal_quarter", "int64",   "Fiscal quarter 1-4 (0 if not determinable)"),
+    ("fiscal_label",   "string",  "Display label, e.g. 'FY2026 Q3'"),
     ("metric_key",     "string",  "Canonical metric key (machine name)"),
     ("metric_label",   "string",  "Canonical metric label (display name)"),
+    ("metric_category", "string", "asset | income | distribution | ratio | other"),
     ("metric_unit",    "string",  "currency | percent | ratio | count | text"),
     ("value_numeric",  "decimal", "The value. Exact decimal; null when not found"),
     ("currency_code",  "string",  "ISO currency code for currency-unit metrics"),
@@ -98,6 +103,7 @@ def build_fact_rows() -> list[dict[str, Any]]:
     for f in db.trusted_facts():
         period = f.get("period") or ""
         year, quarter = _year_quarter(period)
+        fy = db.fiscal_info(period)
         rt = REPORT_TYPES.get(f.get("report_type") or "")
         prov = f.get("provenance") or ""
         # provenance looks like "excel:Sheet1!B7 (2026)" or "pdf_native:p3 table1 r5c2"
@@ -112,8 +118,13 @@ def build_fact_rows() -> list[dict[str, Any]]:
             "period_order": db._period_order(period),
             "period_year": year,
             "period_quarter": quarter,
+            "fiscal_year": fy["fiscal_year"] or 0,
+            "fiscal_quarter": fy["fiscal_quarter"] or 0,
+            "fiscal_label": fy["fiscal_label"],
             "metric_key": f.get("metric_key"),
             "metric_label": f.get("metric_label"),
+            "metric_category": db._category_for(f.get("report_type") or "",
+                                                f.get("metric_key") or "")[0],
             "metric_unit": f.get("unit"),
             "value_numeric": _dec(f.get("value")),
             "currency_code": f.get("currency"),

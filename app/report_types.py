@@ -23,6 +23,34 @@ class Unit(str, Enum):
     TEXT = "text"
 
 
+class MetricCategory(str, Enum):
+    """Grouping used to section the human-review screen and the ledger.
+
+    Mirrors how Lam Capital's own reports separate a position's balance from
+    its P&L movement from its cash-flow (capital in/out) movement.
+    """
+    ASSET = "asset"                # balances / positions: NAV, cost, fair value, beginning/ending
+    INCOME = "income"              # P&L: net income, gains/losses, equity income, revenue
+    DISTRIBUTION = "distribution"  # capital flows: contributions, calls, distributions, dividends
+    RATIO = "ratio"                # performance ratios: ownership %, MOIC, IRR
+    OTHER = "other"                # unclassified / text fields
+
+
+CATEGORY_LABELS: dict[MetricCategory, str] = {
+    MetricCategory.ASSET: "Assets & Balances",
+    MetricCategory.INCOME: "Income & Profit / (Loss)",
+    MetricCategory.DISTRIBUTION: "Distributions & Capital Flows",
+    MetricCategory.RATIO: "Performance Ratios",
+    MetricCategory.OTHER: "Other",
+}
+
+# Display order for sectioned views (asset position first, then how it moved).
+CATEGORY_ORDER: tuple[MetricCategory, ...] = (
+    MetricCategory.ASSET, MetricCategory.INCOME, MetricCategory.DISTRIBUTION,
+    MetricCategory.RATIO, MetricCategory.OTHER,
+)
+
+
 @dataclass(frozen=True)
 class MetricSpec:
     key: str                      # canonical machine key, e.g. "nav"
@@ -35,6 +63,7 @@ class MetricSpec:
     role: str = ""
     component_of: str = ""
     required: bool = False        # if a report of this type should always contain it
+    category: MetricCategory = MetricCategory.OTHER  # section for review UI / ledger
 
 
 @dataclass(frozen=True)
@@ -52,6 +81,13 @@ class ReportType:
                 return m
         return None
 
+    def grouped_metrics(self) -> list[tuple[MetricCategory, list[MetricSpec]]]:
+        """Metrics bucketed by category, in CATEGORY_ORDER, skipping empty groups."""
+        by_cat: dict[MetricCategory, list[MetricSpec]] = {}
+        for m in self.metrics:
+            by_cat.setdefault(m.category, []).append(m)
+        return [(c, by_cat[c]) for c in CATEGORY_ORDER if c in by_cat]
+
 
 # --------------------------------------------------------------------------
 # 1) FUND FINANCIALS
@@ -64,30 +100,39 @@ FUND_FINANCIALS = ReportType(
            "schedule of investments", "nav", "net asset value", "capital account"),
     metrics=(
         MetricSpec("total_assets", "Total Assets", Unit.CURRENCY,
-                   ("total assets",), role="total", required=True),
+                   ("total assets",), role="total", required=True,
+                   category=MetricCategory.ASSET),
         MetricSpec("total_liabilities", "Total Liabilities", Unit.CURRENCY,
-                   ("total liabilities",), required=True),
+                   ("total liabilities",), required=True,
+                   category=MetricCategory.ASSET),
         MetricSpec("nav", "Net Asset Value (Net Assets)", Unit.CURRENCY,
                    ("net asset value", "net assets", "total net assets", "nav",
-                    "partners' capital", "members' equity"), required=True),
+                    "partners' capital", "members' equity"), required=True,
+                   category=MetricCategory.ASSET),
         MetricSpec("capital_called", "Capital Called / Contributions", Unit.CURRENCY,
                    ("capital called", "contributions", "paid-in capital",
-                    "drawn capital", "called capital")),
+                    "drawn capital", "called capital"),
+                   category=MetricCategory.DISTRIBUTION),
         MetricSpec("distributions", "Distributions", Unit.CURRENCY,
-                   ("distributions", "distributed to partners")),
+                   ("distributions", "distributed to partners"),
+                   category=MetricCategory.DISTRIBUTION),
         MetricSpec("management_fees", "Management Fees", Unit.CURRENCY,
-                   ("management fee",)),
+                   ("management fee",), category=MetricCategory.INCOME),
         MetricSpec("net_income", "Net Income / (Loss)", Unit.CURRENCY,
-                   ("net income", "net profit", "net loss", "net increase in net assets")),
+                   ("net income", "net profit", "net loss", "net increase in net assets"),
+                   category=MetricCategory.INCOME),
         MetricSpec("realized_gain", "Realized Gain / (Loss)", Unit.CURRENCY,
-                   ("realized gain", "realized loss", "net realized")),
+                   ("realized gain", "realized loss", "net realized"),
+                   category=MetricCategory.INCOME),
         MetricSpec("unrealized_gain", "Unrealized Gain / (Loss)", Unit.CURRENCY,
                    ("unrealized gain", "unrealized loss", "change in unrealized",
-                    "net change in unrealized")),
+                    "net change in unrealized"), category=MetricCategory.INCOME),
         MetricSpec("total_income", "Total Investment Income", Unit.CURRENCY,
-                   ("total income", "total investment income", "investment income")),
+                   ("total income", "total investment income", "investment income"),
+                   category=MetricCategory.INCOME),
         MetricSpec("total_expenses", "Total Expenses", Unit.CURRENCY,
-                   ("total expenses", "total operating expenses")),
+                   ("total expenses", "total operating expenses"),
+                   category=MetricCategory.INCOME),
     ),
 )
 
@@ -103,22 +148,25 @@ JOINT_VENTURE = ReportType(
     metrics=(
         MetricSpec("ownership_pct", "Ownership %", Unit.PERCENT,
                    ("ownership", "our share", "equity interest", "% held",
-                    "percentage held", "interest held"), required=True),
+                    "percentage held", "interest held"), required=True,
+                   category=MetricCategory.RATIO),
         MetricSpec("jv_total_assets", "JV Total Assets", Unit.CURRENCY,
-                   ("total assets",)),
+                   ("total assets",), category=MetricCategory.ASSET),
         MetricSpec("jv_total_liabilities", "JV Total Liabilities", Unit.CURRENCY,
-                   ("total liabilities",)),
+                   ("total liabilities",), category=MetricCategory.ASSET),
         MetricSpec("jv_total_equity", "JV Total Equity", Unit.CURRENCY,
                    ("total equity", "net equity", "shareholders' equity",
-                    "members' equity")),
+                    "members' equity"), category=MetricCategory.ASSET),
         MetricSpec("jv_revenue", "JV Revenue", Unit.CURRENCY,
-                   ("revenue", "total revenue", "turnover", "sales")),
+                   ("revenue", "total revenue", "turnover", "sales"),
+                   category=MetricCategory.INCOME),
         MetricSpec("jv_net_income", "JV Net Income / (Loss)", Unit.CURRENCY,
                    ("net income", "net profit", "net loss", "profit for the",
-                    "loss for the"), required=True),
+                    "loss for the"), required=True, category=MetricCategory.INCOME),
         MetricSpec("carrying_value", "Carrying Value of Investment", Unit.CURRENCY,
                    ("carrying value", "carrying amount", "investment in jv",
-                    "equity method investment", "book value of investment")),
+                    "equity method investment", "book value of investment"),
+                   category=MetricCategory.ASSET),
     ),
 )
 
@@ -133,20 +181,23 @@ JV_EQUITY_INCOME = ReportType(
            "share of loss", "equity method", "equity pickup", "equity pick-up"),
     metrics=(
         MetricSpec("ownership_pct", "Ownership %", Unit.PERCENT,
-                   ("ownership", "our share", "% held", "equity interest"), required=True),
+                   ("ownership", "our share", "% held", "equity interest"), required=True,
+                   category=MetricCategory.RATIO),
         MetricSpec("jv_net_income", "JV 100% Net Income / (Loss)", Unit.CURRENCY,
                    ("net income", "net profit", "net loss", "profit for", "loss for"),
-                   role="total"),
+                   role="total", category=MetricCategory.INCOME),
         MetricSpec("equity_income", "Equity Income / (Loss) — Our Share", Unit.CURRENCY,
                    ("equity income", "equity in earnings", "equity in net income",
                     "share of profit", "share of loss", "equity pickup",
                     "equity pick-up", "our share of", "equity in net loss"),
-                   role="component", component_of="jv_net_income", required=True),
+                   role="component", component_of="jv_net_income", required=True,
+                   category=MetricCategory.INCOME),
         MetricSpec("dividends_received", "Dividends / Distributions Received", Unit.CURRENCY,
-                   ("dividends received", "distributions received", "cash received")),
+                   ("dividends received", "distributions received", "cash received"),
+                   category=MetricCategory.DISTRIBUTION),
         MetricSpec("carrying_value", "Investment Carrying Value", Unit.CURRENCY,
                    ("carrying value", "carrying amount", "closing balance",
-                    "investment balance")),
+                    "investment balance"), category=MetricCategory.ASSET),
     ),
 )
 
@@ -162,21 +213,25 @@ DIRECT_INVESTMENT = ReportType(
     metrics=(
         MetricSpec("cost_basis", "Cost / Invested Capital", Unit.CURRENCY,
                    ("cost", "cost basis", "invested capital", "acquisition cost",
-                    "amount invested"), required=True),
+                    "amount invested"), required=True, category=MetricCategory.ASSET),
         MetricSpec("fair_value", "Fair Value", Unit.CURRENCY,
                    ("fair value", "fair market value", "current value",
-                    "estimated value", "valuation"), required=True),
+                    "estimated value", "valuation"), required=True,
+                   category=MetricCategory.ASSET),
         MetricSpec("ownership_pct", "Ownership %", Unit.PERCENT,
-                   ("ownership", "% held", "fully diluted", "stake")),
+                   ("ownership", "% held", "fully diluted", "stake"),
+                   category=MetricCategory.RATIO),
         MetricSpec("unrealized_gain", "Unrealized Gain / (Loss)", Unit.CURRENCY,
                    ("unrealized gain", "unrealized loss", "unrealized"),
-                   role="total"),
+                   role="total", category=MetricCategory.INCOME),
         MetricSpec("realized_proceeds", "Realized Proceeds", Unit.CURRENCY,
-                   ("realized proceeds", "proceeds", "exit value", "realized value")),
+                   ("realized proceeds", "proceeds", "exit value", "realized value"),
+                   category=MetricCategory.DISTRIBUTION),
         MetricSpec("moic", "MOIC", Unit.RATIO,
-                   ("moic", "multiple", "gross multiple", "tvpi")),
+                   ("moic", "multiple", "gross multiple", "tvpi"),
+                   category=MetricCategory.RATIO),
         MetricSpec("irr", "IRR", Unit.PERCENT,
-                   ("irr", "internal rate of return")),
+                   ("irr", "internal rate of return"), category=MetricCategory.RATIO),
     ),
 )
 
@@ -202,22 +257,24 @@ INVESTMENT_ROLL_FORWARD = ReportType(
                     "opening balance", "beginning partner's capital",
                     "partners' capital, beginning", "beginning of the period",
                     "beginning of period", "opening value"),
-                   role="total", required=True),
+                   role="total", required=True, category=MetricCategory.ASSET),
         MetricSpec("funding", "Funding / Contributions", Unit.CURRENCY,
                    ("capital contributions", "capital contribution", "capital called",
                     "capital call", "contributions by partner", "paid-in capital",
-                    "invested capital", "funding")),
+                    "invested capital", "funding"), category=MetricCategory.DISTRIBUTION),
         MetricSpec("equity_income_loss", "Equity Income / (Loss)", Unit.CURRENCY,
                    ("equity income", "equity income / (loss)", "net investment income",
                     "net operating gain", "net operating loss", "net surplus",
                     "change in net assets resulting from operations",
-                    "profit/(loss) for the period")),
+                    "profit/(loss) for the period"), category=MetricCategory.INCOME),
         MetricSpec("return_of_capital", "Distributions — Return of Capital", Unit.CURRENCY,
                    ("return of capital", "return of investment principal",
                     "non-recallable distribution", "recallable distribution",
-                    "capital distributions", "capital distribution")),
+                    "capital distributions", "capital distribution"),
+                   category=MetricCategory.DISTRIBUTION),
         MetricSpec("dividends", "Distributions — Dividends", Unit.CURRENCY,
-                   ("dividend income", "dividends", "income distribution")),
+                   ("dividend income", "dividends", "income distribution"),
+                   category=MetricCategory.DISTRIBUTION),
         MetricSpec("other", "Other", Unit.CURRENCY,
                    ("other income", "other expenses", "foreign currency gain",
                     "foreign exchange gain", "foreign exchange loss", "management fees",
@@ -225,40 +282,46 @@ INVESTMENT_ROLL_FORWARD = ReportType(
                     "legal accounting and professional fees",
                     "legal, accounting and professional fees", "tax expenses",
                     "transaction related expenses", "provision for foreign witholding tax",
-                    "foreign withholding tax")),
+                    "foreign withholding tax"), category=MetricCategory.INCOME),
         MetricSpec("investment_mtm", "Investment MTM", Unit.CURRENCY,
                    ("unrealized appreciation", "unrealised appreciation",
                     "unrealized depreciation", "unrealised depreciation",
                     "unrealized appreciation (depreciation) on investments",
                     "net change in fair value", "investment valuation movements",
-                    "revaluation reserve", "investment mtm")),
+                    "revaluation reserve", "investment mtm"), category=MetricCategory.INCOME),
         MetricSpec("sale_of_investment", "Sale of Investment", Unit.CURRENCY,
                    ("sale of investment", "proceeds from sale",
                     "realized gain on investments", "realised gain on investments",
-                    "realized loss on investments", "realised loss on investments")),
+                    "realized loss on investments", "realised loss on investments"),
+                   category=MetricCategory.INCOME),
         MetricSpec("net_realized_gain", "Net Realized Gain / (Loss)", Unit.CURRENCY,
                    ("net realized gain (loss) from investments", "net realized gain",
-                    "net realized loss", "net realized")),
+                    "net realized loss", "net realized"), category=MetricCategory.INCOME),
         MetricSpec("accrued_interest", "Accrued Interest", Unit.CURRENCY,
-                   ("accrued interest", "interest receivable", "interest income")),
+                   ("accrued interest", "interest receivable", "interest income"),
+                   category=MetricCategory.INCOME),
         MetricSpec("note_conversion", "Note Conversion", Unit.CURRENCY,
-                   ("note conversion", "convertible note conversion", "conversion of note")),
+                   ("note conversion", "convertible note conversion", "conversion of note"),
+                   category=MetricCategory.ASSET),
         MetricSpec("gain_loss_on_conversion", "Gain / (Loss) on Conversion", Unit.CURRENCY,
                    ("gain on conversion", "loss on conversion", "conversion gain",
-                    "conversion loss")),
+                    "conversion loss"), category=MetricCategory.INCOME),
         MetricSpec("acquisition_impact", "Acquisition Impact", Unit.CURRENCY,
-                   ("acquisition impact", "purchase accounting adjustment")),
+                   ("acquisition impact", "purchase accounting adjustment"),
+                   category=MetricCategory.ASSET),
         MetricSpec("impairment", "Impairment", Unit.CURRENCY,
-                   ("impairment", "write-down", "write off", "write-off")),
+                   ("impairment", "write-down", "write off", "write-off"),
+                   category=MetricCategory.INCOME),
         MetricSpec("change", "Change in Capital Balance", Unit.CURRENCY,
                    ("change in capital balance", "change in net assets", "net change",
-                    "changes during the period", "change in capital balance (sum of a)")),
+                    "changes during the period", "change in capital balance (sum of a)"),
+                   category=MetricCategory.ASSET),
         MetricSpec("ending_balance", "Ending Balance", Unit.CURRENCY,
                    ("ending capital account balance", "ending balance", "closing value",
                     "closing balance", "ending partner's capital",
                     "capital balance as of", "capital account at fair value",
                     "net assets attributable to limited partner"),
-                   role="total", required=True),
+                   role="total", required=True, category=MetricCategory.ASSET),
     ),
 )
 

@@ -19,11 +19,12 @@ from fastapi.responses import (HTMLResponse, JSONResponse, RedirectResponse,
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
-from . import auth, db, fabric_export
+from . import auth, db, fabric_export, performance
 from .config import settings
 from .llm import get_provider
 from .pipeline import process_upload
-from .report_types import REPORT_TYPES, all_report_types
+from .report_types import (CATEGORY_LABELS, CATEGORY_ORDER, REPORT_TYPES,
+                           all_report_types)
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 
@@ -115,9 +116,15 @@ def entra_callback(request: Request, code: str = "", state: str = ""):
 # --------------------------------------------------------------------------
 @app.get("/api/health")
 def health():
+    n_subs = len(db.list_submissions())
     return {"status": "ok", "llm_enabled": settings.llm_enabled,
             "llm_provider": settings.llm_provider,
-            "provider_status": get_provider().status()}
+            "provider_status": get_provider().status(),
+            "data_dir": str(settings.data_dir),
+            "database_url": settings.database_url or "sqlite (local file)",
+            "n_submissions": n_subs,
+            "storage_persistent": bool(settings.database_url) or
+                "/home/" in str(settings.data_dir)}
 
 
 @app.get("/api/report-types")
@@ -128,8 +135,14 @@ def report_types():
             "label": rt.label,
             "entity_kind": rt.entity_kind,
             "metrics": [{"key": m.key, "label": m.label, "unit": m.unit.value,
-                         "required": m.required} for m in rt.metrics],
+                         "required": m.required, "category": m.category.value,
+                         "category_label": CATEGORY_LABELS[m.category]}
+                        for m in rt.metrics],
         }
+    out["_categories"] = {
+        "order": [c.value for c in CATEGORY_ORDER],
+        "labels": {c.value: label for c, label in CATEGORY_LABELS.items()},
+    }
     return out
 
 
@@ -156,6 +169,16 @@ def dashboard():
 def investments():
     """Investment read-model (entities + quarterly roll-forward), ported schema."""
     return db.get_investments()
+
+
+@app.get("/api/performance")
+def performance_summary():
+    """Direct Investment / Fund Investment summary tables + portfolio TVPI/DPI/IRR."""
+    return {
+        "direct_investments": performance.direct_investment_summary(),
+        "funds": performance.fund_summary(),
+        "portfolio": performance.portfolio_performance(),
+    }
 
 
 @app.get("/api/ledger")
@@ -236,9 +259,11 @@ def submission_detail(sub_id: int):
         "facts": db.get_facts(sub_id),
         "audit": db.get_audit(sub_id, limit=200),
         "report_type_metrics": [
-            {"key": m.key, "label": m.label, "unit": m.unit.value}
+            {"key": m.key, "label": m.label, "unit": m.unit.value,
+             "category": m.category.value, "category_label": CATEGORY_LABELS[m.category]}
             for m in REPORT_TYPES.get(sub["report_type"],
                                       REPORT_TYPES["fund_financials"]).metrics],
+        "category_order": [c.value for c in CATEGORY_ORDER],
     }
 
 

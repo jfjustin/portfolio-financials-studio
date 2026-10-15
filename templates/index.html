@@ -10,7 +10,8 @@
   <header class="top">
     <span class="brand-mark">PF</span>
     <h1>Portfolio Financials Studio</h1>
-    <span class="sub">confidential · human-in-the-loop · pluggable model</span>
+    <span class="sub">human-in-the-loop · pluggable model</span>
+    <span class="confidential">Confidential · Internal Use</span>
     <span class="spacer"></span>
     <span id="llm-badge" class="badge">…</span>
     {% if auth_mode != "none" and user %}
@@ -29,6 +30,53 @@
       <div class="card tile"><div class="n" id="t-facts">0</div><div class="l">Trusted data points</div></div>
       <div class="card tile"><div class="n" id="t-entities">0</div><div class="l">Entities</div></div>
       <div class="card tile"><div class="n" id="t-review">0</div><div class="l">Values to review</div></div>
+    </section>
+
+    <!-- Lam Capital overall performance -->
+    <section class="report-card">
+      <div class="report-head">
+        <h3 class="report-title">Lam Capital Overall Performance</h3>
+        <span class="small muted" id="perf-asof"></span>
+      </div>
+      <p class="report-sub">TVPI, DPI, and a money-weighted IRR across all fund investments — computed
+        from confirmed funding, distributions, and NAV.</p>
+      <div class="perf-strip">
+        <div class="perf-tile"><div class="pv" id="perf-tvpi">—</div><div class="pl">TVPI</div></div>
+        <div class="perf-tile"><div class="pv" id="perf-dpi">—</div><div class="pl">DPI</div></div>
+        <div class="perf-tile"><div class="pv" id="perf-irr">—</div><div class="pl">IRR</div></div>
+        <div class="perf-tile"><div class="pv" id="perf-nav">—</div><div class="pl">Current NAV</div></div>
+      </div>
+    </section>
+
+    <!-- Direct Investments — Lam report format -->
+    <section class="report-card">
+      <div class="report-head">
+        <h3 class="report-title">Direct Investments</h3>
+        <span class="small muted">As of latest confirmed period per company</span>
+      </div>
+      <div class="scroll"><table class="tbl-report">
+        <thead><tr><th class="lbl">Company</th><th>As of</th><th>Investment Cost</th>
+          <th>Estimated FMV</th><th>Book Value</th><th>Unrealized Gain / (Loss)</th>
+          <th>MOIC</th><th>Ownership</th></tr></thead>
+        <tbody id="direct-inv-body"></tbody>
+      </table></div>
+    </section>
+
+    <!-- Fund Investments — Lam report format -->
+    <section class="report-card">
+      <div class="report-head">
+        <h3 class="report-title">Fund Investments</h3>
+        <span class="small muted">Cumulative funding &amp; distributions · QoQ change</span>
+      </div>
+      <p class="asof-note">"Since" marks the earliest confirmed period on file for that fund
+        (not a legal vintage date).</p>
+      <div class="scroll"><table class="tbl-report">
+        <thead><tr><th class="lbl">Fund</th><th>Since</th><th>Commit</th>
+          <th>Cumulative Funding</th><th>Cumulative Distribution</th>
+          <th>Lam Investment Balance</th><th>QoQ Change</th>
+          <th>Total % Gain/(Loss)</th></tr></thead>
+        <tbody id="fund-inv-body"></tbody>
+      </table></div>
     </section>
 
     <!-- Portfolio value over time (the grand-ledger trend) -->
@@ -102,7 +150,7 @@
       <input id="ledger-filter" class="ledger-filter" placeholder="Filter by company, metric, or period…">
       <div class="scroll" style="max-height:420px;overflow-y:auto">
       <table class="tbl-tight">
-        <thead><tr><th>Period</th><th>Company / entity</th><th>Report</th>
+        <thead><tr><th>Period</th><th>Company / entity</th><th>Section</th>
           <th>Metric</th><th class="num">Value</th><th>Cur.</th><th>Source</th></tr></thead>
         <tbody id="ledger-body"></tbody>
       </table>

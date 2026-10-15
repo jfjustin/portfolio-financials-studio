@@ -45,6 +45,9 @@
     const inv = await api("/api/investments");
     renderInvestments(inv);
 
+    const perf = await api("/api/performance");
+    renderPerformance(perf);
+
     const ts = await api("/api/timeseries");
     window.Charts.lineChart($("#chart-time"), ts, { title: "Portfolio value over time" });
 
@@ -57,7 +60,8 @@
   function renderLedger() {
     const q = ($("#ledger-filter").value || "").toLowerCase();
     const rows = LEDGER.filter(r => !q ||
-      (r.entity_name + " " + r.metric_label + " " + r.period + " " + r.report_type)
+      (r.entity_name + " " + r.metric_label + " " + r.period + " " +
+       r.report_type + " " + (r.category_label || r.category))
         .toLowerCase().includes(q));
     $("#ledger-count").textContent = `${rows.length} of ${LEDGER.length} entries`;
     const tb = $("#ledger-body"); tb.innerHTML = "";
@@ -67,15 +71,68 @@
     }
     rows.slice(0, 600).forEach(r => {
       const tr = document.createElement("tr");
-      const rt = (REPORT_TYPES[r.report_type] && REPORT_TYPES[r.report_type].label) || r.report_type;
       const val = r.unit === "currency" ? mv(r.value)
         : (r.value == null ? '<span class="muted">—</span>'
            : esc(r.value) + (r.unit === "percent" ? "%" : ""));
-      tr.innerHTML = `<td>${esc(r.period)}</td><td><b>${esc(r.entity_name)}</b></td>
-        <td><span class="small muted">${esc(rt)}</span></td><td>${esc(r.metric_label)}</td>
+      tr.innerHTML = `<td>${esc(r.period)}${r.fiscal_label ? `<div class="small muted fy">${esc(r.fiscal_label)}</div>` : ""}</td>
+        <td><b>${esc(r.entity_name)}</b></td>
+        <td><span class="tag cat-${esc(r.category)}">${esc(r.category_label || r.category)}</span></td>
+        <td>${esc(r.metric_label)}</td>
         <td class="num">${val}</td><td>${esc(r.currency || "")}</td>
         <td class="small muted">${esc(r.source || "")}</td>`;
       tb.appendChild(tr);
+    });
+  }
+
+  function pct(v, digits) {
+    if (v == null) return '<span class="muted">—</span>';
+    const s = (v >= 0 ? "+" : "") + v.toFixed(digits == null ? 1 : digits) + "%";
+    return `<span class="${v < 0 ? "is-neg" : "is-pos"}">${s}</span>`;
+  }
+
+  function renderPerformance(perf) {
+    const p = perf.portfolio || {};
+    $("#perf-tvpi").textContent = p.tvpi != null ? p.tvpi.toFixed(2) + "x" : "—";
+    $("#perf-dpi").textContent = p.dpi != null ? p.dpi.toFixed(2) + "x" : "—";
+    $("#perf-irr").textContent = p.irr_pct != null ? p.irr_pct.toFixed(1) + "%" : "—";
+    $("#perf-nav").textContent = p.total_nav != null ? money(p.total_nav) : "—";
+    $("#perf-asof").textContent = p.n_funds
+      ? `Across ${p.n_funds} fund${p.n_funds === 1 ? "" : "s"} · ${money(p.total_funding||0)} called · ${money(p.total_distributions||0)} distributed`
+      : "No confirmed fund roll-forward data yet";
+
+    // Direct Investments table
+    const di = perf.direct_investments || [];
+    const dib = $("#direct-inv-body"); dib.innerHTML = "";
+    if (!di.length) {
+      dib.innerHTML = '<tr><td colspan="8" class="muted" style="text-align:left">No confirmed direct-investment data yet.</td></tr>';
+    }
+    di.forEach(r => {
+      const tr = document.createElement("tr");
+      const own = r.ownership_pct == null ? '<span class="muted">—</span>' : r.ownership_pct.toFixed(1) + "%";
+      const moic = r.moic == null ? '<span class="muted">—</span>' : r.moic.toFixed(2) + "x";
+      tr.innerHTML = `<td class="lbl">${esc(r.company)}</td>
+        <td>${esc(r.as_of_period||"")}${r.fiscal_label?`<div class="small muted fy">${esc(r.fiscal_label)}</div>`:""}</td>
+        <td>${mv(r.investment_cost)}</td><td>${mv(r.estimated_fmv)}</td><td>${mv(r.book_value)}</td>
+        <td class="${(r.unrealized_gain_loss||0) < 0 ? "is-neg" : "is-pos"}">${mv(r.unrealized_gain_loss)}</td>
+        <td>${moic}</td><td>${own}</td>`;
+      dib.appendChild(tr);
+    });
+
+    // Fund Investments table
+    const fd = perf.funds || [];
+    const fib = $("#fund-inv-body"); fib.innerHTML = "";
+    if (!fd.length) {
+      fib.innerHTML = '<tr><td colspan="8" class="muted" style="text-align:left">No confirmed fund roll-forward data yet.</td></tr>';
+    }
+    fd.forEach(r => {
+      const tr = document.createElement("tr");
+      tr.innerHTML = `<td class="lbl">${esc(r.fund)}</td>
+        <td>${esc(r.since||"")}</td><td>${mv(r.commitment)}</td>
+        <td>${mv(r.cumulative_funding)}</td><td>${mv(r.cumulative_distributions)}</td>
+        <td><b>${mv(r.lam_investment_balance)}</b>${r.fiscal_label?`<div class="small muted fy">${esc(r.fiscal_label)}</div>`:""}</td>
+        <td class="${(r.qoq_change||0) < 0 ? "is-neg" : "is-pos"}">${mv(r.qoq_change)}</td>
+        <td>${pct(r.total_pct_gain_loss)}</td>`;
+      fib.appendChild(tr);
     });
   }
 
@@ -144,7 +201,8 @@
         : (s.n_review > 0 ? `<span class="pill needs_review">${s.n_review} to review</span>`
                           : '<span class="pill auto">auto ok</span>');
       tr.innerHTML = `<td>#${s.id}</td><td>${esc(s.filename)}</td><td>${esc(rt)}</td>
-        <td>${esc(s.entity_name || "")}</td><td>${esc(s.period || "")}</td>
+        <td>${esc(s.entity_name || "")}</td>
+        <td>${esc(s.period || "")}${s.fiscal_label ? `<div class="small muted fy">${esc(s.fiscal_label)}</div>` : ""}</td>
         <td class="num">${s.n_facts}</td><td>${status}</td>`;
       tr.onclick = () => openSub(s.id);
       tb.appendChild(tr);
@@ -210,6 +268,7 @@
       `<span class="badge">${esc((REPORT_TYPES[s.report_type]||{}).label||s.report_type)}</span>
        <span class="badge">${esc(s.entity_name||"")}</span>
        <span class="badge">${esc(s.period||"")}</span>
+       ${s.fiscal_label ? `<span class="badge fy">${esc(s.fiscal_label)}</span>` : ""}
        <span class="badge">${esc(s.currency||"")}</span>
        <span class="badge">${esc(s.extractor)}</span>`;
 
@@ -238,27 +297,53 @@
     showModal(true);
   }
 
+  // Section order + fallback label for metric keys the current report type
+  // doesn't define (e.g. after a manual re-map) — never drop a fact from view.
+  const FALLBACK_CATEGORY = "other", FALLBACK_LABEL = "Other";
+
   function renderFacts(d) {
     const metrics = d.report_type_metrics;
     const opts = metrics.map(m => `<option value="${m.key}">${esc(m.label)}</option>`).join("");
-    const tb = $("#facts-body"); tb.innerHTML = "";
+    const catOfKey = {}, labelOfCat = {};
+    metrics.forEach(m => { catOfKey[m.key] = m.category; labelOfCat[m.category] = m.category_label; });
+
+    // group facts into sections (Assets, Income, Distributions, Ratios, Other)
+    const order = (d.category_order || []).slice();
+    if (!order.includes(FALLBACK_CATEGORY)) order.push(FALLBACK_CATEGORY);
+    const groups = {};
     d.facts.forEach(f => {
-      const tr = document.createElement("tr");
-      const flags = (f.flags||[]).map(x => `<span class="flag" title="validation flag">⚑ ${esc(x)}</span>`).join("");
-      tr.innerHTML = `
-        <td><select class="edit metric" data-id="${f.id}">${opts}</select>
-            <div class="small muted mono" title="source">${esc(f.raw_label||"")} · ${esc(f.provenance||"")}</div></td>
-        <td><input class="edit val" data-id="${f.id}" value="${f.value==null?'':esc(f.value)}"
-             placeholder="(no value)"> <span class="small muted">${esc(f.unit)} ${esc(f.currency)}</span>
-             ${flags?('<div>'+flags+'</div>'):''}</td>
-        <td class="num small muted">${(f.confidence*100||0).toFixed(0)}%</td>
-        <td><span class="pill ${f.status}">${f.status.replace('_',' ')}</span></td>
-        <td>
-          <button class="btn sm ok" data-confirm="${f.id}">✓</button>
-          <button class="btn sm danger" data-reject="${f.id}">✕</button>
-        </td>`;
-      $(".metric", tr).value = f.metric_key;
-      tb.appendChild(tr);
+      const cat = catOfKey[f.metric_key] || FALLBACK_CATEGORY;
+      (groups[cat] = groups[cat] || []).push(f);
+    });
+
+    const tb = $("#facts-body"); tb.innerHTML = "";
+    order.filter(cat => groups[cat] && groups[cat].length).forEach(cat => {
+      const rows = groups[cat];
+      const head = document.createElement("tr");
+      head.className = "section-row";
+      head.innerHTML = `<td colspan="5" class="section-head">
+        ${esc(labelOfCat[cat] || FALLBACK_LABEL)}
+        <span class="section-count">${rows.length}</span></td>`;
+      tb.appendChild(head);
+
+      rows.forEach(f => {
+        const tr = document.createElement("tr");
+        const flags = (f.flags||[]).map(x => `<span class="flag" title="validation flag">⚑ ${esc(x)}</span>`).join("");
+        tr.innerHTML = `
+          <td><select class="edit metric" data-id="${f.id}">${opts}</select>
+              <div class="small muted mono" title="source">${esc(f.raw_label||"")} · ${esc(f.provenance||"")}</div></td>
+          <td><input class="edit val" data-id="${f.id}" value="${f.value==null?'':esc(f.value)}"
+               placeholder="(no value)"> <span class="small muted">${esc(f.unit)} ${esc(f.currency)}</span>
+               ${flags?('<div>'+flags+'</div>'):''}</td>
+          <td class="num small muted">${(f.confidence*100||0).toFixed(0)}%</td>
+          <td><span class="pill ${f.status}">${f.status.replace('_',' ')}</span></td>
+          <td>
+            <button class="btn sm ok" data-confirm="${f.id}">✓</button>
+            <button class="btn sm danger" data-reject="${f.id}">✕</button>
+          </td>`;
+        $(".metric", tr).value = f.metric_key;
+        tb.appendChild(tr);
+      });
     });
     // wire edits
     $$("#facts-body .val").forEach(inp => {

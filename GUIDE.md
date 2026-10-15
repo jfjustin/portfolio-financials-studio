@@ -67,8 +67,17 @@ After upload you'll see a result line per file: detected **report type**,
 reconciliation warnings.
 
 ### ② Review
-Click any row in the **Submissions** table to open the review panel. For each
-extracted value you see:
+Click any row in the **Submissions** table to open the review panel. Values are
+grouped into **sections** so you review like-with-like instead of one long list:
+
+| Section | What's in it |
+|---|---|
+| **Assets & Balances** | NAV, cost basis, fair value, beginning/ending balance |
+| **Income & Profit / (Loss)** | net income, realized/unrealized gain, equity income |
+| **Distributions & Capital Flows** | capital called, contributions, distributions, dividends |
+| **Performance Ratios** | ownership %, MOIC, IRR |
+
+For each extracted value you see:
 - the **metric** it mapped to and the **raw label/value** it came from,
 - a **status pill** — `auto` (green, trusted) or `needs_review` (amber),
 - **flags** (e.g. `multiple_candidates`, `also_on_other_sheets`, a reconciliation
@@ -78,6 +87,8 @@ extracted value you see:
 
 You can **edit a value**, **re-map a metric**, or **confirm / reject** each row.
 Every change writes an **audit-trail** entry (old → new, when) shown at the bottom.
+The header also shows the submission's **period and fiscal-year badge** (e.g.
+`2026-Q1` and `FY2026 Q3`) — see §4b.
 
 ### ③ Confirm
 - **Confirm all & lock in** promotes the submission's `auto` values to `confirmed`
@@ -88,11 +99,17 @@ Every change writes an **audit-trail** entry (old → new, when) shown at the bo
 ### ④ Read the results
 Scroll the dashboard top-to-bottom:
 - **KPI tiles** — files ingested, trusted data points, entities, values to review.
+- **Lam Capital Overall Performance** — TVPI, DPI, IRR, and current NAV across
+  all funds (see §4c).
+- **Direct Investments** — one row per company: cost, FMV, book value,
+  unrealized gain/(loss), MOIC, ownership.
+- **Fund Investments** — one row per fund: cumulative funding/distributions,
+  current balance, quarter-over-quarter change, total % gain/(loss).
 - **Portfolio value over time** — the headline trend (see §4).
 - **Investment portfolio** — one row per entity (balance, equity income, ownership…).
 - **Quarterly roll-forward** — Beginning → … → Ending per entity/period; click an
   entity row to filter the table to it (click again to clear).
-- **Grand ledger** — every trusted fact, filterable (see §5).
+- **Grand ledger** — every trusted fact, filterable, grouped by section (see §5).
 
 ### ⑤ Export
 - **Export trusted CSV** (header) — the flat trusted-facts table.
@@ -144,6 +161,34 @@ trajectory. A single period just shows one point — that's expected.
 How a period is determined: the app normalizes dates/quarters from the document
 text or filename (e.g. `2026-Q1`, `2026-03-31`, `2026-FY`). If it can't tell, the
 submission is flagged so you can set it.
+
+## 4b. Calendar vs fiscal year
+
+Every period shown anywhere in the app carries **both** labels:
+
+- **Calendar**: `2026-Q1` (Jan–Mar 2026)
+- **Fiscal**: `FY2026 Q3` (shown smaller, italic, underneath)
+
+The fiscal calendar defaults to Lam Research's own fiscal year (ends the Sunday
+closest to June 30 — FY2026 Q1 = Jul–Sep 2025 … Q4 = Apr–Jun 2026). An
+administrator can change this via `FISCAL_YEAR_END_MONTH` (`12` = pure calendar
+year) — see README.
+
+## 4c. Lam Capital Overall Performance (TVPI / DPI / IRR)
+
+Above the trend chart, three ratios summarize the whole fund portfolio:
+
+- **TVPI** (Total Value to Paid-In) = (distributions + current NAV) ÷ total
+  capital called. Above 1.0x means the portfolio is worth more than was paid in.
+- **DPI** (Distributions to Paid-In) = cash actually returned ÷ total capital
+  called. The "money back in hand" ratio.
+- **IRR** — a money-weighted annualized return computed from each fund's
+  period-by-period cash flows (calls out, distributions + current value in).
+
+A ratio shows **"—"** when there's genuinely no capital called yet for any
+confirmed fund — that's correct, not a bug. See the README roadmap for this
+feature's known approximations (fund "since" ≠ true vintage; IRR uses
+period-end dates as a proxy, not exact call/distribution dates).
 
 ---
 
@@ -227,6 +272,8 @@ README → *Model providers* for the environment variables.
 | Ledger/charts empty | nothing confirmed yet — review a submission and **Confirm**. |
 | Trend chart shows one point | only one period loaded — add more periods for the same entity. |
 | 500 on Azure right after deploy | first boot still installing deps — wait ~45s and refresh; else `az webapp log tail`. |
+| **Dashboard/Investment portfolio empty after a redeploy on Azure** | App Service unpacks the app into an ephemeral path on every restart/redeploy, which used to wipe the local SQLite DB each time. Fixed: the app now auto-detects App Service and stores data in the **persistent** `/home/data` mount. `git pull` the latest code and redeploy — data will then survive restarts. For true multi-instance production, use `DATABASE_URL` (Azure SQL/Postgres) instead of SQLite. |
+| TVPI/DPI/QoQ show "—" | correct when that fund has no confirmed capital called yet (can't divide by zero) — not a bug. |
 
 ---
 
@@ -252,3 +299,14 @@ no Fabric capacity needed.
 application* (App Service / Container Apps, the database, document storage).
 Fabric is a separate SaaS *analytics* platform that would *consume* the exported
 tables for reporting. Fabric is optional — the app is fully functional without it.
+
+**Why is a metric in "Income" and not "Distributions" (or vice versa)?** The
+section comes from `category=` on that metric's definition in
+`app/report_types.py`. If your accounting treats something differently, change
+it there — every view (review modal, ledger, Fabric export) picks it up
+automatically.
+
+**Why does a period show two labels, like `2026-Q1` and `FY2026 Q3`?** The first
+is the calendar period as extracted; the second is the fiscal-year label computed
+from `FISCAL_YEAR_END_MONTH` (default matches Lam Research's own fiscal
+calendar). Both are always shown together — see §4b.

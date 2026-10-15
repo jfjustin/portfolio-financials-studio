@@ -20,9 +20,11 @@ or via a local `.env` file. Examples:
 """
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Literal
 
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -30,15 +32,43 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 LLMProviderName = Literal["none", "azure", "openai", "ollama"]
 
 
+def _default_data_dir() -> Path:
+    """Where to store the SQLite DB and uploaded-file copies.
+
+    Azure App Service (Linux, Python/Oryx) unpacks the deployed app into an
+    EPHEMERAL path on every container start (observed: /tmp/<hash>/), so
+    anchoring storage at BASE_DIR there silently loses all data on every
+    restart, scale event, or redeploy. App Service mounts /home as persistent
+    storage, so default there to /home/data when running on App Service
+    (detected via WEBSITE_INSTANCE_ID, which Azure sets on every instance).
+    Override explicitly with the DATA_DIR environment variable.
+    """
+    home = Path("/home")
+    if os.environ.get("WEBSITE_INSTANCE_ID") and home.is_dir():
+        return home / "data"
+    return BASE_DIR / "data"
+
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore",
                                       case_sensitive=False)
 
-    # --- Storage (local files by default) ---
-    data_dir: Path = BASE_DIR / "data"
-    upload_dir: Path = BASE_DIR / "data" / "uploads"
-    processed_dir: Path = BASE_DIR / "data" / "processed"
-    db_path: Path = BASE_DIR / "data" / "pipeline.db"
+    # --- Storage ---------------------------------------------------------------
+    # Single source of truth: uploads/processed/db_path all derive from data_dir
+    # (see properties below) so one DATA_DIR override moves everything together.
+    data_dir: Path = Field(default_factory=_default_data_dir)
+
+    @property
+    def upload_dir(self) -> Path:
+        return self.data_dir / "uploads"
+
+    @property
+    def processed_dir(self) -> Path:
+        return self.data_dir / "processed"
+
+    @property
+    def db_path(self) -> Path:
+        return self.data_dir / "pipeline.db"
 
     # --- Database (SQLAlchemy URL) -------------------------------------------
     # Default is the local SQLite file above. For Azure SQL / PostgreSQL set e.g.:
@@ -100,6 +130,13 @@ class Settings(BaseSettings):
     # Tolerance (absolute) for "subtotals must reconcile to totals" checks.
     reconcile_tolerance: float = 1.0
 
+    # Fiscal year-end month (1-12). Default 6 = June, matching Lam Research's
+    # actual fiscal calendar (FY ends the Sunday closest to June 30; FY2026
+    # Q1 = Jul-Sep 2025 ... Q4 = Apr-Jun 2026). Set to 12 for a pure calendar
+    # year. Every period shown in the UI/ledger/exports carries BOTH the
+    # calendar label (e.g. "2026-Q1") and the fiscal label (e.g. "FY2026 Q3").
+    fiscal_year_end_month: int = 6
+
     # --- Server ---
     host: str = "127.0.0.1"  # localhost only — never binds to a public interface
     port: int = 8713
@@ -116,7 +153,14 @@ class Settings(BaseSettings):
 
     def ensure_dirs(self) -> None:
         for d in (self.data_dir, self.upload_dir, self.processed_dir):
-            d.mkdir(parents=True, exist_ok=True)
+            try:
+                d.mkdir(parents=True, exist_ok=True)
+            except OSError as e:
+                raise RuntimeError(
+                    f"Cannot create data directory {d}. On Azure App Service, "
+                    "ensure persistent storage is enabled "
+                    "(WEBSITES_ENABLE_APP_SERVICE_STORAGE=true, the default), "
+                    "or set DATA_DIR to a writable path.") from e
 
 
 settings = Settings()

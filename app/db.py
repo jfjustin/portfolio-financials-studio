@@ -262,6 +262,7 @@ def list_submissions() -> list[dict[str, Any]]:
             d = dict(s)
             d["n_facts"] = int(total.get(s["id"], 0))
             d["n_review"] = int(review.get(s["id"], 0))
+            d["fiscal_label"] = fiscal_info(d.get("period") or "")["fiscal_label"]
             out.append(d)
         return out
 
@@ -271,7 +272,11 @@ def get_submission(sub_id: int) -> Optional[dict[str, Any]]:
     with eng.connect() as conn:
         row = conn.execute(select(submissions).where(submissions.c.id == sub_id)
                           ).mappings().first()
-        return dict(row) if row else None
+        if not row:
+            return None
+        d = dict(row)
+        d["fiscal_label"] = fiscal_info(d.get("period") or "")["fiscal_label"]
+        return d
 
 
 def get_facts(sub_id: Optional[int] = None,
@@ -385,6 +390,52 @@ def _period_order(period: str) -> int:
     return year * 100
 
 
+def _calendar_year_month(period: str) -> tuple[Optional[int], Optional[int]]:
+    """Best-effort (year, month) from a normalized period label.
+
+    Returns (year, None) when only the year is known (e.g. a bare "FY" period),
+    or (None, None) when nothing is parseable.
+    """
+    import re
+    if not period:
+        return None, None
+    m = re.search(r"(20\d{2})-Q([1-4])", period)          # YYYY-Qn
+    if m:
+        year, q = int(m.group(1)), int(m.group(2))
+        return year, {1: 1, 2: 4, 3: 7, 4: 10}[q]           # quarter start month
+    m = re.search(r"(20\d{2})-(\d{2})-\d{2}", period)       # YYYY-MM-DD
+    if m:
+        return int(m.group(1)), int(m.group(2))
+    m = re.search(r"^(20\d{2})-(\d{2})$", period)           # YYYY-MM
+    if m:
+        return int(m.group(1)), int(m.group(2))
+    m = re.search(r"(20\d{2})", period)                     # year only (e.g. "YYYY-FY")
+    if m:
+        return int(m.group(1)), None
+    return None, None
+
+
+def fiscal_info(period: str, fye_month: Optional[int] = None) -> dict[str, Any]:
+    """Compute the fiscal-year label alongside a normalized calendar period.
+
+    Returns {fiscal_year, fiscal_quarter, fiscal_label}. `fiscal_quarter` is
+    None when only the year is known. The fiscal year is named by the calendar
+    year in which it ENDS (matches Lam Research's own FY labeling, e.g. a
+    fiscal year ending June 2026 is "FY2026").
+    """
+    fye = fye_month if fye_month is not None else settings.fiscal_year_end_month
+    year, month = _calendar_year_month(period)
+    if year is None:
+        return {"fiscal_year": None, "fiscal_quarter": None, "fiscal_label": ""}
+    if month is None:
+        return {"fiscal_year": year, "fiscal_quarter": None, "fiscal_label": f"FY{year}"}
+    fiscal_year = year if month <= fye else year + 1
+    fy_start_month = fye % 12 + 1
+    fiscal_quarter = ((month - fy_start_month) % 12) // 3 + 1
+    return {"fiscal_year": fiscal_year, "fiscal_quarter": fiscal_quarter,
+            "fiscal_label": f"FY{fiscal_year} Q{fiscal_quarter}"}
+
+
 def _as_float(v):
     try:
         return float(Decimal(v))
@@ -454,16 +505,29 @@ def rebuild_investment_views() -> None:
             conn.execute(insert(investment_entities), entity_rows)
 
 
+def _category_for(report_type: str, metric_key: str) -> tuple[str, str]:
+    from .report_types import CATEGORY_LABELS, REPORT_TYPES, MetricCategory
+    rt = REPORT_TYPES.get(report_type)
+    spec = rt.metric_by_key(metric_key) if rt else None
+    cat = spec.category if spec else MetricCategory.OTHER
+    return cat.value, CATEGORY_LABELS[cat]
+
+
 def grand_ledger() -> list[dict[str, Any]]:
     """Every TRUSTED fact across all companies/periods as one consolidated ledger,
     normalized to a common shape regardless of the original report format."""
     out = []
     for f in trusted_facts():
+        cat, cat_label = _category_for(f["report_type"], f["metric_key"])
+        fy = fiscal_info(f["period"])
         out.append({
             "entity_name": f["entity_name"], "entity_kind": f["entity_kind"],
             "report_type": f["report_type"], "period": f["period"],
             "period_order": _period_order(f["period"]),
+            "fiscal_year": fy["fiscal_year"], "fiscal_quarter": fy["fiscal_quarter"],
+            "fiscal_label": fy["fiscal_label"],
             "metric_key": f["metric_key"], "metric_label": f["metric_label"],
+            "category": cat, "category_label": cat_label,
             "value": f["value"], "unit": f["unit"], "currency": f["currency"],
             "source": f["provenance"],
         })
@@ -487,6 +551,7 @@ def timeseries() -> dict[str, Any]:
         if key not in best or r < best[key][0]:
             best[key] = (r, val)
     periods = sorted({p for (_e, p) in best}, key=_period_order)
+    fiscal_labels = {p: fiscal_info(p)["fiscal_label"] for p in periods}
     entities = sorted({e for (e, _p) in best})
     series = []
     for e in entities:
@@ -496,7 +561,8 @@ def timeseries() -> dict[str, Any]:
     total = [{"period": p,
               "value": sum(best[(e, p)][1] for e in entities if (e, p) in best)}
              for p in periods]
-    return {"periods": periods, "total": total, "series": series}
+    return {"periods": periods, "fiscal_labels": fiscal_labels,
+            "total": total, "series": series}
 
 
 def get_investments() -> dict[str, Any]:

@@ -72,8 +72,9 @@
       container.innerHTML = '<div class="muted small">No time-series data yet — confirm values across at least one period.</div>';
       return;
     }
+    const fiscalLabels = data.fiscal_labels || {};
     const W = container.clientWidth || 640;
-    const H = 240, padL = 54, padR = 16, padT = 14, padB = 34;
+    const H = 240, padL = 54, padR = 16, padT = 14, padB = 46;  // padB: 2 lines (calendar + FY)
     const plotW = W - padL - padR, plotH = H - padT - padB;
     const xi = {}; periods.forEach((p, i) => xi[p] = i);
     const x = i => padL + (periods.length === 1 ? plotW / 2 : (i / (periods.length - 1)) * plotW);
@@ -96,10 +97,14 @@
       svg.appendChild(el("text", { x: padL - 8, y: yy + 4, "font-size": 11,
         "text-anchor": "end", fill: "currentColor", "fill-opacity": 0.6 }, fmt(gv)));
     });
-    // x labels
+    // x labels — calendar period on top, fiscal-year label underneath
     periods.forEach((p, i) => {
-      svg.appendChild(el("text", { x: x(i), y: H - 10, "font-size": 11,
+      svg.appendChild(el("text", { x: x(i), y: H - 24, "font-size": 11,
         "text-anchor": "middle", fill: "currentColor", "fill-opacity": 0.7 }, p));
+      const fy = fiscalLabels[p];
+      if (fy)
+        svg.appendChild(el("text", { x: x(i), y: H - 10, "font-size": 10,
+          "text-anchor": "middle", fill: "currentColor", "fill-opacity": 0.45 }, fy));
     });
 
     const pointsStr = pts => pts.map(p => `${x(xi[p.period])},${y(p.value)}`).join(" ");
