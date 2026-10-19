@@ -232,6 +232,25 @@ DIRECT_INVESTMENT = ReportType(
                    category=MetricCategory.RATIO),
         MetricSpec("irr", "IRR", Unit.PERCENT,
                    ("irr", "internal rate of return"), category=MetricCategory.RATIO),
+        # Portfolio company operating metrics (as opposed to Lam's own cost/FMV
+        # accounting of the holding, above). Matches the key metrics named in
+        # Lam Capital's quarterly reporting workflow for direct investments.
+        MetricSpec("revenue", "Revenue", Unit.CURRENCY,
+                   ("revenue", "total revenue", "net revenue"),
+                   category=MetricCategory.INCOME),
+        MetricSpec("operating_cash_flow", "Operating Cash Flow", Unit.CURRENCY,
+                   ("operating cash flow", "net cash provided by operating activities",
+                    "cash flow from operations", "net cash used in operating activities"),
+                   category=MetricCategory.INCOME),
+        MetricSpec("capex", "CapEx", Unit.CURRENCY,
+                   ("capex", "capital expenditures", "capital expenditure"),
+                   category=MetricCategory.INCOME),
+        MetricSpec("ending_cash", "Ending Cash Balance", Unit.CURRENCY,
+                   ("ending cash", "cash at end of period", "cash and cash equivalents, end"),
+                   category=MetricCategory.ASSET),
+        MetricSpec("operating_expense", "Operating Expense", Unit.CURRENCY,
+                   ("operating expense", "operating expenses", "total operating expense"),
+                   category=MetricCategory.INCOME),
     ),
 )
 

@@ -57,6 +57,24 @@ Document text:
 JSON:"""
 
 
+def chat_completion_json(client, *, model: str, prompt: str, temperature: float,
+                         timeout: int):
+    """Chat completion requesting a JSON object response, resilient to models
+    that reject a custom `temperature` (newer reasoning-tier models — e.g. the
+    gpt-5 family — only accept their default and 400 on anything else).
+    Retries once without `temperature` when that specific error is detected.
+    """
+    kwargs = dict(model=model, messages=[{"role": "user", "content": prompt}],
+                 response_format={"type": "json_object"}, timeout=timeout)
+    try:
+        return client.chat.completions.create(temperature=temperature, **kwargs)
+    except Exception as e:
+        msg = str(e).lower()
+        if "temperature" in msg and ("unsupported_value" in msg or "not support" in msg):
+            return client.chat.completions.create(**kwargs)
+        raise
+
+
 def strip_reasoning(s: str) -> str:
     """Remove <think>...</think> blocks some reasoning models emit."""
     return re.sub(r"<think>.*?</think>", "", s, flags=re.DOTALL).strip()

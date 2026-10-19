@@ -161,6 +161,11 @@ def map_label_to_metric(report_type_key: str, label: str) -> tuple[Optional[str]
         return None, 0.0
     norm = re.sub(r"\s+", " ", label.strip().lower())
     norm = norm.strip(" :.-\t")
+    # QuickBooks Online / generic ledger exports phrase subtotals as
+    # "Total for X" rather than "Total X" (e.g. "Total for Income",
+    # "Total for Expenses") — normalize so the existing "total x" synonyms
+    # still match this very common real-world export convention.
+    norm = re.sub(r"^total for\s+", "total ", norm)
     best_key: Optional[str] = None
     best_score = 0.0
     best_syn_len = 0

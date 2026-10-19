@@ -18,11 +18,13 @@ from ..report_types import REPORT_TYPES, Unit, guess_report_type
 from ..llm import extract_with_llm, get_provider
 from .base import (classify_document, file_sha256, guess_entity_name,
                    normalize_period)
+from .csv_native import extract_csv
 from .excel import extract_excel
 from .pdf_native import ScannedPdfError, extract_pdf
 
 EXCEL_EXT = {".xlsx", ".xlsm", ".xls"}
 PDF_EXT = {".pdf"}
+CSV_EXT = {".csv"}
 
 
 def _canonical_value(metric_unit: Unit, value: Optional[Decimal],
@@ -182,6 +184,10 @@ def extract_file(path: Path, original_name: Optional[str] = None) -> ExtractionR
     if ext in EXCEL_EXT:
         raw_items, text = extract_excel(path)
         return assemble(raw_items, text, name, file_hash, "excel")
+
+    if ext in CSV_EXT:
+        raw_items, text = extract_csv(path)
+        return assemble(raw_items, text, name, file_hash, "csv")
 
     if ext in PDF_EXT:
         try:

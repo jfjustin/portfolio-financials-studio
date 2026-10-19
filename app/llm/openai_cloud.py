@@ -7,8 +7,8 @@ provider instead, which keeps data inside their Azure tenant.
 from __future__ import annotations
 
 from ..config import settings
-from .base import (LLMProvider, LLMResult, build_prompt, extract_json,
-                   normalize_result)
+from .base import (LLMProvider, LLMResult, build_prompt, chat_completion_json,
+                   extract_json, normalize_result)
 
 
 class OpenAIProvider(LLMProvider):
@@ -52,14 +52,11 @@ class OpenAIProvider(LLMProvider):
         if client is None:
             return {"_error": err or "OpenAI unavailable"}
         try:
-            resp = client.chat.completions.create(
-                model=settings.openai_model,
-                messages=[{"role": "user",
-                           "content": build_prompt(text, report_type_key)}],
+            resp = chat_completion_json(
+                client, model=settings.openai_model,
+                prompt=build_prompt(text, report_type_key),
                 temperature=settings.llm_temperature,
-                response_format={"type": "json_object"},
-                timeout=settings.llm_timeout_s,
-            )
+                timeout=settings.llm_timeout_s)
             raw = resp.choices[0].message.content or ""
         except Exception as e:
             return {"_error": str(e)}
