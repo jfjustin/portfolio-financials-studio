@@ -152,6 +152,49 @@ def direct_investment_summary() -> list[dict[str, Any]]:
     return out
 
 
+def operating_metrics_summary() -> list[dict[str, Any]]:
+    """One row per direct-investment company with operating-performance data
+    (Revenue, Operating Cash Flow, CapEx, Ending Cash, Operating Expense) —
+    the portfolio company's OWN quarterly performance, distinct from
+    `direct_investment_summary()`'s cost/FMV accounting of Lam's stake.
+    Mirrors Lam Capital's own "Direct Investment" quarterly reporting format.
+    """
+    by_entity: dict[str, dict[str, Any]] = {}
+    for row in db.grand_ledger():
+        if row["entity_kind"] != "direct_investment":
+            continue
+        if row["metric_key"] not in ("revenue", "operating_cash_flow", "capex",
+                                     "ending_cash", "operating_expense"):
+            continue
+        e = by_entity.setdefault(row["entity_name"], {"period_order": -1, "metrics": {}})
+        if row["period_order"] >= e["period_order"]:
+            if row["period_order"] > e["period_order"]:
+                e["metrics"] = {}
+            e["period_order"] = row["period_order"]
+            e["period"] = row["period"]
+            e["fiscal_label"] = row.get("fiscal_label")
+            e["metrics"][row["metric_key"]] = row["value"]
+
+    out = []
+    for name, e in sorted(by_entity.items()):
+        m = e["metrics"]
+        revenue = _f(m.get("revenue"))
+        opex = _f(m.get("operating_expense"))
+        out.append({
+            "company": name,
+            "as_of_period": e.get("period"),
+            "fiscal_label": e.get("fiscal_label"),
+            "revenue": revenue,
+            "operating_cash_flow": _f(m.get("operating_cash_flow")),
+            "capex": _f(m.get("capex")),
+            "ending_cash": _f(m.get("ending_cash")),
+            "operating_expense": opex,
+            "net_burn": (round(opex - revenue, 2)
+                        if revenue is not None and opex is not None else None),
+        })
+    return out
+
+
 # --------------------------------------------------------------------------
 # Fund investments summary
 # --------------------------------------------------------------------------

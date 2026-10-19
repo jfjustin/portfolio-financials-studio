@@ -118,6 +118,23 @@
       dib.appendChild(tr);
     });
 
+    // Direct Investments — Operating Metrics table
+    const om = perf.operating_metrics || [];
+    const omb = $("#op-metrics-body"); omb.innerHTML = "";
+    if (!om.length) {
+      omb.innerHTML = '<tr><td colspan="8" class="muted" style="text-align:left">No confirmed operating-metrics data yet.</td></tr>';
+    }
+    om.forEach(r => {
+      const tr = document.createElement("tr");
+      tr.innerHTML = `<td class="lbl">${esc(r.company)}</td>
+        <td>${esc(r.as_of_period||"")}${r.fiscal_label?`<div class="small muted fy">${esc(r.fiscal_label)}</div>`:""}</td>
+        <td>${mv(r.revenue)}</td>
+        <td class="${(r.operating_cash_flow||0) < 0 ? "is-neg" : "is-pos"}">${mv(r.operating_cash_flow)}</td>
+        <td>${mv(r.capex)}</td><td>${mv(r.ending_cash)}</td><td>${mv(r.operating_expense)}</td>
+        <td class="${(r.net_burn||0) > 0 ? "is-neg" : "is-pos"}">${mv(r.net_burn)}</td>`;
+      omb.appendChild(tr);
+    });
+
     // Fund Investments table
     const fd = perf.funds || [];
     const fib = $("#fund-inv-body"); fib.innerHTML = "";

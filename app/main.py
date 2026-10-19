@@ -176,6 +176,7 @@ def performance_summary():
     """Direct Investment / Fund Investment summary tables + portfolio TVPI/DPI/IRR."""
     return {
         "direct_investments": performance.direct_investment_summary(),
+        "operating_metrics": performance.operating_metrics_summary(),
         "funds": performance.fund_summary(),
         "portfolio": performance.portfolio_performance(),
     }
