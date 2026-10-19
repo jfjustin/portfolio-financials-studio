@@ -1,0 +1,41 @@
+# CI/CD: build, test, and deploy to Azure App Service (pfs-22053) on every
+# push to main. Uses the Web App's publish profile (stored as a GitHub secret)
+# rather than OIDC/federated login — the SCU "Azure for Students" tenant blocks
+# self-service Microsoft Entra ID app registration for students
+# ("Insufficient privileges to complete the operation"), so the OIDC path
+# Azure's Deployment Center normally sets up isn't available here. The publish
+# profile is Azure's other officially-supported method: a scoped SCM
+# deployment credential, not a subscription-level identity.
+name: Build and deploy Python app to Azure Web App - pfs-22053
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  build-test-deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run end-to-end checks
+        run: python tests/test_e2e.py
+
+      - name: Deploy to Azure Web App
+        uses: azure/webapps-deploy@v3
+        with:
+          app-name: 'pfs-22053'
+          slot-name: 'Production'
+          publish-profile: ${{ secrets.AZURE_WEBAPP_PUBLISH_PROFILE }}
