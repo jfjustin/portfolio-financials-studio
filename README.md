@@ -23,6 +23,17 @@ audit-trailed extraction pipeline, and the domain model of an
 investment-intelligence app (entity classification, capital-account
 roll-forwards, workbook field mapping).
 
+## See it in action
+
+Two recordings of the complete workflow — upload → extraction → sectioned
+review → edit a value → human confirm → portfolio sections → export — on the
+same tool, two model configurations:
+
+| Deterministic (no model) | Azure OpenAI (customer's own deployment) |
+|---|---|
+| ![Deterministic workflow](docs/demo/deterministic_demo.gif) | ![Azure OpenAI workflow](docs/demo/azure_demo.gif) |
+| Zero credentials, nothing leaves the machine. | A required field is genuinely missing — the model suggests three values (flagged, capped at 50% confidence), a human overwrites one, and TVPI/DPI/NAV go from "—" to real numbers once confirmed. |
+
 **📖 New here? Read the [User Guidebook (GUIDE.md)](GUIDE.md)** for a
 screen-by-screen walkthrough.
 **🔌 Integrating BI?** See the

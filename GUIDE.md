@@ -261,6 +261,89 @@ README → *Model providers* for the environment variables.
 
 ---
 
+## 8b. Managing the database
+
+### What it is
+
+Everything the dashboard shows lives in one database:
+
+| Where you're running | Storage |
+|---|---|
+| Locally (`./run.sh`) | a single file, `data/pipeline.db` (SQLite) |
+| Azure App Service | SQLite at `/home/data/pipeline.db` — the platform's **persistent** mount (survives restarts/redeploys; see README's note on this) |
+| Production multi-user | Azure SQL / PostgreSQL, via `DATABASE_URL` — same schema, different engine |
+
+Three kinds of rows live in it:
+
+- **`submissions`** — one row per uploaded file (filename, detected type, period, status).
+- **`facts`** — one row per extracted value, with its `status`
+  (`auto` / `needs_review` / `confirmed` / `rejected`) and every flag.
+- **`audit`** — **append-only**. Every value and every change (old → new, who,
+  when) is recorded here and never edited or deleted, even when you wipe
+  everything else below.
+
+**What the dashboard actually displays** — the grand ledger, the Performance/
+Direct/Fund Investments tables, the time-series chart, and the Fabric export —
+are all computed **on each request** from `facts` where
+`status IN ('auto', 'confirmed')`. Nothing else is shown. The
+`investment_entities` / `investment_quarters` tables are a **projection**,
+rebuilt from those trusted facts every time you load the page — they are not
+an independent source of truth, so you never need to "sync" them separately.
+
+### Wiping it — local
+
+```bash
+# stop the server first
+rm -f data/pipeline.db      # also clear source-file copies if you want:
+rm -f data/uploads/* data/processed/*
+./run.sh                    # recreates an empty schema automatically
+```
+
+This is instant and irreversible. If you want a record first, hit
+**Export trusted CSV** (header) or **Export ledger CSV** (Grand ledger card)
+before deleting.
+
+### Wiping it — Azure App Service (SQLite backend)
+
+There's no "clear data" button in the UI (by design — it's not something a
+button should do by accident). Use Kudu's file API:
+
+```bash
+RG=rg-pfs; APP=pfs-22053     # your resource group / app name
+
+# 1. fetch the SCM (Kudu) publish credentials
+CREDS_XML=$(az webapp deployment list-publishing-profiles -g "$RG" -n "$APP" --xml)
+USER=$(echo "$CREDS_XML" | grep -o 'userName="[^"]*"' | head -1 | cut -d'"' -f2)
+PASS=$(echo "$CREDS_XML" | grep -o 'userPWD="[^"]*"' | head -1 | cut -d'"' -f2)
+
+# 2. delete the DB file — note the If-Match header: Kudu's VFS API requires it
+#    for deleting a file that already exists, or you'll get a 409 Conflict
+curl -s -u "${USER}:${PASS}" -H "If-Match: *" \
+  -X DELETE "https://${APP}.scm.azurewebsites.net/api/vfs/data/pipeline.db"
+
+# 3. restart so the app reopens a fresh (empty) database file
+az webapp restart -g "$RG" -n "$APP"
+```
+
+Two things worth knowing from doing this in practice:
+
+- **Give it 20–60 seconds after the restart**, and verify with a plain
+  `curl .../api/health` (check `"n_submissions"` reads `0`) before trusting the
+  UI — the old worker process can keep serving stale data for a little while
+  after the restart command returns, especially on the B1 tier.
+- **Never run this at the same time as a CI/CD deploy.** A manual restart and
+  an in-flight GitHub Actions deploy can collide (Kudu's deployment lock) and
+  leave the site briefly 503. Check `gh run list` is clear first.
+
+### Wiping it — Azure SQL / PostgreSQL backend
+
+There's no file to delete. Connect with any SQL client and truncate the
+app's tables (`submissions`, `facts`, `audit`, `investment_entities`,
+`investment_quarters`, …) — or drop and let `db.init_db()` recreate them on
+the app's next startup.
+
+---
+
 ## 9. Troubleshooting
 
 | Symptom | Likely cause / fix |
@@ -281,6 +364,7 @@ README → *Model providers* for the environment variables.
 
 **Does it need a database?** It ships with **SQLite** (a local file, zero setup).
 For multi-user / Azure, point `DATABASE_URL` at Azure SQL or PostgreSQL — same code.
+See §8b for what's in it and how to wipe it.
 
 **Where are my uploaded files kept?** A copy is stored (local `data/uploads/` or
 Azure Blob) so every number traces back to its source.
