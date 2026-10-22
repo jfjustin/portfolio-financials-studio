@@ -41,13 +41,18 @@ Return ONLY a JSON object. For each field you find, use this shape:
 
 Only include a field if you actually find it in the text. Do NOT guess or compute.
 If a value is not present, omit that field entirely.
+Activity fields are amounts for the statement's own period. Never use a
+cumulative / since-inception figure (e.g. "contributions from Initial Closing
+Date through ...") for a period field. If the statement is year-to-date, report
+the values exactly as printed; the system converts them to the quarter.
 
 Available fields:
 {fields}
 
 Also include, if present:
   - "entity_name": the company/fund/JV name
-  - "period": the reporting period as written
+  - "period": the period end date as written (e.g. "June 30, 2026"), not an
+    opening "as of" date or a booking/posting date
   - "currency": the currency
 
 Document text:

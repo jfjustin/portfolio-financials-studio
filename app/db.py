@@ -64,6 +64,14 @@ facts = Table(
     Column("flags", Text),                  # json list
     Column("created_at", String(40)),
     Column("updated_at", String(40)),
+    # calendar bounds of `period` + the dates the document itself states
+    Column("period_start", String(16)),
+    Column("period_end", String(16)),
+    Column("statement_start", String(16)),  # e.g. a YTD statement's Jan 1
+    Column("booking_date", String(16)),     # e.g. a JV voucher's booking month
+    # value as read from the document when `value` was derived from it
+    # (carried forward from the prior quarter / de-cumulated from YTD)
+    Column("reported_value", String(64)),
 )
 
 audit = Table(
@@ -128,6 +136,7 @@ investment_quarters = Table(
     Column("impairment", Float),
     Column("change", Float),
     Column("ending_balance", Float),
+    Column("notes", Text),   # json: per-metric derivation flags + reported values
 )
 
 
@@ -154,7 +163,25 @@ def _now() -> str:
 
 
 def init_db() -> None:
-    metadata.create_all(get_engine())
+    eng = get_engine()
+    metadata.create_all(eng)
+    _add_missing_columns(eng)
+
+
+def _add_missing_columns(eng: Engine) -> None:
+    """`create_all` never alters an existing table, so add any column the model
+    has gained since the table was created (additive, nullable only)."""
+    from sqlalchemy import inspect, text
+    insp = inspect(eng)
+    with eng.begin() as conn:
+        for table in metadata.sorted_tables:
+            if not insp.has_table(table.name):
+                continue
+            have = {c["name"] for c in insp.get_columns(table.name)}
+            for col in table.columns:
+                if col.name not in have:
+                    coltype = col.type.compile(dialect=eng.dialect)
+                    conn.execute(text(f'ALTER TABLE {table.name} ADD {col.name} {coltype}'))
 
 
 def _fact_value_str(v: Optional[Decimal]) -> Optional[str]:
@@ -192,7 +219,10 @@ def save_extraction(result: ExtractionResult) -> int:
                 value=_fact_value_str(f.value), unit=unit, currency=f.currency,
                 raw_label=f.raw_label, raw_value=f.raw_value, provenance=f.provenance,
                 confidence=f.confidence, status=status, flags=json.dumps(f.flags),
-                created_at=_now(), updated_at=_now()))
+                created_at=_now(), updated_at=_now(),
+                period_start=result.period_start, period_end=result.period_end,
+                statement_start=result.statement_start, booking_date=result.booking_date,
+                reported_value=_fact_value_str(f.reported_value)))
             fact_id = int(fres.inserted_primary_key[0])
             conn.execute(insert(audit).values(
                 ts=_now(), submission_id=sub_id, fact_id=fact_id,
@@ -230,6 +260,50 @@ def update_fact(fact_id: int, *, value: Optional[str] = None,
                 ts=_now(), submission_id=row["submission_id"], fact_id=fact_id,
                 action=action, field=field, old_value=str(old), new_value=str(new),
                 user=user, note=note or None))
+
+
+def set_derived_fact(fact_id: int, *, value: Optional[Decimal], flags: list[str],
+                     reported_value: Optional[Decimal], status: str,
+                     provenance: str, note: str) -> None:
+    """Record a value derived by the carry-forward check, with an audit row."""
+    eng = get_engine()
+    with eng.begin() as conn:
+        row = conn.execute(select(facts).where(facts.c.id == fact_id)).mappings().first()
+        if not row:
+            raise KeyError(f"fact {fact_id} not found")
+        conn.execute(update(facts).where(facts.c.id == fact_id).values(
+            value=_fact_value_str(value), flags=json.dumps(flags), status=status,
+            reported_value=_fact_value_str(reported_value), provenance=provenance,
+            updated_at=_now()))
+        if row["value"] != _fact_value_str(value):
+            conn.execute(insert(audit).values(
+                ts=_now(), submission_id=row["submission_id"], fact_id=fact_id,
+                action="carry_forward", field="value", old_value=str(row["value"]),
+                new_value=_fact_value_str(value), user="system", note=note))
+
+
+def add_fact(sub_id: int, base: dict[str, Any], *, metric_key: str, metric_label: str,
+             value: Decimal, flags: list[str], provenance: str, note: str) -> int:
+    """Insert a derived fact (e.g. a carried-forward beginning balance the
+    document never stated) alongside an existing submission's facts."""
+    eng = get_engine()
+    with eng.begin() as conn:
+        res = conn.execute(insert(facts).values(
+            submission_id=sub_id, entity_name=base["entity_name"],
+            entity_kind=base["entity_kind"], report_type=base["report_type"],
+            period=base["period"], metric_key=metric_key, metric_label=metric_label,
+            value=_fact_value_str(value), unit="currency", currency=base["currency"],
+            raw_label="", raw_value="", provenance=provenance, confidence=0.9,
+            status="needs_review", flags=json.dumps(flags),
+            created_at=_now(), updated_at=_now(),
+            period_start=base.get("period_start"), period_end=base.get("period_end"),
+            statement_start=base.get("statement_start"),
+            booking_date=base.get("booking_date")))
+        fact_id = int(res.inserted_primary_key[0])
+        conn.execute(insert(audit).values(
+            ts=_now(), submission_id=sub_id, fact_id=fact_id, action="carry_forward",
+            field="value", new_value=_fact_value_str(value), user="system", note=note))
+        return fact_id
 
 
 def mark_submission_reviewed(sub_id: int, user: str = "local") -> None:
@@ -297,6 +371,12 @@ def get_facts(sub_id: Optional[int] = None,
         return out
 
 
+def get_fact(fact_id: int) -> Optional[dict[str, Any]]:
+    with get_engine().connect() as conn:
+        row = conn.execute(select(facts).where(facts.c.id == fact_id)).mappings().first()
+        return dict(row) if row else None
+
+
 def get_audit(sub_id: Optional[int] = None, limit: int = 500) -> list[dict[str, Any]]:
     stmt = select(audit)
     if sub_id is not None:
@@ -305,6 +385,49 @@ def get_audit(sub_id: Optional[int] = None, limit: int = 500) -> list[dict[str, 
     eng = get_engine()
     with eng.connect() as conn:
         return [dict(r) for r in conn.execute(stmt).mappings().all()]
+
+
+_STATUS_RANK = {"confirmed": 0, "auto": 1, "needs_review": 2}
+
+
+def quarter_metrics(entity: str, report_type: str,
+                    exclude_submission: Optional[int] = None) -> dict[str, dict[str, Decimal]]:
+    """{"2026-Q1": {metric_key: value}} for an entity's recorded quarters.
+
+    Per (quarter, metric) the most-trusted non-rejected value wins: confirmed,
+    then auto, then still-pending — a quarter that hasn't been reviewed yet can
+    still anchor the next one's carry-forward (which itself goes to review).
+    """
+    stmt = (select(facts).where(facts.c.entity_name == entity)
+            .where(facts.c.report_type == report_type)
+            .where(facts.c.status.in_(tuple(_STATUS_RANK)))
+            .where(facts.c.value.is_not(None)))
+    if exclude_submission is not None:
+        stmt = stmt.where(facts.c.submission_id != exclude_submission)
+    best: dict[tuple[str, str], tuple[int, int, Decimal]] = {}
+    with get_engine().connect() as conn:
+        for r in conn.execute(stmt).mappings().all():
+            key = (r["period"], r["metric_key"])
+            rank = (_STATUS_RANK[r["status"]], -int(r["id"]))  # newest wins a tie
+            if key not in best or rank < best[key][:2]:
+                best[key] = (*rank, Decimal(r["value"]))
+    out: dict[str, dict[str, Decimal]] = {}
+    for (period, mkey), (_s, _i, v) in best.items():
+        out.setdefault(period, {})[mkey] = v
+    return out
+
+
+def facts_for_quarter(entity: str, report_type: str, period: str) -> list[dict[str, Any]]:
+    stmt = (select(facts).where(facts.c.entity_name == entity)
+            .where(facts.c.report_type == report_type)
+            .where(facts.c.period == period).order_by(facts.c.id))
+    with get_engine().connect() as conn:
+        out = []
+        for r in conn.execute(stmt).mappings().all():
+            d = dict(r)
+            d["flags"] = json.loads(d.get("flags") or "[]")
+            out.append(d)
+        return out
 
 
 def file_hash_exists(file_hash: str) -> Optional[int]:
@@ -457,6 +580,18 @@ def rebuild_investment_views() -> None:
         report_type_by_key[(f["entity_name"], f["period"])] = f["report_type"]
         kind_by_entity.setdefault(f["entity_name"], f["entity_kind"])
 
+    # derivation flags + document-printed values, for the roll-forward badges
+    notes_by_key: dict[tuple[str, str], dict[str, Any]] = {}
+    for f in facts_:
+        flags_ = [fl for fl in json.loads(f.get("flags") or "[]")
+                  if fl in ("carried_forward", "ytd_decumulated", "reconciling_plug",
+                            "prior_quarter_missing")]
+        if flags_ or f.get("reported_value") is not None:
+            notes_by_key.setdefault((f["entity_name"], f["period"]), {})[f["metric_key"]] = {
+                "flags": flags_, "reported": _as_float(f.get("reported_value")),
+                "source": f.get("provenance")}
+
+    from .extractors.base import is_quarter_label, previous_quarter
     quarter_rows = []
     for (entity, period), metrics in groups.items():
         if report_type_by_key.get((entity, period)) != "investment_roll_forward":
@@ -465,7 +600,23 @@ def rebuild_investment_views() -> None:
                "period_order": _period_order(period), "accounting_method": None}
         for k in _QUARTER_KEYS:
             row[k] = _as_float(metrics[k]) if k in metrics else None
+        row["notes"] = notes_by_key.get((entity, period), {})
         quarter_rows.append(row)
+
+    # Backstop for quarters whose carried-forward beginning is still in review:
+    # a quarter follows on from the previous one, so show the prior ending.
+    by_quarter = {(r["entity_name"], r["period_label"]): r for r in quarter_rows}
+    for r in sorted(quarter_rows, key=lambda r: r["period_order"]):
+        if not is_quarter_label(r["period_label"]):
+            continue
+        prev = by_quarter.get((r["entity_name"], previous_quarter(r["period_label"])))
+        if prev and prev["ending_balance"] is not None and r["beginning_balance"] is None:
+            r["beginning_balance"] = prev["ending_balance"]
+            r["notes"]["beginning_balance"] = {
+                "flags": ["carried_forward"], "reported": None,
+                "source": f"prior quarter {prev['period_label']} ending (pending review)"}
+    for r in quarter_rows:
+        r["notes"] = json.dumps(r["notes"])
 
     # one entity row each, using the latest period's balance
     entity_rows = []
@@ -578,4 +729,6 @@ def get_investments() -> dict[str, Any]:
             select(investment_quarters)
             .order_by(investment_quarters.c.entity_name,
                       investment_quarters.c.period_order)).mappings().all()]
+    for q in quarters:
+        q["notes"] = json.loads(q.get("notes") or "{}")
     return {"entities": entities, "quarters": quarters}

@@ -7,6 +7,7 @@ Flow per file:
 """
 from __future__ import annotations
 
+import re
 from decimal import Decimal
 from pathlib import Path
 from typing import Optional
@@ -16,8 +17,8 @@ from ..models import (ExtractionResult, FactStatus, FinancialFact, RawItem,
                       detect_currency, map_label_to_metric, parse_number)
 from ..report_types import REPORT_TYPES, Unit, guess_report_type
 from ..llm import extract_with_llm, get_provider
-from .base import (classify_document, file_sha256, guess_entity_name,
-                   normalize_period)
+from .base import (classify_document, detect_statement_dates, file_sha256,
+                   guess_entity_name, normalize_period, quarter_bounds)
 from .csv_native import extract_csv
 from .excel import extract_excel
 from .pdf_native import ScannedPdfError, extract_pdf
@@ -50,7 +51,13 @@ def assemble(raw_items: list[RawItem], text_blob: str, filename: str,
     # canonical entity name; prefer it, falling back to a text-derived guess.
     classified = classify_document(filename)
     entity = classified["entity_name"] or guess_entity_name(lines, filename)
-    period = normalize_period(text_blob) or normalize_period(filename) or "UNKNOWN"
+    dates = detect_statement_dates(text_blob, filename)
+    if rt_key == "investment_roll_forward" and dates.quarter:
+        # roll-forwards are recorded per calendar quarter (Q2 = Apr 1–Jun 30),
+        # inferred from what the statement covers, not from its first date
+        period = dates.quarter
+    else:
+        period = normalize_period(text_blob) or normalize_period(filename) or "UNKNOWN"
     currency = detect_currency(text_blob) or "USD"
 
     # --- map raw items -> best candidate per metric ---
@@ -58,6 +65,11 @@ def assemble(raw_items: list[RawItem], text_blob: str, filename: str,
     unmapped: list[RawItem] = []
     for item in raw_items:
         mkey, mconf = map_label_to_metric(rt_key, item.label)
+        spec = rt.metric_by_key(mkey) if mkey else None
+        if spec and spec.unit == Unit.CURRENCY and "%" in item.value_raw:
+            # "Ending capital account balance as % of total partners' capital 0.19%"
+            # is not the ending balance
+            mkey = None
         if mkey and mconf >= 0.7:
             candidates.setdefault(mkey, []).append((mconf, item))
         else:
@@ -74,6 +86,18 @@ def assemble(raw_items: list[RawItem], text_blob: str, filename: str,
     def _sheet_of(item: RawItem) -> str:
         p = item.provenance or ""
         return p.split("!", 1)[0] if "!" in p else ""
+
+    def _column_of(item: RawItem) -> str:
+        """Sheet + column ("Fund 1!D") for cells, page for PDF text — component
+        lines of one total sit in the same column as each other."""
+        p = item.provenance or ""
+        m = re.match(r"^(.*!)([A-Z]+)\d+$", p)
+        if m:
+            return m.group(1) + m.group(2)
+        m = re.search(r"col(\d+)", p)
+        if m:
+            return "col" + m.group(1)
+        return p.split(" ")[0]
 
     sheet_metric_counts: dict[str, set] = {}
     for mkey, cands in candidates.items():
@@ -93,6 +117,22 @@ def assemble(raw_items: list[RawItem], text_blob: str, filename: str,
         mconf, item = cands_sorted[-1]
         value, notes = parse_number(item.value_raw)
         value, unit_flags = _canonical_value(spec.unit, value, notes)
+        raw_label, raw_value, provenance = item.label, item.value_raw, item.provenance
+
+        if spec.aggregate:
+            # sum each distinct component line on the chosen sheet/page once
+            parts: dict[str, tuple[RawItem, Decimal]] = {}
+            for _c, it in cands:
+                v = parse_number(it.value_raw)[0]
+                if v is not None and _column_of(it) == _column_of(item):
+                    parts.setdefault(it.label.strip().lower(), (it, v))
+            if len(parts) > 1:
+                value = sum((v for _it, v in parts.values()), Decimal(0))
+                raw_label = " + ".join(it.label for it, _v in parts.values())
+                raw_value = " + ".join(it.value_raw for it, _v in parts.values())
+                provenance = "; ".join(it.provenance for it, _v in parts.values())
+                cands = [(c, it) for c, it in cands
+                         if parts.get(it.label.strip().lower(), (None,))[0] is it]
 
         flags = list(unit_flags)
         # Only conflicting values ON THE CHOSEN SHEET should nag for review — a
@@ -101,7 +141,7 @@ def assemble(raw_items: list[RawItem], text_blob: str, filename: str,
         same_sheet = [c for c in cands if _sheet_of(c[1]) == chosen_sheet] or cands
         distinct_vals = {parse_number(c[1].value_raw)[0] for c in same_sheet}
         distinct_vals.discard(None)
-        if len(distinct_vals) > 1:
+        if len(distinct_vals) > 1 and not spec.aggregate:
             flags.append(f"multiple_candidates({len(distinct_vals)})")
         # note (informational) when the same label also appeared on other sheets
         other_sheets = {_sheet_of(c[1]) for c in cands} - {chosen_sheet, ""}
@@ -117,8 +157,8 @@ def assemble(raw_items: list[RawItem], text_blob: str, filename: str,
             entity_name=entity, entity_kind=rt.entity_kind, report_type=rt_key,
             period=period, metric_key=mkey, metric_label=spec.label,
             value=value, unit=spec.unit, currency=currency,
-            raw_label=item.label, raw_value=item.value_raw,
-            provenance=f"{extractor}:{item.provenance}",
+            raw_label=raw_label, raw_value=raw_value,
+            provenance=f"{extractor}:{provenance}",
             confidence=round(confidence, 3), status=status, flags=flags))
 
     # --- LLM fallback: fill required metrics we couldn't map deterministically ---
@@ -168,9 +208,15 @@ def assemble(raw_items: list[RawItem], text_blob: str, filename: str,
         warnings.append(f"Report type detected as '{rt.label}' with low confidence "
                         "— please confirm.")
 
+    bounds = quarter_bounds(period) if period == dates.quarter else None
     return ExtractionResult(
         filename=filename, file_hash=file_hash, detected_report_type=rt_key,
         report_type_confidence=rt_conf, entity_name=entity, period=period,
+        period_start=bounds[0].isoformat() if bounds else None,
+        period_end=bounds[1].isoformat() if bounds else None,
+        statement_start=(dates.statement_start.isoformat()
+                         if dates.statement_start else None),
+        booking_date=dates.booking_date.isoformat() if dates.booking_date else None,
         currency=currency, extractor=extractor, facts=facts,
         unmapped=unmapped[:200], warnings=warnings)
 

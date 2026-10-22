@@ -78,8 +78,11 @@ curl    http://127.0.0.1:8713/api/fabric/schema                          # contr
   period (plus a thin line per entity); each period shows both its calendar
   label and fiscal-year label (e.g. "2026-Q1" / "FY2026 Q3").
 - **Investment portfolio** — the consolidated entities table (`investment_entities`).
-- **Quarterly roll-forward** — Beginning → Funding → … → Ending per entity/period
-  (`investment_quarters`), with entity drill-down.
+- **Quarterly roll-forward** — Beginning → Funding → … → Ending per entity and
+  calendar quarter (`investment_quarters`), with entity drill-down.
+  - Each quarter's beginning is carried forward from the previous quarter's ending.
+  - Year-to-date statements are de-cumulated, and every quarter reconciles.
+  - Each adjustment is badged and sent to review (GUIDE §4b-2).
 - **Grand ledger** — every trusted fact from every company/period in one
   normalized, filterable table, grouped by **section** (Assets & Balances /
   Income & Profit / Distributions & Capital Flows / Performance Ratios);

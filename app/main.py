@@ -19,7 +19,7 @@ from fastapi.responses import (HTMLResponse, JSONResponse, RedirectResponse,
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
-from . import auth, db, fabric_export, performance
+from . import auth, carry_forward, db, fabric_export, performance
 from .config import settings
 from .llm import get_provider
 from .pipeline import process_upload
@@ -281,6 +281,10 @@ async def edit_fact(fact_id: int, request: Request):
         )
     except KeyError:
         raise HTTPException(404, "fact not found")
+    # an edited/confirmed quarter re-anchors the quarters that follow it
+    fact = db.get_fact(fact_id)
+    if fact and fact["report_type"] == carry_forward.RF:
+        carry_forward.rederive_following(fact["entity_name"], fact["period"])
     return {"status": "ok"}
 
 
@@ -291,6 +295,9 @@ def confirm_submission(sub_id: int):
         if f["status"] == "auto":
             db.update_fact(f["id"], status="confirmed", note="bulk confirm on review")
     db.mark_submission_reviewed(sub_id)
+    sub = db.get_submission(sub_id)
+    if sub and sub["report_type"] == carry_forward.RF:
+        carry_forward.rederive_following(sub["entity_name"], sub["period"])
     return {"status": "ok"}
 
 

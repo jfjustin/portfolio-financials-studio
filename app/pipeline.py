@@ -1,6 +1,6 @@
 """Pipeline orchestrator: ingest a file end-to-end.
 
-    file  ->  extract  ->  validate  ->  persist (+ audit)  ->  summary
+    file  ->  extract  ->  carry-forward  ->  validate  ->  persist (+ audit)  ->  summary
 
 Returns a JSON-able summary the API/dashboard renders. Deterministic and
 side-effect-contained: the only writes are the saved copy under data/uploads
@@ -12,7 +12,7 @@ import tempfile
 from pathlib import Path
 from typing import Any, Optional
 
-from . import db, storage
+from . import carry_forward, db, storage
 from .config import settings
 from .extractors.registry import extract_file
 from .validate import validate_facts
@@ -34,6 +34,10 @@ def process_path(path: Path, *, save_copy: bool = True,
             "filename": result.filename,
         }
 
+    # roll-forwards: follow on from the prior quarter (carry forward its ending,
+    # de-cumulate YTD statements, reconcile) BEFORE anything is validated/saved
+    carry_forward.apply_to_result(result)
+
     # run validation (mutates fact flags/status in place)
     checks = validate_facts(result.detected_report_type, result.facts)
 
@@ -45,6 +49,9 @@ def process_path(path: Path, *, save_copy: bool = True,
             pass  # copy is best-effort; extraction already succeeded
 
     sub_id = db.save_extraction(result)
+    # an earlier quarter arriving late re-anchors the quarters already on file
+    if result.detected_report_type == carry_forward.RF:
+        carry_forward.rederive_following(result.entity_name, result.period)
 
     n_auto = sum(1 for f in result.facts if f.status == "auto")
     n_review = sum(1 for f in result.facts if f.status == "needs_review")

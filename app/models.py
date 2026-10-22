@@ -42,6 +42,9 @@ class FinancialFact(BaseModel):
     confidence: float = 0.0
     status: FactStatus = FactStatus.NEEDS_REVIEW
     flags: list[str] = Field(default_factory=list)  # validation messages
+    # value as read from the document, when the recorded `value` was derived from
+    # it (carried forward from the prior quarter, or de-cumulated from YTD)
+    reported_value: Optional[Decimal] = None
 
     model_config = {"use_enum_values": True}
 
@@ -54,6 +57,10 @@ class ExtractionResult(BaseModel):
     report_type_confidence: float
     entity_name: str = "UNKNOWN"
     period: str = "UNKNOWN"
+    period_start: Optional[str] = None     # calendar bounds of `period` (ISO dates)
+    period_end: Optional[str] = None
+    statement_start: Optional[str] = None  # coverage start the document states (YTD → Jan 1)
+    booking_date: Optional[str] = None     # e.g. a JV voucher's booking month — metadata only
     currency: str = "USD"
     extractor: str = ""               # which extractor produced this
     facts: list[FinancialFact] = Field(default_factory=list)
@@ -150,6 +157,14 @@ def parse_number(raw: str) -> tuple[Optional[Decimal], list[str]]:
 # --------------------------------------------------------------------------
 # Label -> canonical metric mapping
 # --------------------------------------------------------------------------
+_SINCE_INCEPTION = re.compile(
+    r"closing date|inception|cumulative|life[- ]to[- ]date|\bltd\b|since (?:the )?(?:fund|first)")
+
+
+def is_since_inception_label(label: str) -> bool:
+    """True for cumulative-since-inception lines, which aren't period activity."""
+    return bool(_SINCE_INCEPTION.search(label.lower()))
+
 def map_label_to_metric(report_type_key: str, label: str) -> tuple[Optional[str], float]:
     """Map a raw label to a canonical metric key for the given report type.
 
@@ -166,10 +181,22 @@ def map_label_to_metric(report_type_key: str, label: str) -> tuple[Optional[str]
     # "Total for Expenses") — normalize so the existing "total x" synonyms
     # still match this very common real-world export convention.
     norm = re.sub(r"^total for\s+", "total ", norm)
+    # OCR'd / redacted PDFs often render a capital "I" as "hl" ("hlterest income",
+    # "hlitial Closing Date").
+    norm = re.sub(r"\bhl(?=[a-z])", "in", norm)
+    # Since-inception / cumulative lines ("Capital contributions from Initial
+    # Closing Date through June 30, 2026") must never land in a period field.
+    if is_since_inception_label(norm):
+        for m in rt.metrics:
+            if m.since_inception and any(syn in norm for syn in m.synonyms):
+                return m.key, 0.9
+        return None, 0.0
     best_key: Optional[str] = None
     best_score = 0.0
     best_syn_len = 0
     for m in rt.metrics:
+        if m.since_inception:
+            continue
         for syn in m.synonyms:
             if syn == norm:
                 score = 1.0

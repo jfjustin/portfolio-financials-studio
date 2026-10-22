@@ -108,9 +108,71 @@ def jv_equity_income_pdf():
     print("wrote", out.name)
 
 
+def _pcap_pdf(filename: str, period_end: str, lines: list[tuple[str, str]]):
+    """A partner capital-account statement laid out like a real PCAP: label on
+    the left, figure right-aligned, no dot leaders (single space when parsed)."""
+    from fpdf import FPDF
+    pdf = FPDF()
+    pdf.add_page()
+    pdf.set_font("helvetica", "B", 13)
+    pdf.cell(0, 8, "Statement of Individual Partner's Capital Account", ln=True, align="C")
+    pdf.set_font("helvetica", "", 10)
+    pdf.cell(0, 6, "(Unaudited)", ln=True, align="C")
+    pdf.cell(0, 6, "Name of Limited Partner: Sample Holdings LP", ln=True)
+    pdf.cell(0, 6, "For the Period Ended", ln=True, align="R")
+    pdf.cell(0, 6, period_end, ln=True, align="R")
+    for label, value in lines:
+        pdf.cell(150, 6, label)
+        pdf.cell(40, 6, value, ln=True, align="R")
+    pdf.output(str(OUT / filename))
+    print("wrote", filename)
+
+
+def pcap_pdfs():
+    """Fund 99, 2026: a Q1 statement and a YEAR-TO-DATE Q2 statement whose
+    beginning balance repeats Q1's (as of January 1) — made-up numbers.
+    Q2 quarter-only: beginning 452,000 → ending 471,600."""
+    _pcap_pdf("Fund 99_2026 Q1 PCAP_Sample Holdings LP.pdf", "March 31, 2026", [
+        ("Beginning capital account balance as of January 1, 2026", "$ 500,000"),
+        ("Capital distributions", "(20,000)"),
+        ("Investment income:", ""),
+        ("Interest income", "1,000"),
+        ("Operating expenses:", ""),
+        ("Management fee", "(2,500)"),
+        ("Legal, accounting and professional fees", "(500)"),
+        ("", "(3,000)"),
+        ("Net change in unrealized appreciation/(depreciation) on investments", "(30,000)"),
+        ("Unrealized carried interest", "4,000"),
+        ("Ending capital account balance as of March 31, 2026", "$ 452,000"),
+        ("Ending capital account balance as % of total partners' capital", "0.50%"),
+        ("Total capital commitment", "$ 600,000"),
+        ("Capital contributions from Initial Closing Date through March 31, 2026", "550,000"),
+    ])
+    _pcap_pdf("Fund 99_2026 Q2 PCAP_Sample Holdings LP.pdf", "June 30, 2026", [
+        ("Beginning capital account balance as of January 1, 2026", "$ 500,000"),
+        ("Capital distributions", "(20,000)"),
+        ("Investment income:", ""),
+        ("Interest income", "1,800"),
+        ("Operating expenses:", ""),
+        ("Management fee", "(5,000)"),
+        ("Legal, accounting and professional fees", "(900)"),
+        ("", "(5,900)"),
+        ("Net change in unrealized appreciation/(depreciation) on investments", "(10,000)"),
+        ("Provision for foreign withholding tax", "(300)"),
+        ("Unrealized carried interest", "6,000"),
+        ("Ending capital account balance as of June 30, 2026", "$ 471,600"),
+        ("Ending capital account balance as % of total partners' capital", "0.49%"),
+        ("Total capital commitment", "$ 600,000"),
+        ("Capital contributions from Initial Closing Date through June 30, 2026", "550,000"),
+        ("Recallable distributions from Initial Closing Date through", ""),
+        ("", "(50,000)"),
+    ])
+
+
 if __name__ == "__main__":
     fund_financials()
     jv_holdings()
     direct_investment()
     jv_equity_income_pdf()
+    pcap_pdfs()
     print("\nSample files ready in", OUT)

@@ -64,6 +64,11 @@ class MetricSpec:
     component_of: str = ""
     required: bool = False        # if a report of this type should always contain it
     category: MetricCategory = MetricCategory.OTHER  # section for review UI / ledger
+    # sum every distinct component line (fees, taxes, carry...) instead of picking one
+    aggregate: bool = False
+    # a cumulative since-inception figure; only labels that say so map here, and
+    # such labels never map to period metrics
+    since_inception: bool = False
 
 
 @dataclass(frozen=True)
@@ -300,10 +305,13 @@ INVESTMENT_ROLL_FORWARD = ReportType(
                     "management fee", "carried interest", "unrealized carried interest",
                     "legal accounting and professional fees",
                     "legal, accounting and professional fees", "tax expenses",
-                    "transaction related expenses", "provision for foreign witholding tax",
-                    "foreign withholding tax"), category=MetricCategory.INCOME),
+                    "transaction related expenses", "provision for foreign withholding tax",
+                    "foreign withholding tax"), category=MetricCategory.INCOME,
+                   aggregate=True),
         MetricSpec("investment_mtm", "Investment MTM", Unit.CURRENCY,
-                   ("unrealized appreciation", "unrealised appreciation",
+                   ("net change in unrealized appreciation",
+                    "net change in unrealised appreciation",
+                    "unrealized appreciation", "unrealised appreciation",
                     "unrealized depreciation", "unrealised depreciation",
                     "unrealized appreciation (depreciation) on investments",
                     "net change in fair value", "investment valuation movements",
@@ -341,6 +349,25 @@ INVESTMENT_ROLL_FORWARD = ReportType(
                     "capital balance as of", "capital account at fair value",
                     "net assets attributable to limited partner"),
                    role="total", required=True, category=MetricCategory.ASSET),
+        # commitment / since-inception figures: shown and exported, never part
+        # of a quarter's roll-forward activity
+        MetricSpec("commitment", "Capital Commitment", Unit.CURRENCY,
+                   ("total capital commitment", "capital commitment", "commitment amount"),
+                   category=MetricCategory.OTHER),
+        MetricSpec("remaining_commitment", "Remaining Commitment", Unit.CURRENCY,
+                   ("remaining capital commitment", "remaining commitment",
+                    "unfunded commitment", "unfunded capital commitment"),
+                   category=MetricCategory.OTHER),
+        MetricSpec("cumulative_recallable_distributions",
+                   "Recallable Distributions (since inception)", Unit.CURRENCY,
+                   ("recallable distribution",),
+                   category=MetricCategory.DISTRIBUTION, since_inception=True),
+        MetricSpec("cumulative_distributions", "Distributions (since inception)",
+                   Unit.CURRENCY, ("distribution",),
+                   category=MetricCategory.DISTRIBUTION, since_inception=True),
+        MetricSpec("cumulative_contributions", "Contributions (since inception)",
+                   Unit.CURRENCY, ("contribution", "paid-in capital", "capital called"),
+                   category=MetricCategory.DISTRIBUTION, since_inception=True),
     ),
 )
 

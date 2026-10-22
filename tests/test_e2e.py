@@ -72,12 +72,79 @@ def main() -> int:
     # --- audit trail exists ---
     check(len(db.get_audit(limit=5)) > 0, "audit rows written")
 
+    roll_forward_continuity(samples)
+
     print()
     if FAILS:
         print(f"{len(FAILS)} FAILED")
         return 1
     print("ALL CHECKS PASSED")
     return 0
+
+
+def roll_forward_continuity(samples: Path) -> None:
+    """Year-to-date PCAPs: each quarter follows on from the last, whatever the
+    document prints, and whichever order the files arrive in."""
+    from decimal import Decimal
+
+    from app import carry_forward
+    from app.extractors.base import normalize_period
+
+    check(normalize_period("Fund 1 - 03-31-2026 results") == "2026-03-31",
+          "m/d/y date with day > 12 parses (03-31-2026)")
+    check(normalize_period("6/30/2026") == "2026-06-30", "day is not clamped to 28")
+
+    q1 = samples / "Fund 99_2026 Q1 PCAP_Sample Holdings LP.pdf"
+    q2 = samples / "Fund 99_2026 Q2 PCAP_Sample Holdings LP.pdf"
+    if not q2.exists():
+        import subprocess
+        subprocess.run([sys.executable, str(samples / "make_samples.py")], check=True)
+
+    # Q2 arrives first: no Q1 to roll from yet
+    r2 = process_path(q2, allow_duplicate=True)
+    check(r2["period"] == "2026-Q2", "YTD statement ending Jun 30 → 2026-Q2 (not H1/FY)")
+    check(r2["n_facts"] >= 6, "PCAP without dot leaders parses deterministically")
+    check(any("not on file" in w for w in r2["warnings"]), "missing Q1 is reported")
+
+    r1 = process_path(q1, allow_duplicate=True)
+    check(r1["period"] == "2026-Q1", "Q1 statement → 2026-Q1")
+
+    def q2_facts() -> dict:
+        return {f["metric_key"]: f for f in
+                db.facts_for_quarter("Fund 99", carry_forward.RF, "2026-Q2")}
+
+    f = q2_facts()
+    val = lambda k: Decimal(f[k]["value"]) if k in f and f[k]["value"] is not None else None
+    check(val("beginning_balance") == Decimal("452000"),
+          "Q2 beginning recorded as Q1 ending (452,000), not the printed Jan 1 balance")
+    check("carried_forward" in f["beginning_balance"]["flags"]
+          and Decimal(f["beginning_balance"]["reported_value"]) == Decimal("500000"),
+          "carried-forward beginning keeps the printed 500,000 and is flagged")
+    check(val("return_of_capital") == 0, "YTD distributions de-cumulated (Q2 = 0)")
+    check(val("investment_mtm") == Decimal("20000"), "YTD MTM de-cumulated (+20,000)")
+    check(val("other") == Decimal("-1200"), "YTD fees/tax/carry summed and de-cumulated")
+    check("funding" not in f and val("cumulative_contributions") == Decimal("550000"),
+          "since-inception contributions never become period funding")
+    check("reconciling_plug" not in f["other"]["flags"], "Q2 reconciles with no plug")
+    check(f["beginning_balance"]["status"] == "needs_review", "derived values go to review")
+    flows = sum(val(k) or 0 for k in carry_forward.FLOW_KEYS)
+    check(val("beginning_balance") + flows == val("ending_balance"),
+          "Q2 beginning + activity = ending")
+
+    # a confirmed value is never re-derived; unconfirmed ones follow the prior quarter
+    db.update_fact(f["beginning_balance"]["id"], status="confirmed", note="test")
+    q1_end = next(x for x in db.facts_for_quarter("Fund 99", carry_forward.RF, "2026-Q1")
+                  if x["metric_key"] == "ending_balance")
+    db.update_fact(q1_end["id"], value="452500", status="confirmed", note="test restatement")
+    carry_forward.rederive_following("Fund 99", "2026-Q1")
+    f = q2_facts()
+    check(Decimal(f["beginning_balance"]["value"]) == Decimal("452000"),
+          "confirmed Q2 beginning untouched by a later Q1 edit")
+
+    inv = db.get_investments()
+    rows = [q for q in inv["quarters"] if q["entity_name"] == "Fund 99"]
+    check([q["period_label"] for q in rows] == ["2026-Q1", "2026-Q2"],
+          "roll-forward rows are consecutive calendar quarters")
 
 
 if __name__ == "__main__":

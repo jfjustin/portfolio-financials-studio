@@ -174,6 +174,41 @@ closest to June 30 — FY2026 Q1 = Jul–Sep 2025 … Q4 = Apr–Jun 2026). An
 administrator can change this via `FISCAL_YEAR_END_MONTH` (`12` = pure calendar
 year) — see README.
 
+## 4b-2. Roll-forward quarters follow on from each other
+
+Each capital-account / roll-forward file is recorded against the **calendar
+quarter it reports on**, inferred from what the document covers rather than the
+first date printed on it:
+
+- an explicit "2026 Q2" in the filename wins, then a results date ("03-31-2026
+  results", "For the Period Ended June 30, 2026");
+- a year-to-date statement ending June 30 is **2026-Q2 (Apr 1–Jun 30)**, never
+  the half-year or fiscal-year date;
+- a journal voucher's booking month (`MONTH: 2026-06-28`) and posting dates are
+  kept as metadata only.
+
+Statements are often **year-to-date** and repeat stale figures. A Q2 statement
+may still print "Beginning balance as of January 1" (Q1's beginning) and
+Jan–Jun cumulative activity. Before anything is saved, every roll-forward
+upload is checked against the entity's earlier quarters:
+
+| Step | What happens | Badge |
+|---|---|---|
+| Carry forward | Beginning = the previous quarter's ending, whenever the document says otherwise | ↺ |
+| De-cumulate | YTD activity minus the year's earlier quarters (Q2 MTM = Jan–Jun MTM − Q1 MTM) | YTD→Q |
+| Reconcile | Beginning + activity must equal ending; any residual is put in *Other* | plug |
+| Missing quarter | The prior quarter isn't on file yet, so the value is recorded as printed and a warning is shown | ! |
+
+- Hover a badge to see what the document actually printed. The original figure
+  is also kept on the fact (`reported_value`) and in the audit trail.
+- Every adjusted value goes to **review**.
+- Upload order doesn't matter. If Q1 arrives after Q2, Q2 is re-derived
+  automatically, but values you've already confirmed are never changed.
+- Since-inception lines ("Capital contributions from Initial Closing Date
+  through …") never feed a quarter's Funding or Distributions. They're recorded
+  as *Contributions / Distributions (since inception)*, and the capital
+  commitment fills the Commit column.
+
 ## 4c. Lam Capital Overall Performance (TVPI / DPI / IRR)
 
 Above the trend chart, three ratios summarize the whole fund portfolio:

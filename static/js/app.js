@@ -189,18 +189,40 @@
     }
     rows.forEach(q => {
       const tr = document.createElement("tr");
-      tr.innerHTML = `<td>${esc(q.entity_name)}</td><td>${esc(q.period_label)}</td>
-        <td class="num">${mv(q.beginning_balance)}</td>
-        <td class="num ${neg(q.funding)}">${mv(q.funding)}</td>
-        <td class="num ${neg(q.equity_income_loss)}">${mv(q.equity_income_loss)}</td>
-        <td class="num ${neg(q.return_of_capital)}">${mv(q.return_of_capital)}</td>
-        <td class="num ${neg(q.dividends)}">${mv(q.dividends)}</td>
-        <td class="num ${neg(q.investment_mtm)}">${mv(q.investment_mtm)}</td>
-        <td class="num ${neg(q.other)}">${mv(q.other)}</td>
-        <td class="num ${neg(q.change)}">${mv(q.change)}</td>
-        <td class="num"><b>${mv(q.ending_balance)}</b></td>`;
+      const notes = q.notes || {};
+      const cell = (k, bold) => {
+        const n = notes[k], v = mv(q[k]);
+        const badge = n ? rfBadge(n) : "";
+        return `<td class="num ${neg(q[k])}">${bold ? `<b>${v}</b>` : v}${badge}</td>`;
+      };
+      tr.innerHTML = `<td>${esc(q.entity_name)}</td><td>${quarterLabel(q.period_label)}</td>
+        ${cell("beginning_balance")}${cell("funding")}${cell("equity_income_loss")}
+        ${cell("return_of_capital")}${cell("dividends")}${cell("investment_mtm")}
+        ${cell("other")}${cell("change")}${cell("ending_balance", true)}`;
       tb.appendChild(tr);
     });
+  }
+
+  // "2026-Q2" -> "2026-Q2 · Apr 1–Jun 30" (calendar quarter the row covers)
+  const Q_SPAN = {1: "Jan 1–Mar 31", 2: "Apr 1–Jun 30", 3: "Jul 1–Sep 30", 4: "Oct 1–Dec 31"};
+  function quarterLabel(p) {
+    const m = /^(20\d{2})-Q([1-4])$/.exec(p || "");
+    return m ? `${esc(p)} <span class="small muted">${Q_SPAN[m[2]]}</span>` : esc(p);
+  }
+
+  // why a roll-forward value differs from what the document printed
+  const RF_BADGES = {
+    carried_forward: ["↺", "carried forward from the prior quarter's ending"],
+    ytd_decumulated: ["YTD→Q", "year-to-date figure less the year's earlier quarters"],
+    reconciling_plug: ["plug", "includes a reconciling amount so beginning + activity = ending"],
+    prior_quarter_missing: ["!", "prior quarter not on file — value as printed"],
+  };
+  function rfBadge(n) {
+    const tips = (n.flags || []).map(f => (RF_BADGES[f] || [f, f])[1]);
+    if (n.reported != null) tips.push(`document printed ${money(n.reported)}`);
+    if (n.source) tips.push(n.source);
+    const marks = (n.flags || []).map(f => (RF_BADGES[f] || [f])[0]).join(" ");
+    return marks ? ` <span class="rf-badge" title="${esc(tips.join(" · "))}">${esc(marks)}</span>` : "";
   }
 
   const neg = v => (v != null && v < 0) ? "is-neg" : "";
