@@ -543,8 +543,8 @@ def fiscal_info(period: str, fye_month: Optional[int] = None) -> dict[str, Any]:
 
     Returns {fiscal_year, fiscal_quarter, fiscal_label}. `fiscal_quarter` is
     None when only the year is known. The fiscal year is named by the calendar
-    year in which it ENDS (matches Lam Research's own FY labeling, e.g. a
-    fiscal year ending June 2026 is "FY2026").
+    year in which it ENDS (e.g. the fiscal year ending September 2026 is
+    "FY2026", so calendar 2026-Q1 is "FY2026 Q2").
     """
     fye = fye_month if fye_month is not None else settings.fiscal_year_end_month
     year, month = _calendar_year_month(period)
@@ -731,4 +731,7 @@ def get_investments() -> dict[str, Any]:
                       investment_quarters.c.period_order)).mappings().all()]
     for q in quarters:
         q["notes"] = json.loads(q.get("notes") or "{}")
+        q["fiscal_label"] = fiscal_info(q["period_label"] or "")["fiscal_label"]
+    for e in entities:
+        e["fiscal_label"] = fiscal_info(e.get("latest_period") or "")["fiscal_label"]
     return {"entities": entities, "quarters": quarters}

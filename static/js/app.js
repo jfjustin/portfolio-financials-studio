@@ -172,7 +172,7 @@
         <td class="num">${mv(e.investment_balance)}</td>
         <td class="num ${neg(e.equity_income_loss)}">${mv(e.equity_income_loss)}</td>
         <td class="num ${neg(e.return_of_capital)}">${mv(e.return_of_capital)}</td>
-        <td class="num">${own}</td><td>${esc(e.latest_period || "")}</td>`;
+        <td class="num">${own}</td><td>${quarterLabel(e.latest_period)}${e.fiscal_label ? `<div class="small muted fy">${esc(e.fiscal_label)}</div>` : ""}</td>`;
       tr.onclick = () => { RF_FILTER = (RF_FILTER === e.entity_name) ? null : e.entity_name;
         renderQuarters(qtrs); };
       et.appendChild(tr);
@@ -195,7 +195,7 @@
         const badge = n ? rfBadge(n) : "";
         return `<td class="num ${neg(q[k])}">${bold ? `<b>${v}</b>` : v}${badge}</td>`;
       };
-      tr.innerHTML = `<td>${esc(q.entity_name)}</td><td>${quarterLabel(q.period_label)}</td>
+      tr.innerHTML = `<td>${esc(q.entity_name)}</td><td>${quarterLabel(q.period_label)}${q.fiscal_label ? `<div class="small muted fy">${esc(q.fiscal_label)}</div>` : ""}</td>
         ${cell("beginning_balance")}${cell("funding")}${cell("equity_income_loss")}
         ${cell("return_of_capital")}${cell("dividends")}${cell("investment_mtm")}
         ${cell("other")}${cell("change")}${cell("ending_balance", true)}`;

@@ -57,9 +57,9 @@ Fabric ingests.
 | `period_order` | int64 | Sortable period key, `YYYYQ` form (e.g. `202601`) — **use for time axis ordering** |
 | `period_year` | int64 | Calendar year |
 | `period_quarter` | int64 | Calendar quarter 1–4 (`0` if not determinable) |
-| `fiscal_year` | int64 | Fiscal year, named by the calendar year it **ends** in (configurable via `FISCAL_YEAR_END_MONTH`; `0` if unknown). Default FYE = June, matching Lam Research's own fiscal calendar |
+| `fiscal_year` | int64 | Fiscal year, named by the calendar year it **ends** in (configurable via `FISCAL_YEAR_END_MONTH`; `0` if unknown). Default FYE = September (FY2026 = Oct 2025–Sep 2026) |
 | `fiscal_quarter` | int64 | Fiscal quarter 1–4 (`0` if not determinable) |
-| `fiscal_label` | string | Display label, e.g. `FY2026 Q3` |
+| `fiscal_label` | string | Display label, e.g. `FY2026 Q2` |
 | `metric_key` | string | Canonical metric key (machine name) |
 | `metric_label` | string | Canonical metric label (display name) |
 | `metric_category` | string | `asset` \| `income` \| `distribution` \| `ratio` \| `other` — the same section grouping used in the app's review screen and ledger |

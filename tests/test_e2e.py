@@ -145,6 +145,11 @@ def roll_forward_continuity(samples: Path) -> None:
     rows = [q for q in inv["quarters"] if q["entity_name"] == "Fund 99"]
     check([q["period_label"] for q in rows] == ["2026-Q1", "2026-Q2"],
           "roll-forward rows are consecutive calendar quarters")
+    check([q["fiscal_label"] for q in rows] == ["FY2026 Q2", "FY2026 Q3"],
+          "Jan–Mar 2026 = FY2026 Q2, Apr–Jun 2026 = FY2026 Q3 (FY ends September)")
+    check(db.fiscal_info("2025-Q4")["fiscal_label"] == "FY2026 Q1"
+          and db.fiscal_info("2026-Q3")["fiscal_label"] == "FY2026 Q4",
+          "Oct–Dec 2025 = FY2026 Q1, Jul–Sep 2026 = FY2026 Q4")
 
 
 if __name__ == "__main__":

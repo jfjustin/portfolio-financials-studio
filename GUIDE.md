@@ -88,7 +88,7 @@ For each extracted value you see:
 You can **edit a value**, **re-map a metric**, or **confirm / reject** each row.
 Every change writes an **audit-trail** entry (old → new, when) shown at the bottom.
 The header also shows the submission's **period and fiscal-year badge** (e.g.
-`2026-Q1` and `FY2026 Q3`) — see §4b.
+`2026-Q1` and `FY2026 Q2`) — see §4b.
 
 ### ③ Confirm
 - **Confirm all & lock in** promotes the submission's `auto` values to `confirmed`
@@ -167,12 +167,19 @@ submission is flagged so you can set it.
 Every period shown anywhere in the app carries **both** labels:
 
 - **Calendar**: `2026-Q1` (Jan–Mar 2026)
-- **Fiscal**: `FY2026 Q3` (shown smaller, italic, underneath)
+- **Fiscal**: `FY2026 Q2` (shown smaller, italic, underneath)
 
-The fiscal calendar defaults to Lam Research's own fiscal year (ends the Sunday
-closest to June 30 — FY2026 Q1 = Jul–Sep 2025 … Q4 = Apr–Jun 2026). An
-administrator can change this via `FISCAL_YEAR_END_MONTH` (`12` = pure calendar
-year) — see README.
+The fiscal year defaults to ending in September (FY2026 = Oct 2025–Sep 2026):
+
+| Calendar quarter | Covers | Fiscal label |
+|---|---|---|
+| 2025-Q4 | Oct 1–Dec 31, 2025 | FY2026 Q1 |
+| 2026-Q1 | Jan 1–Mar 31, 2026 | FY2026 Q2 |
+| 2026-Q2 | Apr 1–Jun 30, 2026 | FY2026 Q3 |
+| 2026-Q3 | Jul 1–Sep 30, 2026 | FY2026 Q4 |
+
+An administrator can change this via `FISCAL_YEAR_END_MONTH` (`12` = pure
+calendar year) — see README.
 
 ## 4b-2. Roll-forward quarters follow on from each other
 
@@ -425,7 +432,6 @@ section comes from `category=` on that metric's definition in
 it there — every view (review modal, ledger, Fabric export) picks it up
 automatically.
 
-**Why does a period show two labels, like `2026-Q1` and `FY2026 Q3`?** The first
+**Why does a period show two labels, like `2026-Q1` and `FY2026 Q2`?** The first
 is the calendar period as extracted; the second is the fiscal-year label computed
-from `FISCAL_YEAR_END_MONTH` (default matches Lam Research's own fiscal
-calendar). Both are always shown together — see §4b.
+from `FISCAL_YEAR_END_MONTH` (default `9`: FY2026 = Oct 2025–Sep 2026). Both are always shown together — see §4b.

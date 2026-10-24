@@ -130,12 +130,12 @@ class Settings(BaseSettings):
     # Tolerance (absolute) for "subtotals must reconcile to totals" checks.
     reconcile_tolerance: float = 1.0
 
-    # Fiscal year-end month (1-12). Default 6 = June, matching Lam Research's
-    # actual fiscal calendar (FY ends the Sunday closest to June 30; FY2026
-    # Q1 = Jul-Sep 2025 ... Q4 = Apr-Jun 2026). Set to 12 for a pure calendar
+    # Fiscal year-end month (1-12). Default 9 = September: FY2026 runs
+    # Oct 2025-Sep 2026, so FY2026 Q1 = Oct-Dec 2025, Q2 = Jan-Mar 2026,
+    # Q3 = Apr-Jun 2026, Q4 = Jul-Sep 2026. Set to 12 for a pure calendar
     # year. Every period shown in the UI/ledger/exports carries BOTH the
-    # calendar label (e.g. "2026-Q1") and the fiscal label (e.g. "FY2026 Q3").
-    fiscal_year_end_month: int = 6
+    # calendar label (e.g. "2026-Q1") and the fiscal label (e.g. "FY2026 Q2").
+    fiscal_year_end_month: int = 9
 
     # --- Server ---
     host: str = "127.0.0.1"  # localhost only — never binds to a public interface

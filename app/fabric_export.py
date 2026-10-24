@@ -43,7 +43,7 @@ FACT_COLUMNS: list[tuple[str, str, str]] = [
     ("fiscal_year",    "int64",   "Fiscal year, named by the calendar year it ENDS in "
                                   "(configurable via FISCAL_YEAR_END_MONTH; 0 if unknown)"),
     ("fiscal_quarter", "int64",   "Fiscal quarter 1-4 (0 if not determinable)"),
-    ("fiscal_label",   "string",  "Display label, e.g. 'FY2026 Q3'"),
+    ("fiscal_label",   "string",  "Display label, e.g. 'FY2026 Q2'"),
     ("metric_key",     "string",  "Canonical metric key (machine name)"),
     ("metric_label",   "string",  "Canonical metric label (display name)"),
     ("metric_category", "string", "asset | income | distribution | ratio | other"),

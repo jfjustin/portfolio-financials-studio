@@ -76,7 +76,7 @@ curl    http://127.0.0.1:8713/api/fabric/schema                          # contr
   current balance, quarter-over-quarter change, and total % gain/(loss).
 - **Portfolio value over time** — a line chart of total investment balance per
   period (plus a thin line per entity); each period shows both its calendar
-  label and fiscal-year label (e.g. "2026-Q1" / "FY2026 Q3").
+  label and fiscal-year label (e.g. "2026-Q1" / "FY2026 Q2").
 - **Investment portfolio** — the consolidated entities table (`investment_entities`).
 - **Quarterly roll-forward** — Beginning → Funding → … → Ending per entity and
   calendar quarter (`investment_quarters`), with entity drill-down.
@@ -112,9 +112,9 @@ every metric spec carries a `category=...` kwarg.
 ### Fiscal year
 
 Every period shown in the app carries both its **calendar** label (e.g.
-`2026-Q1`) and a **fiscal-year** label (e.g. `FY2026 Q3`), computed from
-`FISCAL_YEAR_END_MONTH` (default `6`, matching Lam Research's own fiscal
-calendar — FY ends the Sunday closest to June 30). Set it to `12` for a pure
+`2026-Q1`) and a **fiscal-year** label (e.g. `FY2026 Q2`), computed from
+`FISCAL_YEAR_END_MONTH` (default `9`: FY2026 = Oct 2025–Sep 2026, so Jan–Mar
+2026 is FY2026 Q2 and Apr–Jun 2026 is FY2026 Q3). Set it to `12` for a pure
 calendar year. See `app/db.py:fiscal_info()`.
 
 ## Why the numbers are trustworthy
