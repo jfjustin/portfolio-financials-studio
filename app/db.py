@@ -306,6 +306,43 @@ def add_fact(sub_id: int, base: dict[str, Any], *, metric_key: str, metric_label
         return fact_id
 
 
+def clear_data(user: str = "local", keep_backups: int = 5) -> dict[str, Any]:
+    """Delete every submission, fact and investment view row ("start over").
+
+    The audit trail is append-only and is kept; a `clear_data` row records who
+    cleared what. With SQLite, a snapshot of the database is saved first under
+    data/backups/ (newest `keep_backups` kept) so a mistaken clear can be undone.
+    """
+    backup = None
+    if settings.sqlalchemy_url.startswith("sqlite") and settings.db_path.exists():
+        import sqlite3
+        bdir = settings.data_dir / "backups"
+        bdir.mkdir(parents=True, exist_ok=True)
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        backup = bdir / f"pipeline_{stamp}.db"
+        src, dst = sqlite3.connect(settings.db_path), sqlite3.connect(backup)
+        try:
+            src.backup(dst)
+        finally:
+            dst.close()
+            src.close()
+        for old in sorted(bdir.glob("pipeline_*.db"))[:-keep_backups]:
+            old.unlink(missing_ok=True)
+
+    eng = get_engine()
+    with eng.begin() as conn:
+        n_subs = conn.execute(select(func.count()).select_from(submissions)).scalar_one()
+        n_facts = conn.execute(select(func.count()).select_from(facts)).scalar_one()
+        for table in (facts, submissions, investment_quarters, investment_entities):
+            conn.execute(table.delete())
+        conn.execute(insert(audit).values(
+            ts=_now(), action="clear_data", user=user,
+            note=(f"cleared {n_subs} submissions, {n_facts} facts"
+                  + (f"; backup {backup.name}" if backup else ""))))
+    return {"cleared_submissions": int(n_subs), "cleared_facts": int(n_facts),
+            "backup": backup.name if backup else None}
+
+
 def mark_submission_reviewed(sub_id: int, user: str = "local") -> None:
     eng = get_engine()
     with eng.begin() as conn:

@@ -25,6 +25,24 @@
     await refresh();
   }
 
+  // "Clear data": empty the database after an explicit typed confirmation
+  async function clearData() {
+    const typed = window.prompt(
+      "This deletes ALL uploaded submissions and extracted values for everyone " +
+      "using this site. The audit trail is kept and a backup snapshot is saved.\n\n" +
+      "Type CLEAR to confirm:");
+    if (typed === null) return;
+    if (typed.trim() !== "CLEAR") { toast("Not cleared — you must type CLEAR."); return; }
+    const res = await fetch("/api/admin/clear", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ confirm: "CLEAR" }) });
+    if (!res.ok) { toast("Clear failed: " + (await res.text())); return; }
+    const r = await res.json();
+    toast(`Cleared ${r.cleared_submissions} submissions, ${r.cleared_facts} values` +
+          (r.backup ? ` · backup ${r.backup}` : ""));
+    await refresh();
+  }
+
   async function refresh() {
     const d = await api("/api/dashboard");
     $("#t-subs").textContent = d.n_submissions;
@@ -430,7 +448,7 @@
   window.addEventListener("resize", () => { /* charts redraw on refresh */ });
   document.addEventListener("DOMContentLoaded", () => {
     wireUpload(); wireModal();
-    $("#refresh-btn").onclick = refresh;
+    $("#clear-btn").onclick = clearData;
     boot();
   });
 })();

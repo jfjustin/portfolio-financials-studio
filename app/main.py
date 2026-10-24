@@ -301,6 +301,17 @@ def confirm_submission(sub_id: int):
     return {"status": "ok"}
 
 
+@app.post("/api/admin/clear")
+async def clear_data(request: Request):
+    """Empty the database (submissions, facts, investment views). Requires the
+    body {"confirm": "CLEAR"} so it can't be triggered by a stray request."""
+    body = await request.json()
+    if body.get("confirm") != "CLEAR":
+        raise HTTPException(400, 'Send {"confirm": "CLEAR"} to clear all data.')
+    return {"status": "ok",
+            **db.clear_data(user=auth.current_user(request) or "local")}
+
+
 @app.get("/api/audit")
 def audit(limit: int = 300):
     return {"audit": db.get_audit(limit=limit)}

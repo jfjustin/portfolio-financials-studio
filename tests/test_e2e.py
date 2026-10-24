@@ -73,6 +73,7 @@ def main() -> int:
     check(len(db.get_audit(limit=5)) > 0, "audit rows written")
 
     roll_forward_continuity(samples)
+    clear_data(samples)
 
     print()
     if FAILS:
@@ -150,6 +151,33 @@ def roll_forward_continuity(samples: Path) -> None:
     check(db.fiscal_info("2025-Q4")["fiscal_label"] == "FY2026 Q1"
           and db.fiscal_info("2026-Q3")["fiscal_label"] == "FY2026 Q4",
           "Oct–Dec 2025 = FY2026 Q1, Jul–Sep 2026 = FY2026 Q4")
+
+
+def clear_data(samples: Path) -> None:
+    """The header's "Clear data" button: empties the data, keeps the audit trail."""
+    from fastapi.testclient import TestClient
+
+    from app.main import app
+
+    client = TestClient(app)
+    n_audit = len(db.get_audit(limit=100000))
+    check(client.post("/api/admin/clear", json={}).status_code == 400,
+          "clear refuses without the typed confirmation")
+    check(db.list_submissions() != [], "nothing cleared by a refused request")
+
+    res = client.post("/api/admin/clear", json={"confirm": "CLEAR"})
+    body = res.json()
+    check(res.status_code == 200 and body["cleared_submissions"] > 0, "clear succeeds")
+    check(db.list_submissions() == [] and db.get_facts() == []
+          and db.get_investments() == {"entities": [], "quarters": []},
+          "submissions, facts and investment views are empty")
+    audit_rows = db.get_audit(limit=100000)
+    check(len(audit_rows) == n_audit + 1 and audit_rows[0]["action"] == "clear_data",
+          "audit trail kept, with a clear_data entry")
+    check(body["backup"] and (settings.data_dir / "backups" / body["backup"]).exists(),
+          "a backup snapshot is saved before clearing")
+    r = process_path(samples / "fund_financials_q4.xlsx")
+    check(r["status"] == "ok", "a previously uploaded file can be uploaded again")
 
 
 if __name__ == "__main__":

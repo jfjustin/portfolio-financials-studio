@@ -332,6 +332,28 @@ are all computed **on each request** from `facts` where
 rebuilt from those trusted facts every time you load the page — they are not
 an independent source of truth, so you never need to "sync" them separately.
 
+### Clearing it from the app (recommended)
+
+Click **Clear data** (top-right of the header), type `CLEAR`, and confirm. It
+works the same locally and on Azure:
+
+- **Deletes** every submission, extracted value, and the investment views.
+- **Keeps** the audit trail (append-only). A `clear_data` entry records who
+  cleared what and when.
+- **Backs up first** (SQLite): a snapshot is saved to
+  `data/backups/pipeline_<UTC time>.db` (on Azure, `/home/data/backups/`). The
+  newest 5 are kept.
+- Files you uploaded before can be uploaded again afterwards; the
+  duplicate-file check starts fresh.
+- Scripted: `curl -X POST <site>/api/admin/clear -H 'Content-Type: application/json'
+  -d '{"confirm":"CLEAR"}'`. When sign-in is on, this needs a signed-in session.
+
+**Undoing a clear:** stop the app, copy the backup over `pipeline.db`, then start
+it again. On Azure, use the Kudu file API from the next section to upload it to
+`data/pipeline.db`, then restart.
+
+The manual methods below remain for when the app itself won't start.
+
 ### Wiping it — local
 
 ```bash
@@ -347,8 +369,7 @@ before deleting.
 
 ### Wiping it — Azure App Service (SQLite backend)
 
-There's no "clear data" button in the UI (by design — it's not something a
-button should do by accident). Use Kudu's file API:
+Prefer the **Clear data** button above. If the app is down, use Kudu's file API:
 
 ```bash
 RG=rg-pfs; APP=pfs-22053     # your resource group / app name
