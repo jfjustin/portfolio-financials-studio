@@ -7,9 +7,19 @@ from __future__ import annotations
 
 import os
 import sys
+import tempfile
 from pathlib import Path
 
 os.environ.setdefault("LLM_PROVIDER", "none")
+# The tests never touch a real database or storage: they always run against a
+# fresh throwaway SQLite file, whatever DATA_DIR / DATABASE_URL / blob storage
+# the shell or a .env points at. Clearing real data is only ever done by the
+# app's "Clear data" button.
+os.environ["DATA_DIR"] = tempfile.mkdtemp(prefix="pfs-e2e-")
+os.environ["DATABASE_URL"] = ""
+os.environ["AZURE_STORAGE_ACCOUNT_URL"] = ""
+os.environ["AZURE_STORAGE_CONNECTION_STRING"] = ""
+os.environ["AUTH_MODE"] = "none"
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
@@ -28,9 +38,7 @@ def check(cond: bool, msg: str) -> None:
 
 
 def main() -> int:
-    # fresh DB
-    if settings.db_path.exists():
-        settings.db_path.unlink()
+    print(f"(test database: {settings.db_path})")
     db.init_db()
 
     samples = ROOT / "samples"

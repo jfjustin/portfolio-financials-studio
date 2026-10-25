@@ -352,6 +352,11 @@ works the same locally and on Azure:
 it again. On Azure, use the Kudu file API from the next section to upload it to
 `data/pipeline.db`, then restart.
 
+Nothing else clears data. Page refreshes, app restarts and deploys all keep the
+database: on Azure it lives on the persistent `/home/data` disk, which deploys
+don't touch. The test suite (`python tests/test_e2e.py`) always runs against
+its own temporary database and never touches yours.
+
 The manual methods below remain for when the app itself won't start.
 
 ### Wiping it — local
