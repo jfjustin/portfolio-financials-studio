@@ -8,6 +8,7 @@ fallback is triggered for a non-standard layout.
 from __future__ import annotations
 
 import csv
+import hashlib
 import io
 import secrets
 from pathlib import Path
@@ -32,6 +33,42 @@ app = FastAPI(title="Portfolio Financials Studio", version="1.0.0")
 app.add_middleware(auth.AuthMiddleware)
 app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
 templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
+
+
+# --------------------------------------------------------------------------
+# Browser caching. Every deploy changes static/js/app.js etc. under the same
+# URL; without Cache-Control, Chrome heuristically reuses its old copy, so new
+# HTML ran against old JavaScript and the page broke. Asset URLs therefore carry
+# a version (?v=...) that changes with the file and responses say exactly how they may be cached.
+# --------------------------------------------------------------------------
+def _asset_version(path: str) -> str:
+    """Changes whenever the file does (each deploy, or an edit in development)."""
+    try:
+        st = (BASE_DIR / "static" / path).stat()
+    except OSError:
+        return "0"
+    return hashlib.sha256(f"{st.st_mtime_ns}:{st.st_size}".encode()).hexdigest()[:12]
+
+
+def asset_url(path: str) -> str:
+    """/static URL with a content-hash version, e.g. js/app.js -> /static/js/app.js?v=1a2b..."""
+    return f"/static/{path}?v={_asset_version(path)}"
+
+
+templates.env.globals["asset_url"] = asset_url
+
+
+@app.middleware("http")
+async def cache_headers(request: Request, call_next):
+    response = await call_next(request)
+    path = request.url.path
+    if path.startswith("/static/"):
+        response.headers["Cache-Control"] = (
+            "public, max-age=31536000, immutable" if "v" in request.query_params
+            else "no-cache")
+    elif response.headers.get("content-type", "").startswith("text/html"):
+        response.headers["Cache-Control"] = "no-cache"
+    return response
 
 
 @app.on_event("startup")

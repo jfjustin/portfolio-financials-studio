@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Portfolio Financials Studio</title>
-  <link rel="stylesheet" href="/static/css/styles.css">
+  <link rel="stylesheet" href="{{ asset_url('css/styles.css') }}">
 </head>
 <body>
   <header class="top">
@@ -233,7 +233,7 @@
   <div class="toast" id="toast"></div>
 
   <script>window.FYE_MONTH = {{ fiscal_year_end_month }};</script>
-  <script src="/static/js/charts.js"></script>
-  <script src="/static/js/app.js"></script>
+  <script src="{{ asset_url('js/charts.js') }}"></script>
+  <script src="{{ asset_url('js/app.js') }}"></script>
 </body>
 </html>

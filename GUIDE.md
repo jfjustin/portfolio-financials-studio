@@ -435,6 +435,7 @@ the app's next startup.
 | Trend chart shows one point | only one period loaded — add more periods for the same entity. |
 | 500 on Azure right after deploy | first boot still installing deps — wait ~45s and refresh; else `az webapp log tail`. |
 | **Dashboard/Investment portfolio empty after a redeploy on Azure** | App Service unpacks the app into an ephemeral path on every restart/redeploy, which used to wipe the local SQLite DB each time. Fixed: the app now auto-detects App Service and stores data in the **persistent** `/home/data` mount. `git pull` the latest code and redeploy — data will then survive restarts. For true multi-instance production, use `DATABASE_URL` (Azure SQL/Postgres) instead of SQLite. |
+| **Page broken in Chrome but fine in Safari** (badge stuck on "…", no data, buttons dead) | Chrome was running its cached copy of an older `app.js` against the newer page. Fixed: asset URLs now carry a version (`app.js?v=…`) that changes on every deploy, and pages are always revalidated, so a normal reload picks up new code. If a browser still shows it, do one hard reload (Cmd+Shift+R / Ctrl+Shift+R). |
 | TVPI/DPI/QoQ show "—" | correct when that fund has no confirmed capital called yet (can't divide by zero) — not a bug. |
 
 ---

@@ -82,6 +82,7 @@ def main() -> int:
 
     roll_forward_continuity(samples)
     manual_period()
+    browser_caching()
     clear_data(samples)
 
     print()
@@ -189,6 +190,26 @@ def manual_period() -> None:
     check([(q["period_label"], q["fiscal_label"]) for q in rows]
           == [("2026-Q1", "FY2026 Q2"), ("2026-Q2", "FY2026 Q3")],
           "moving it back restores the consecutive Q1 → Q2 roll-forward")
+
+
+def browser_caching() -> None:
+    """New HTML must never run against a browser's cached old JavaScript."""
+    import re
+
+    from fastapi.testclient import TestClient
+
+    from app.main import app
+
+    client = TestClient(app)
+    page = client.get("/")
+    check(page.headers.get("cache-control") == "no-cache", "HTML is revalidated on every load")
+    srcs = re.findall(r'(?:src|href)="(/static/[^"]+)"', page.text)
+    check(srcs and all("?v=" in u for u in srcs), "every static asset URL is versioned")
+    js = client.get(next(u for u in srcs if "app.js" in u))
+    check(js.status_code == 200 and "immutable" in js.headers.get("cache-control", ""),
+          "versioned assets are cached long-term")
+    check(client.get("/static/js/app.js").headers.get("cache-control") == "no-cache",
+          "unversioned asset URLs are revalidated")
 
 
 def clear_data(samples: Path) -> None:
