@@ -81,6 +81,7 @@ def main() -> int:
     check(len(db.get_audit(limit=5)) > 0, "audit rows written")
 
     roll_forward_continuity(samples)
+    manual_period()
     clear_data(samples)
 
     print()
@@ -159,6 +160,35 @@ def roll_forward_continuity(samples: Path) -> None:
     check(db.fiscal_info("2025-Q4")["fiscal_label"] == "FY2026 Q1"
           and db.fiscal_info("2026-Q3")["fiscal_label"] == "FY2026 Q4",
           "Oct–Dec 2025 = FY2026 Q1, Jul–Sep 2026 = FY2026 Q4")
+
+
+def manual_period() -> None:
+    """Reviewer corrects a submission's period from the review screen."""
+    from fastapi.testclient import TestClient
+
+    from app.main import app
+
+    client = TestClient(app)
+    sub = next(s for s in db.list_submissions()
+               if s["entity_name"] == "Fund 99" and s["period"] == "2026-Q2")
+    check(client.post(f"/api/submissions/{sub['id']}/period",
+                      json={"period": "June"}).status_code == 400,
+          "invalid period is refused")
+    r = client.post(f"/api/submissions/{sub['id']}/period", json={"period": "2026-q3"}).json()
+    facts_ = db.get_facts(sub["id"])
+    check(r.get("period") == "2026-Q3" and r.get("fiscal_label") == "FY2026 Q4"
+          and db.get_submission(sub["id"])["period"] == "2026-Q3"
+          and all(f["period"] == "2026-Q3" and f["period_start"] == "2026-07-01"
+                  for f in facts_),
+          "period change re-dates the submission and all its values (FY2026 Q4)")
+    check(any(a["field"] == "period" and a["old_value"] == "2026-Q2"
+              and a["new_value"] == "2026-Q3" for a in db.get_audit(sub["id"])),
+          "period change is in the audit trail")
+    client.post(f"/api/submissions/{sub['id']}/period", json={"period": "2026-Q2"})
+    rows = [q for q in db.get_investments()["quarters"] if q["entity_name"] == "Fund 99"]
+    check([(q["period_label"], q["fiscal_label"]) for q in rows]
+          == [("2026-Q1", "FY2026 Q2"), ("2026-Q2", "FY2026 Q3")],
+          "moving it back restores the consecutive Q1 → Q2 roll-forward")
 
 
 def clear_data(samples: Path) -> None:

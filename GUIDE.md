@@ -67,8 +67,19 @@ After upload you'll see a result line per file: detected **report type**,
 reconciliation warnings.
 
 ### ② Review
-Click any row in the **Submissions** table to open the review panel. Values are
-grouped into **sections** so you review like-with-like instead of one long list:
+Click any row in the **Submissions** table to open the review panel.
+
+**Check the reporting period first.** The *Reporting period* bar at the top shows
+the quarter the file was dated to, as both a calendar quarter (`2026-Q2`) and a
+fiscal quarter (`FY2026 Q3`), plus the dates it covers. If it's wrong, change
+either picker; the other one follows. Then click **Save period**. That:
+- re-dates every value in the file;
+- records the change in the audit trail;
+- for roll-forwards, re-links the quarter to the one before it (beginning balance
+  carried forward).
+
+Values are grouped into **sections** so you review like-with-like instead of one
+long list:
 
 | Section | What's in it |
 |---|---|

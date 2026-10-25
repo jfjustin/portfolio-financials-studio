@@ -198,6 +198,24 @@
     <div class="mbody">
       <div id="m-warns"></div>
       <hr class="hr">
+      <h2 style="margin:0 0 8px">Reporting period</h2>
+      <div class="period-bar" id="m-period">
+        <label>Calendar quarter
+          <span class="pgroup"><input type="number" id="p-cal-year" min="2000" max="2100" step="1">
+          <select id="p-cal-q"><option>Q1</option><option>Q2</option><option>Q3</option><option>Q4</option></select></span>
+        </label>
+        <span class="muted">⇄</span>
+        <label>Fiscal quarter
+          <span class="pgroup">FY<input type="number" id="p-fy-year" min="2000" max="2100" step="1">
+          <select id="p-fy-q"><option>Q1</option><option>Q2</option><option>Q3</option><option>Q4</option></select></span>
+        </label>
+        <span class="small muted" id="p-covers"></span>
+        <span class="spacer"></span>
+        <button class="btn sm" id="p-save" disabled>Save period</button>
+      </div>
+      <p class="small muted" style="margin:6px 0 0">Change either one — the other follows. Saving re-dates every value in
+        this file (audited); roll-forward quarters are re-linked to the quarter before.</p>
+      <hr class="hr">
       <h2 style="margin:0 0 8px">Extracted values — confirm, edit, or reject each</h2>
       <p class="small muted" style="margin-top:0">Editing a value or metric, or confirming/rejecting, writes an audit-trail entry. Only <b>auto</b>/<b>confirmed</b> values feed the dashboard &amp; export.</p>
       <table>
@@ -214,6 +232,7 @@
 
   <div class="toast" id="toast"></div>
 
+  <script>window.FYE_MONTH = {{ fiscal_year_end_month }};</script>
   <script src="/static/js/charts.js"></script>
   <script src="/static/js/app.js"></script>
 </body>

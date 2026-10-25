@@ -50,6 +50,7 @@ def index(request: Request):
         "llm_enabled": settings.llm_enabled,
         "auth_mode": settings.auth_mode,
         "user": auth.current_user(request) or "",
+        "fiscal_year_end_month": settings.fiscal_year_end_month,
     })
 
 
@@ -299,6 +300,42 @@ def confirm_submission(sub_id: int):
     if sub and sub["report_type"] == carry_forward.RF:
         carry_forward.rederive_following(sub["entity_name"], sub["period"])
     return {"status": "ok"}
+
+
+@app.post("/api/submissions/{sub_id}/period")
+async def set_period(sub_id: int, request: Request):
+    """Manually correct a submission's reporting period ("2026-Q2" or an ISO
+    date). Roll-forwards are re-derived so quarters still follow on."""
+    import re
+    from datetime import date
+
+    from .extractors.base import is_quarter_label, previous_quarter
+
+    period = str((await request.json()).get("period", "")).strip().upper()
+    ok = is_quarter_label(period)
+    if not ok and re.fullmatch(r"20\d{2}-\d{2}-\d{2}", period):
+        try:
+            date.fromisoformat(period)
+            ok = True
+        except ValueError:
+            pass
+    if not ok:
+        raise HTTPException(400, "Period must be a calendar quarter like 2026-Q2 "
+                                 "or a date like 2026-06-30.")
+    sub = db.get_submission(sub_id)
+    if not sub:
+        raise HTTPException(404, "submission not found")
+    old = db.set_submission_period(sub_id, period,
+                                   user=auth.current_user(request) or "local")
+    if sub["report_type"] == carry_forward.RF:
+        # the moved quarter follows on from its new predecessor, and whatever
+        # followed its old slot re-anchors too
+        if is_quarter_label(period):
+            carry_forward.rederive_following(sub["entity_name"], previous_quarter(period))
+        if is_quarter_label(old):
+            carry_forward.rederive_following(sub["entity_name"], old)
+    return {"status": "ok", "old_period": old, "period": period,
+            "fiscal_label": db.fiscal_info(period)["fiscal_label"]}
 
 
 @app.post("/api/admin/clear")

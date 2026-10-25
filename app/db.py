@@ -306,6 +306,35 @@ def add_fact(sub_id: int, base: dict[str, Any], *, metric_key: str, metric_label
         return fact_id
 
 
+def set_submission_period(sub_id: int, period: str, user: str = "local") -> str:
+    """Re-date a submission and all of its facts (a reviewer's manual period
+    correction). Returns the previous period; the change is audited."""
+    from .extractors.base import is_quarter_label, quarter_bounds
+    bounds = quarter_bounds(period) if is_quarter_label(period) else None
+    eng = get_engine()
+    with eng.begin() as conn:
+        row = conn.execute(select(submissions).where(submissions.c.id == sub_id)
+                           ).mappings().first()
+        if not row:
+            raise KeyError(f"submission {sub_id} not found")
+        old = row["period"] or ""
+        if old == period:
+            return old
+        conn.execute(update(submissions).where(submissions.c.id == sub_id)
+                     .values(period=period))
+        conn.execute(update(facts).where(facts.c.submission_id == sub_id).values(
+            period=period,
+            period_start=bounds[0].isoformat() if bounds else None,
+            period_end=bounds[1].isoformat() if bounds else None,
+            updated_at=_now()))
+        conn.execute(insert(audit).values(
+            ts=_now(), submission_id=sub_id, action="edit", field="period",
+            old_value=old, new_value=period, user=user,
+            note=(f"period set manually ({fiscal_info(old)['fiscal_label'] or old or '—'}"
+                  f" → {fiscal_info(period)['fiscal_label'] or period})")))
+        return old
+
+
 def clear_data(user: str = "local", keep_backups: int = 5) -> dict[str, Any]:
     """Delete every submission, fact and investment view row ("start over").
 

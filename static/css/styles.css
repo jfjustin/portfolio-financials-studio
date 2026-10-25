@@ -236,3 +236,12 @@ table.tbl-report { width: 100%; border-collapse: collapse; font-size: 13px; }
   padding: 2px 7px; white-space: nowrap; }
 
 .asof-note { font-size: 12px; color: var(--muted); margin: -4px 0 14px; }
+
+/* review modal: manual reporting-period correction */
+.period-bar { display: flex; align-items: flex-end; gap: 14px; flex-wrap: wrap; }
+.period-bar label { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--muted); }
+.period-bar .pgroup { display: flex; align-items: center; gap: 4px; color: var(--ink); }
+.period-bar input, .period-bar select { font: inherit; font-size: 13px; padding: 4px 6px;
+  border: 1px solid var(--line); border-radius: 6px; background: var(--panel); color: var(--ink); }
+.period-bar input { width: 72px; }
+.period-bar .spacer { flex: 1; }

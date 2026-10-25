@@ -336,6 +336,7 @@
       ? warns.map(w => `<div class="check warn"><span class="dot"></span><span class="detail">${esc(w)}</span></div>`).join("")
       : '<div class="muted small">No submission-level warnings.</div>';
 
+    renderPeriod(s);
     renderFacts(d);
 
     $("#m-unmapped").innerHTML = unmapped.length
@@ -352,6 +353,68 @@
     ).join("");
 
     showModal(true);
+  }
+
+  // ---- manual reporting-period correction (calendar ⇄ fiscal quarter) ----
+  const FYE = window.FYE_MONTH || 9;
+  const FY_START = FYE % 12 + 1;
+  const MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+
+  // same rule as db.fiscal_info: label a quarter by its first month
+  function calToFiscal(y, q) {
+    const m = 3 * q - 2;
+    return { fy: m <= FYE ? y : y + 1, fq: Math.floor((((m - FY_START) % 12) + 12) % 12 / 3) + 1 };
+  }
+  function fiscalToCal(fy, fq) {
+    const m = (FY_START - 1 + 3 * (fq - 1)) % 12 + 1;
+    return { y: m > FYE ? fy - 1 : fy, q: Math.floor((m - 1) / 3) + 1 };
+  }
+  function covers(y, q) {
+    const end = new Date(y, 3 * q, 0).getDate();
+    return `${MONTHS[3*q-3]} 1–${MONTHS[3*q-1]} ${end}, ${y}`;
+  }
+  // "2026-Q2" / "2026-06-30" / "2026-06" -> {y, q}
+  function parsePeriod(p) {
+    let m = /^(20\d{2})-Q([1-4])$/.exec(p || "");
+    if (m) return { y: +m[1], q: +m[2] };
+    m = /^(20\d{2})-(\d{2})/.exec(p || "");
+    if (m) return { y: +m[1], q: Math.floor((+m[2] - 1) / 3) + 1 };
+    return null;
+  }
+
+  function renderPeriod(s) {
+    const cur = parsePeriod(s.period) || { y: new Date().getFullYear(), q: 1 };
+    const original = s.period || "";
+    const calY = $("#p-cal-year"), calQ = $("#p-cal-q"), fyY = $("#p-fy-year"), fyQ = $("#p-fy-q");
+    const save = $("#p-save");
+    const chosen = () => `${calY.value}-${calQ.value}`;
+    const sync = (from) => {
+      if (from === "cal") {
+        const f = calToFiscal(+calY.value, +calQ.value.slice(1));
+        fyY.value = f.fy; fyQ.value = "Q" + f.fq;
+      } else {
+        const c = fiscalToCal(+fyY.value, +fyQ.value.slice(1));
+        calY.value = c.y; calQ.value = "Q" + c.q;
+      }
+      $("#p-covers").textContent = calY.value
+        ? `covers ${covers(+calY.value, +calQ.value.slice(1))}` +
+          (original && original !== chosen() ? ` · currently ${original}` : "")
+        : "";
+      save.disabled = !calY.value || chosen() === original;
+    };
+    calY.value = cur.y; calQ.value = "Q" + cur.q; sync("cal");
+    if (!parsePeriod(s.period)) save.disabled = false;  // UNKNOWN: let the reviewer set it
+    calY.oninput = calQ.onchange = () => sync("cal");
+    fyY.oninput = fyQ.onchange = () => sync("fy");
+    save.onclick = async () => {
+      const res = await fetch(`/api/submissions/${s.id}/period`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ period: chosen() }) });
+      if (!res.ok) { toast("Period not saved: " + (await res.text())); return; }
+      const r = await res.json();
+      toast(`Period set to ${r.period} (${r.fiscal_label})`);
+      await openSub(s.id);
+    };
   }
 
   // Section order + fallback label for metric keys the current report type
