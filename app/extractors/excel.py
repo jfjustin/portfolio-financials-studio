@@ -30,6 +30,7 @@ def extract_excel(path: Path) -> tuple[list[RawItem], str]:
 
     for ws in wb.worksheets:
         text_parts.append(f"# sheet: {ws.title}")
+        heading = ""
         # Grab column header labels (first non-empty row with mostly text) to
         # annotate wide matrices with their period column. Keyed by 0-based index.
         col_headers: dict[int, str] = {}
@@ -60,6 +61,10 @@ def extract_excel(path: Path) -> tuple[list[RawItem], str]:
             numeric_idx = [i for i in range(label_idx + 1, len(values))
                            if _is_number(values[i])]
             if not numeric_idx:
+                # a text-only row is a heading for the rows below it
+                heading = str(values[label_idx]).strip()
+                if len(heading) > 80:
+                    heading = ""
                 continue
             # capture header row once (labels above the first data row)
             if not header_scanned:
@@ -78,7 +83,8 @@ def extract_excel(path: Path) -> tuple[list[RawItem], str]:
                 if col_note:
                     prov += f" ({col_note})"
                 raw_items.append(RawItem(
-                    label=label, value_raw=repr_number(values[i]), provenance=prov))
+                    label=label, value_raw=repr_number(values[i]), provenance=prov,
+                    section=heading))
 
     wb.close()
     return raw_items, "\n".join(text_parts)

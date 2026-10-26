@@ -315,6 +315,58 @@ parser read the same number, and always goes to review.
 Without a model, everything still works for parser-friendly layouts. Anything
 the parser can't settle is flagged for review rather than guessed.
 
+## 6c. Teaching the app new formats (format memory)
+
+Models don't remember anything between uploads, so the app keeps the memory and
+hands it to both the parser and the model each time. There are three layers,
+and all of them are data, not code:
+
+| Layer | What it holds | Where it comes from |
+|---|---|---|
+| **Pre-loaded terms** | Statement wording → field, e.g. "Called in Q1, 2026" → Funding, "[Unrealised Capital Gains] Capital Loss Q1, 2026" → MTM, "Revenue reserve" → Other. Lines that look like values but aren't are marked **not a value**. | Ships with the app (`app/data/statement_terms.json`), seeded from every format seen so far. |
+| **Taught terms** | Your own wording, for **one fund** or **all funds**. | The **Statement terms** card on the dashboard, or **Teach** on a line in the review panel. |
+| **Learned per fund** | The lines behind every value you **confirm**: the investor column and quarter column the model used, the currency, and last quarter's figures. | Automatic: confirming a submission teaches the app that fund's layout. |
+
+How it's used:
+
+- **Matching** ignores the quarter, year, date and gain/loss wording. A term
+  taught for "Called in Q1, 2026" also covers "Called in Q3, 2027", and
+  "Capital Loss" also covers "Capital Gain". The heading above a line keeps
+  look-alike lines in different blocks apart.
+- **The parser** checks known wording before its generic synonyms:
+  1. terms taught for this fund;
+  2. what this fund's confirmed values taught it;
+  3. terms taught for all funds;
+  4. presets.
+
+  Each value shows where its wording was recognised, e.g. "known wording
+  (learned)". When several known lines feed one activity field, they're added
+  together.
+- **The model** is shown:
+  - the known wording;
+  - for this fund: the investor column and quarter column it confirmed before,
+    the confirmed lines, and last quarter's ending balance (which this quarter's
+    opening should match);
+  - your **fund parameters**: how our investor appears in this fund's statements
+    (e.g. a row name in a fund-wide table) and any notes.
+
+**Your part:**
+
+1. **Confirm** submissions as usual. Each confirmed quarter teaches the app that
+   fund's layout.
+2. **When the app misses or mis-maps a line**, open the file's *found but not
+   mapped* list in the review panel. Pick the field (or *not a value*) and
+   **Teach** it, for this fund or for all funds. The value is recorded straight
+   away and the quarter is recalculated.
+3. **For a fund with an unusual statement**, open *Format memory → Fund
+   parameters* in its review panel. Write how our investor appears there and
+   anything the model should know (e.g. "statements are year-to-date", "use the
+   QTD Change column").
+
+Taught and learned wording is used from the next upload onwards; nothing is
+retrained. Teaching and forgetting terms are recorded in the audit trail, and
+anything a model reads still goes to review.
+
 ---
 
 ## 7. Understanding the trust signals

@@ -41,6 +41,7 @@ submissions = Table(
     Column("warnings", Text),                            # json list
     Column("unmapped", Text),                            # json list
     Column("uploaded_at", String(40), nullable=False),
+    Column("number_format", String(16)),                 # "1,234.56" | "1.234,56"
 )
 
 facts = Table(
@@ -72,6 +73,36 @@ facts = Table(
     # value as read from the document when `value` was derived from it
     # (carried forward from the prior quarter / de-cumulated from YTD)
     Column("reported_value", String(64)),
+    Column("raw_sections", Text),           # json list: heading above each raw_label part
+)
+
+# --------------------------------------------------------------------------
+# Format memory: statement wording a reviewer taught the app (preset wording
+# ships in app/data/statement_terms.json; learned wording comes from confirmed
+# facts), and per-fund parameters such as how OUR investor is named there.
+# --------------------------------------------------------------------------
+statement_terms = Table(
+    "statement_terms", metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("report_type", String(64), nullable=False),
+    Column("entity_name", String(512)),          # NULL = every fund
+    Column("section", Text),                     # heading as shown (optional)
+    Column("label", Text, nullable=False),       # line label as shown
+    Column("section_key", String(512)),          # normalized (models.label_key)
+    Column("label_key", String(512), nullable=False),
+    Column("metric_key", String(128), nullable=False),   # or "ignore"
+    Column("note", Text),
+    Column("created_by", String(128)),
+    Column("created_at", String(40)),
+)
+
+fund_profiles = Table(
+    "fund_profiles", metadata,
+    Column("entity_name", String(512), primary_key=True),
+    Column("investor_aliases", Text),    # how our investor appears in this fund's statements
+    Column("notes", Text),               # anything the model should know about the format
+    Column("updated_by", String(128)),
+    Column("updated_at", String(40)),
 )
 
 audit = Table(
@@ -201,6 +232,7 @@ def save_extraction(result: ExtractionResult) -> int:
             report_type_confidence=result.report_type_confidence,
             entity_name=result.entity_name, period=result.period,
             currency=result.currency, extractor=result.extractor, status="pending",
+            number_format=result.number_format,
             warnings=json.dumps(result.warnings),
             unmapped=json.dumps([i.model_dump() for i in result.unmapped]),
             uploaded_at=_now()))
@@ -222,7 +254,8 @@ def save_extraction(result: ExtractionResult) -> int:
                 created_at=_now(), updated_at=_now(),
                 period_start=result.period_start, period_end=result.period_end,
                 statement_start=result.statement_start, booking_date=result.booking_date,
-                reported_value=_fact_value_str(f.reported_value)))
+                reported_value=_fact_value_str(f.reported_value),
+                raw_sections=json.dumps(f.raw_sections) if any(f.raw_sections) else None))
             fact_id = int(fres.inserted_primary_key[0])
             conn.execute(insert(audit).values(
                 ts=_now(), submission_id=sub_id, fact_id=fact_id,
@@ -283,9 +316,13 @@ def set_derived_fact(fact_id: int, *, value: Optional[Decimal], flags: list[str]
 
 
 def add_fact(sub_id: int, base: dict[str, Any], *, metric_key: str, metric_label: str,
-             value: Decimal, flags: list[str], provenance: str, note: str) -> int:
-    """Insert a derived fact (e.g. a carried-forward beginning balance the
-    document never stated) alongside an existing submission's facts."""
+             value: Decimal, flags: list[str], provenance: str, note: str,
+             raw_label: str = "", raw_value: str = "", raw_sections: Optional[list] = None,
+             status: str = "needs_review", action: str = "carry_forward",
+             user: str = "system") -> int:
+    """Insert a fact alongside an existing submission's facts: a derived one
+    (e.g. a carried-forward beginning balance the document never stated) or a
+    line a reviewer mapped by hand."""
     eng = get_engine()
     with eng.begin() as conn:
         res = conn.execute(insert(facts).values(
@@ -293,17 +330,66 @@ def add_fact(sub_id: int, base: dict[str, Any], *, metric_key: str, metric_label
             entity_kind=base["entity_kind"], report_type=base["report_type"],
             period=base["period"], metric_key=metric_key, metric_label=metric_label,
             value=_fact_value_str(value), unit="currency", currency=base["currency"],
-            raw_label="", raw_value="", provenance=provenance, confidence=0.9,
-            status="needs_review", flags=json.dumps(flags),
+            raw_label=raw_label, raw_value=raw_value, provenance=provenance,
+            confidence=0.9 if action == "carry_forward" else 1.0,
+            status=status, flags=json.dumps(flags),
             created_at=_now(), updated_at=_now(),
             period_start=base.get("period_start"), period_end=base.get("period_end"),
             statement_start=base.get("statement_start"),
-            booking_date=base.get("booking_date")))
+            booking_date=base.get("booking_date"),
+            raw_sections=json.dumps(raw_sections) if raw_sections and any(raw_sections) else None))
         fact_id = int(res.inserted_primary_key[0])
         conn.execute(insert(audit).values(
-            ts=_now(), submission_id=sub_id, fact_id=fact_id, action="carry_forward",
-            field="value", new_value=_fact_value_str(value), user="system", note=note))
+            ts=_now(), submission_id=sub_id, fact_id=fact_id, action=action,
+            field="value", new_value=_fact_value_str(value), user=user, note=note))
         return fact_id
+
+
+def extend_fact(fact_id: int, *, add_value: Decimal, label: str, value_raw: str,
+                section: str, user: str, note: str) -> None:
+    """Add one more printed line to an activity fact (e.g. another expense
+    line that belongs in Other); audited like any edit."""
+    eng = get_engine()
+    with eng.begin() as conn:
+        row = conn.execute(select(facts).where(facts.c.id == fact_id)).mappings().first()
+        old = Decimal(row["value"]) if row["value"] is not None else Decimal(0)
+        parts = (row["raw_label"] or "").split(" + ") if row["raw_label"] else []
+        secs = json.loads(row["raw_sections"] or "[]") or [""] * len(parts)
+        secs = (secs + [""] * len(parts))[:len(parts)] + [section]
+        conn.execute(update(facts).where(facts.c.id == fact_id).values(
+            value=_fact_value_str(old + add_value),
+            raw_label=" + ".join(parts + [label]),
+            raw_value=" + ".join(([row["raw_value"]] if row["raw_value"] else []) + [value_raw]),
+            raw_sections=json.dumps(secs) if any(secs) else None,
+            status="confirmed", updated_at=_now()))
+        conn.execute(insert(audit).values(
+            ts=_now(), submission_id=row["submission_id"], fact_id=fact_id, action="edit",
+            field="value", old_value=_fact_value_str(old),
+            new_value=_fact_value_str(old + add_value), user=user, note=note))
+
+
+def set_fact_source(fact_id: int, *, raw_label: str, raw_value: str, section: str) -> None:
+    """Point a fact at the printed line it now comes from (format memory)."""
+    with get_engine().begin() as conn:
+        conn.execute(update(facts).where(facts.c.id == fact_id).values(
+            raw_label=raw_label, raw_value=raw_value,
+            raw_sections=json.dumps([section]) if section else None, updated_at=_now()))
+
+
+def remove_unmapped(sub_id: int, label: str, value_raw: str) -> None:
+    """Take a line off a submission's "found but not mapped" list."""
+    eng = get_engine()
+    with eng.begin() as conn:
+        row = conn.execute(select(submissions.c.unmapped).where(submissions.c.id == sub_id)).first()
+        items = json.loads((row[0] if row else None) or "[]")
+        keep, dropped = [], False
+        for it in items:
+            if not dropped and it.get("label") == label and it.get("value_raw") == value_raw:
+                dropped = True
+                continue
+            keep.append(it)
+        conn.execute(update(submissions).where(submissions.c.id == sub_id)
+                     .values(unmapped=json.dumps(keep)))
 
 
 def set_submission_period(sub_id: int, period: str, user: str = "local") -> str:

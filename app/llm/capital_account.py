@@ -44,14 +44,68 @@ FIELD_GUIDE = {
 }
 
 
-def _lp_names() -> list[str]:
-    return [n.strip() for n in settings.lp_names.split(",") if n.strip()]
+def _lp_names(extra: str = "") -> list[str]:
+    names = [n.strip() for n in f"{settings.lp_names},{extra}".split(",") if n.strip()]
+    return list(dict.fromkeys(names))
+
+
+def context_text(ctx: Optional[dict]) -> str:
+    """What the app already knows: statement wording (preset + taught) and what
+    reviewers confirmed for this fund before. Empty when there's nothing."""
+    if not ctx:
+        return ""
+    entity = ctx.get("entity") or "this fund"
+    lines: list[str] = []
+    terms = ctx.get("terms") or []
+    if terms:
+        lines.append("Statement wording we already know (quarters, years, dates and "
+                     "gain/loss wording vary from quarter to quarter):")
+        for t in terms[:80]:
+            sec = f"[{t['section']}] " if t.get("section") else ""
+            target = ("not a quarter value — skip" if t["metric_key"] == "ignore"
+                      else t["metric_key"])
+            scope = f" ({entity} only)" if t["source"] == "taught_fund" else ""
+            note = f" — {t['note']}" if t.get("note") and not t["note"].startswith("taught from") else ""
+            lines.append(f'  - {sec}"{t["label"]}" -> {target}{scope}{note}')
+    mem = ctx.get("memory")
+    if mem:
+        lines.append(f"What reviewers already confirmed for {entity}:")
+        for c in mem.get("columns") or []:
+            lines.append(f'  - our investor\'s column/row was "{c["investor"]}", '
+                         f'quarter column "{c["period"]}"')
+        if mem.get("currency"):
+            lines.append(f"  - currency: {mem['currency']}")
+        known = {(t["section_key"], t["label_key"], t["metric_key"]) for t in terms}
+        conf = [e for e in mem.get("learned") or []
+                if (e["section_key"], e["label_key"], e["metric_key"]) not in known][:40]
+        if conf:
+            lines.append("  - confirmed lines: " + "; ".join(
+                (f"[{e['section']}] " if e["section"] else "") + f'"{e["label"]}" -> {e["metric_key"]}'
+                for e in conf))
+        lq = mem.get("last_quarter")
+        if lq:
+            vals = ", ".join(f"{k} {v:,.0f}" for k, v in lq["values"].items()
+                             if k in ("beginning_balance", "ending_balance", "funding",
+                                      "return_of_capital"))
+            lines.append(f"  - last confirmed quarter {lq['period']}: {vals}. This quarter's "
+                         "beginning balance should equal that ending balance unless the "
+                         "statement restates it — if it differs, say so in notes.")
+        notes = (mem.get("profile") or {}).get("notes")
+        if notes:
+            lines.append(f"  - reviewer notes on this fund's statements: {notes}")
+    if lines:
+        lines.append("Use this as guidance. Where this document clearly differs, follow the "
+                     "document and say what changed in \"notes\".")
+    return "\n".join(lines)
 
 
 def build_messages(page_texts: list[tuple[int, str]], page_images: list[tuple[int, bytes]],
-                   filename: str) -> list:
+                   filename: str, context: Optional[dict] = None) -> list:
     fields = "\n".join(f'  - "{k}": {v}' for k, v in FIELD_GUIDE.items())
-    investor = " / ".join(_lp_names()) or "the limited partner the statement is addressed to"
+    aliases = (((context or {}).get("memory") or {}).get("profile") or {}).get(
+        "investor_aliases") or ""
+    investor = (" / ".join(_lp_names(aliases))
+                or "the limited partner the statement is addressed to")
     instructions = f"""You read private-fund investor statements. Our investor is: {investor}.
 File name: {filename}
 
@@ -73,8 +127,9 @@ Return ONE quarter of OUR investor's capital-account roll-forward as a JSON obje
      "Called in Q1, 2026", "Capital Loss Q1, 2026"), take quarter activity only from
      those quarter-specific lines.
 3. "fields": for each field below that is present, list the printed line(s) that make
-   it up for that quarter, as {{"components": [{{"label": "<line label>", "value":
-   "<value EXACTLY as printed>"}}]}}. Copy values verbatim (keep parentheses, minus
+   it up for that quarter, as {{"components": [{{"section": "<heading the line sits
+   under, as printed, or empty>", "label": "<line label as printed>", "value": "<value
+   EXACTLY as printed>"}}]}}. Copy values verbatim (keep parentheses, minus
    signs, thousands separators). Do not add, convert or compute anything. Never put
    year-to-date, since-inception or "to date" totals into quarter fields (use the
    cumulative_* fields for those). When a subtotal and its components both appear,
@@ -92,8 +147,11 @@ Return ONE quarter of OUR investor's capital-account roll-forward as a JSON obje
 JSON shape:
 {{"document_kind": "...", "investor_column": "...", "period_column": "...",
   "period_end": "...", "period_start": null, "currency": "...", "number_format": "...",
-  "fields": {{"funding": {{"components": [{{"label": "...", "value": "..."}}]}}}},
+  "fields": {{"funding": {{"components": [{{"section": "...", "label": "...", "value": "..."}}]}}}},
   "notes": "..."}}"""
+    known = context_text(context)
+    if known:
+        instructions += "\n\n" + known
     content: list = [{"type": "text", "text": instructions}]
     for pno, text in page_texts:
         content.append({"type": "text", "text": f"--- page {pno} (text, columns aligned) ---\n{text}"})
@@ -130,7 +188,7 @@ def select_pages(pages: list[dict], budget: int) -> list[tuple[int, str]]:
 
 def read_capital_account(page_texts: list[tuple[int, str]],
                          page_images: list[tuple[int, bytes]],
-                         filename: str) -> dict:
+                         filename: str, context: Optional[dict] = None) -> dict:
     """Ask the model; returns its normalized answer or {"_error": ...}."""
     if not settings.llm_enabled:
         return {"_error": "no model configured"}
@@ -139,7 +197,7 @@ def read_capital_account(page_texts: list[tuple[int, str]],
         page_images = []
     if not page_texts and not page_images:
         return {"_error": "nothing readable to send to the model"}
-    data = provider.complete_json(build_messages(page_texts, page_images, filename))
+    data = provider.complete_json(build_messages(page_texts, page_images, filename, context))
     if not isinstance(data, dict) or data.get("_error"):
         return {"_error": (data or {}).get("_error", "no answer")}
     fields: dict[str, list[dict]] = {}
@@ -149,7 +207,8 @@ def read_capital_account(page_texts: list[tuple[int, str]],
         comps = [c for c in spec.get("components") or []
                  if isinstance(c, dict) and str(c.get("value", "")).strip()]
         if comps:
-            fields[key] = [{"label": str(c.get("label", key)), "value": str(c["value"])}
+            fields[key] = [{"label": str(c.get("label", key)), "value": str(c["value"]),
+                            "section": str(c.get("section") or "").strip()}
                            for c in comps]
     return {
         "document_kind": str(data.get("document_kind") or "other"),

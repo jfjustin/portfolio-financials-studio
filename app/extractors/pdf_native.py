@@ -51,6 +51,18 @@ def _looks_numeric(s: str) -> bool:
     return bool(s) and bool(_NUMISH.search(s))
 
 
+_CONNECTOR_END = re.compile(r"\b(through|of|to|and|the|for|from|in|at|as|on|by|with)$", re.I)
+
+
+def _looks_like_heading(line: str) -> bool:
+    """A short title line ("Unrealised Capital Gains"), not a wrapped label
+    ending mid-phrase ("... from Initial Closing Date through") or a date."""
+    t = line.strip(" *:")
+    return (3 <= len(t) <= 80 and re.match(r"[A-Za-z(]", t) is not None
+            and not _CONNECTOR_END.search(t)
+            and not re.fullmatch(r"[A-Za-z]{3,9}\.?\s+\d{1,2},?\s+20\d{2}", t))
+
+
 def parse_statement_lines(text: str, provenance: str) -> list[RawItem]:
     """Label/value pairs from free text, for statements without dot leaders.
 
@@ -61,6 +73,7 @@ def parse_statement_lines(text: str, provenance: str) -> list[RawItem]:
     items: list[RawItem] = []
     pending_label = ""   # a label line still waiting for its figure
     section = ""         # last "Operating expenses:"-style header
+    heading = ""         # nearest heading above (e.g. "Unrealised Capital Gains")
     for raw_ln in text.splitlines():
         ln = raw_ln.strip()
         if not ln:
@@ -73,7 +86,7 @@ def parse_statement_lines(text: str, provenance: str) -> list[RawItem]:
             label = pending_label or (f"{section} (subtotal)" if section else "")
             if label:
                 items.append(RawItem(label=label, value_raw=bare.group("value").strip(),
-                                     provenance=f"{provenance} text"))
+                                     provenance=f"{provenance} text", section=heading))
             pending_label = ""
             continue
         m = _LINE_TAIL.match(ln)
@@ -88,12 +101,16 @@ def parse_statement_lines(text: str, provenance: str) -> list[RawItem]:
                 # quarter | YTD | inception): keep the right-most, record how
                 # many there were so the pick gets reviewed
                 cols = f" cols={len(cells)}" if len(cells) > 1 else ""
+                if pending_label and _looks_like_heading(pending_label):
+                    # a value-less line followed by figure lines was a heading
+                    heading = pending_label
                 items.append(RawItem(label=label, value_raw=value,
-                                     provenance=f"{provenance} text{cols}"))
+                                     provenance=f"{provenance} text{cols}", section=heading))
                 pending_label = ""
                 continue
         if _SECTION_HEADER.match(ln):
             section, pending_label = ln.rstrip(":").strip(), ""
+            heading = section
         elif re.search(r"[A-Za-z]{3}", ln) and len(ln) <= 120:
             # a value-less label line: either wraps onto a figure on the next line
             # or is a date continuation ("June 30, 2026*") of the previous label

@@ -20,7 +20,7 @@ from fastapi.responses import (HTMLResponse, JSONResponse, RedirectResponse,
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
-from . import auth, carry_forward, db, fabric_export, performance
+from . import auth, carry_forward, db, fabric_export, performance, terms
 from .config import settings
 from .llm import get_provider
 from .pipeline import process_upload
@@ -297,6 +297,7 @@ def submission_detail(sub_id: int):
         "submission": sub,
         "facts": db.get_facts(sub_id),
         "audit": db.get_audit(sub_id, limit=200),
+        "memory": _memory_summary(sub["entity_name"], sub["report_type"]),
         "report_type_metrics": [
             {"key": m.key, "label": m.label, "unit": m.unit.value,
              "category": m.category.value, "category_label": CATEGORY_LABELS[m.category]}
@@ -304,6 +305,146 @@ def submission_detail(sub_id: int):
                                       REPORT_TYPES["fund_financials"]).metrics],
         "category_order": [c.value for c in CATEGORY_ORDER],
     }
+
+
+# --------------------------------------------------------------------------
+# Format memory: statement wording (preset / taught / learned) and per-fund
+# parameters — see app/terms.py
+# --------------------------------------------------------------------------
+_BALANCE_KEYS = ("beginning_balance", "ending_balance", "commitment", "remaining_commitment")
+
+
+def _memory_summary(entity: Optional[str], report_type: str) -> Optional[dict]:
+    if not entity or entity == "UNKNOWN":
+        return None
+    mem = terms.fund_memory(entity, report_type)
+    return {"entity_name": entity, "quarters": mem["quarters"], "columns": mem["columns"],
+            "currency": mem["currency"], "n_learned": len(mem["learned"]),
+            "n_taught": len(mem["taught"]),
+            "profile": {"investor_aliases": mem["profile"].get("investor_aliases") or "",
+                        "notes": mem["profile"].get("notes") or ""}}
+
+
+def _metric_choices(report_type: str) -> list[dict]:
+    rt = REPORT_TYPES.get(report_type, REPORT_TYPES["fund_financials"])
+    return [{"key": m.key, "label": m.label} for m in rt.metrics]
+
+
+@app.get("/api/terms")
+def list_terms(report_type: str = carry_forward.RF):
+    if report_type not in REPORT_TYPES:
+        raise HTTPException(400, "unknown report type")
+    return {"report_type": report_type, "presets": terms.presets(report_type),
+            "taught": terms.taught(report_type), "metrics": _metric_choices(report_type)}
+
+
+@app.post("/api/terms")
+async def add_term(request: Request):
+    body = await request.json()
+    rt = body.get("report_type") or carry_forward.RF
+    metric = body.get("metric_key", "")
+    if rt not in REPORT_TYPES or not (metric == terms.IGNORE
+                                      or REPORT_TYPES[rt].metric_by_key(metric)):
+        raise HTTPException(400, "unknown report type or field")
+    label = str(body.get("label", "")).strip()
+    if not label:
+        raise HTTPException(400, "label is required")
+    term_id = terms.add_term(rt, label, metric, section=str(body.get("section") or "").strip(),
+                             entity_name=(body.get("entity_name") or None),
+                             note=str(body.get("note") or ""),
+                             user=auth.current_user(request) or "local")
+    return {"status": "ok", "id": term_id}
+
+
+@app.delete("/api/terms/{term_id}")
+def delete_term(term_id: int, request: Request):
+    if not terms.delete_term(term_id, user=auth.current_user(request) or "local"):
+        raise HTTPException(404, "term not found")
+    return {"status": "ok"}
+
+
+@app.get("/api/funds/{entity}/memory")
+def fund_memory(entity: str, report_type: str = carry_forward.RF):
+    mem = terms.fund_memory(entity, report_type)
+    if mem["last_quarter"]:
+        mem["last_quarter"]["values"] = {k: str(v) for k, v in mem["last_quarter"]["values"].items()}
+    return mem
+
+
+@app.post("/api/funds/{entity}/profile")
+async def set_fund_profile(entity: str, request: Request):
+    body = await request.json()
+    return terms.set_fund_profile(entity, investor_aliases=str(body.get("investor_aliases") or ""),
+                                  notes=str(body.get("notes") or ""),
+                                  user=auth.current_user(request) or "local")
+
+
+@app.post("/api/submissions/{sub_id}/teach")
+async def teach_line(sub_id: int, request: Request):
+    """A reviewer maps a line the app didn't recognise: remember the wording
+    (for this fund or every fund) and record the value now."""
+    from decimal import Decimal
+
+    from .extractors.base import is_quarter_label, previous_quarter
+    from .models import parse_number
+
+    body = await request.json()
+    sub = db.get_submission(sub_id)
+    if not sub:
+        raise HTTPException(404, "submission not found")
+    rt_key = sub["report_type"]
+    rt = REPORT_TYPES.get(rt_key)
+    metric = body.get("metric_key", "")
+    spec = rt.metric_by_key(metric) if rt else None
+    if metric != terms.IGNORE and spec is None:
+        raise HTTPException(400, "unknown field for this report type")
+    label = str(body.get("label", "")).strip()
+    value_raw = str(body.get("value_raw", "")).strip()
+    section = str(body.get("section") or "").strip()
+    entity = sub["entity_name"]
+    scope_fund = body.get("scope", "fund") == "fund"
+    if scope_fund and (not entity or entity == "UNKNOWN"):
+        raise HTTPException(400, "this file has no fund identified — teach it for all funds")
+    user = auth.current_user(request) or "local"
+
+    value = None
+    if metric != terms.IGNORE:
+        dashes = {"-", "–", "—"}
+        value = (Decimal(0) if value_raw in dashes
+                 else parse_number(value_raw, sub.get("number_format") == "1.234,56")[0])
+        if value is None:
+            raise HTTPException(400, f"can't read a number from '{value_raw}'")
+
+    term_id = terms.add_term(rt_key, label, metric, section=section,
+                             entity_name=entity if scope_fund else None,
+                             note=f"taught from submission #{sub_id}", user=user)
+    fact_id = None
+    if metric != terms.IGNORE:
+        existing = [f for f in db.get_facts(sub_id)
+                    if f["metric_key"] == metric and f["status"] != "rejected"]
+        note = f"taught line '{label}'"
+        if existing and (metric in _BALANCE_KEYS or spec.since_inception):
+            fact_id = existing[0]["id"]
+            db.update_fact(fact_id, value=str(value), status="confirmed", note=note, user=user)
+            db.set_fact_source(fact_id, raw_label=label, raw_value=value_raw, section=section)
+        elif existing:
+            fact_id = existing[0]["id"]
+            db.extend_fact(fact_id, add_value=value, label=label, value_raw=value_raw,
+                           section=section, user=user, note=note)
+        else:
+            facts_ = db.get_facts(sub_id)
+            base = facts_[0] if facts_ else {
+                "entity_name": entity, "entity_kind": rt.entity_kind, "report_type": rt_key,
+                "period": sub["period"], "currency": sub.get("currency") or "USD"}
+            fact_id = db.add_fact(sub_id, base, metric_key=metric, metric_label=spec.label,
+                                  value=value, flags=["taught"], provenance=f"taught by {user}",
+                                  note=note, raw_label=label, raw_value=value_raw,
+                                  raw_sections=[section], status="confirmed",
+                                  action="teach", user=user)
+    db.remove_unmapped(sub_id, label, value_raw)
+    if rt_key == carry_forward.RF and is_quarter_label(sub["period"]):
+        carry_forward.rederive_following(entity, previous_quarter(sub["period"]))
+    return {"status": "ok", "term_id": term_id, "fact_id": fact_id}
 
 
 @app.post("/api/facts/{fact_id}")

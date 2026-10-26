@@ -161,6 +161,11 @@ for `azure`/`openai`, else local Tesseract). It reads the investor named in
 `LP_NAMES` and the current-quarter column. Every value goes to review; see
 GUIDE §6b.
 
+**Format memory** (GUIDE §6c): the parser and the model both use known statement
+wording. It's pre-loaded (`app/data/statement_terms.json`), taught by reviewers
+(for one fund or all), and learned from each fund's confirmed values. Each new
+statement is read the way that fund was confirmed before, with no retraining.
+
 ### Customer Microsoft model (Azure OpenAI)
 
 Connects to an Azure OpenAI **deployment** in the customer's own subscription, so

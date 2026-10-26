@@ -204,6 +204,70 @@ def lp_statement_two_column_pdf():
     print("wrote Fund 77_Q1 2026 Statement_Sample Holdings LP.pdf")
 
 
+def _lp_statement_pdf(filename: str, title: str, rows: list[tuple]):
+    """Two-column LP statement: (label, partnership total, our investor) rows,
+    or (heading,) rows that head the lines below them."""
+    from fpdf import FPDF
+    pdf = FPDF()
+    pdf.add_page()
+    pdf.set_font("helvetica", "B", 12)
+    pdf.cell(0, 7, title, ln=True)
+    pdf.set_font("helvetica", "", 10)
+    pdf.cell(0, 6, "(all figures in EUR)", ln=True)
+    pdf.cell(110, 6, "")
+    pdf.cell(40, 6, "Total Partnership", align="R")
+    pdf.cell(40, 6, "Sample Holdings LP", ln=True, align="R")
+    for row in rows:
+        if len(row) == 1:
+            pdf.set_font("helvetica", "B", 10)
+            pdf.cell(0, 6, row[0], ln=True)
+            pdf.set_font("helvetica", "", 10)
+            continue
+        label, total, ours = row
+        pdf.cell(110, 6, label)
+        pdf.cell(40, 6, total, align="R")
+        pdf.cell(40, 6, ours, ln=True, align="R")
+    pdf.output(str(OUT / filename))
+    print("wrote", filename)
+
+
+def format_memory_pdfs():
+    """Fund 78, two consecutive quarters in the same layout (made-up numbers).
+    Q2 rewords lines the way real statements do: new quarter numbers, and
+    'Capital Loss' becomes 'Capital Gain'. 'Fund expenses allocated' and
+    'Equalisation interest' are wordings nothing is pre-loaded for."""
+    _lp_statement_pdf("Fund 78_Q1 2026 Statement_Sample Holdings LP.pdf",
+                      "Limited Partner Fund Statement - Q1, 2026", [
+        ("Total committed", "50,000,000", "1,000,000"),
+        ("Called in Q1, 2026", "1,000,000", "20,000"),
+        ("Income",),
+        ("Equalisation interest Q1, 2026", "25,000", "500"),
+        ("Unrealised Capital Gains",),
+        ("Balance as at Q4, 2025", "5,000,000", "100,000"),
+        ("Capital Loss Q1, 2026", "(500,000)", "(10,000)"),
+        ("GP Share and Other Expenses (Net of income)",),
+        ("Balance as at Q4, 2025", "(2,500,000)", "(50,000)"),
+        ("GP Share and Other Expenses Q1, 2026", "(100,000)", "(2,000)"),
+        ("Fund expenses allocated Q1, 2026", "(50,000)", "(1,000)"),
+        ("Capital Accounts at Q1", "50,375,000", "1,007,500"),
+    ])
+    _lp_statement_pdf("Fund 78_Q2 2026 Statement_Sample Holdings LP.pdf",
+                      "Limited Partner Fund Statement - Q2, 2026", [
+        ("Total committed", "50,000,000", "1,000,000"),
+        ("Called in Q2, 2026", "1,500,000", "30,000"),
+        ("Income",),
+        ("Equalisation interest Q2, 2026", "35,000", "700"),
+        ("Unrealised Capital Gains",),
+        ("Balance as at Q1, 2026", "4,500,000", "90,000"),
+        ("Capital Gain Q2, 2026", "750,000", "15,000"),
+        ("GP Share and Other Expenses (Net of income)",),
+        ("Balance as at Q1, 2026", "(2,650,000)", "(53,000)"),
+        ("GP Share and Other Expenses Q2, 2026", "(125,000)", "(2,500)"),
+        ("Fund expenses allocated Q2, 2026", "(25,000)", "(500)"),
+        ("Capital Accounts at Q2", "52,510,000", "1,050,200"),
+    ])
+
+
 if __name__ == "__main__":
     fund_financials()
     jv_holdings()
@@ -211,4 +275,5 @@ if __name__ == "__main__":
     jv_equity_income_pdf()
     pcap_pdfs()
     lp_statement_two_column_pdf()
+    format_memory_pdfs()
     print("\nSample files ready in", OUT)

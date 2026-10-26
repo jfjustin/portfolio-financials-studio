@@ -23,6 +23,7 @@ class RawItem(BaseModel):
     label: str
     value_raw: str
     provenance: str = ""     # e.g. "p3 table2 r5c2" or "Sheet1!B7"
+    section: str = ""        # nearest heading above the line ("Unrealised Capital Gains")
 
 
 class FinancialFact(BaseModel):
@@ -45,6 +46,8 @@ class FinancialFact(BaseModel):
     # value as read from the document, when the recorded `value` was derived from
     # it (carried forward from the prior quarter, or de-cumulated from YTD)
     reported_value: Optional[Decimal] = None
+    # heading above each " + "-joined component of raw_label (format memory)
+    raw_sections: list[str] = Field(default_factory=list)
 
     model_config = {"use_enum_values": True}
 
@@ -62,6 +65,7 @@ class ExtractionResult(BaseModel):
     statement_start: Optional[str] = None  # coverage start the document states (YTD → Jan 1)
     booking_date: Optional[str] = None     # e.g. a JV voucher's booking month — metadata only
     currency: str = "USD"
+    number_format: str = "1,234.56"   # or "1.234,56" (European)
     extractor: str = ""               # which extractor produced this
     facts: list[FinancialFact] = Field(default_factory=list)
     unmapped: list[RawItem] = Field(default_factory=list)  # found but not mapped
@@ -175,6 +179,34 @@ def parse_number(raw: str, decimal_comma: Optional[bool] = None
     if is_percent:
         notes.append("percent")
     return val, notes
+
+
+# --------------------------------------------------------------------------
+# Label keys — how a learned/taught statement line is recognised next time.
+# Quarters, years, dates and gain/loss wording change every quarter
+# ("Called in Q1, 2026" -> "Called in Q2, 2026"; "Capital Loss" -> "Capital
+# Gain"), so they're normalised to placeholders.
+# --------------------------------------------------------------------------
+_MON = (r"(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|"
+        r"aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)")
+
+
+def label_key(label: str) -> str:
+    s = (label or "").lower().replace("\u2019", "'")
+    s = re.sub(r"\[[^\]]*\]", " ", s)                       # "[note 5]"
+    s = re.sub(r"\bhl(?=[a-z])", "in", s)                     # OCR "hlterest"
+    s = re.sub(rf"\b\d{{1,2}}[\s\-/.]+{_MON}\.?[\s\-/.,]+(?:20)?\d{{2}}\b", " <date> ", s)
+    s = re.sub(rf"\b{_MON}\.?\s+\d{{1,2}},?\s+20\d{{2}}\b", " <date> ", s)
+    s = re.sub(r"\b\d{1,2}[/\-.]\d{1,2}[/\-.](?:20)?\d{2}\b", " <date> ", s)
+    s = re.sub(r"\b20\d{2}-\d{2}-\d{2}\b", " <date> ", s)
+    s = re.sub(r"\bq[1-4]\b|\b(?:first|second|third|fourth) quarter\b", " <q> ", s)
+    s = re.sub(rf"\b{_MON}\b", " <month> ", s)
+    s = re.sub(r"\b(?:19|20)\d{2}\b", " <year> ", s)
+    s = re.sub(r"\(?\b(?:gains?|loss(?:es)?)\b\)?(?:\s*/\s*\(?\b(?:gains?|loss(?:es)?)\b\)?)?",
+               " <gain/loss> ", s)
+    s = re.sub(r"(?:<gain/loss>\s*)+", "<gain/loss> ", s)
+    s = re.sub(r"[^a-z0-9<>/%& ]+", " ", s)
+    return re.sub(r"\s+", " ", s).strip()
 
 
 # --------------------------------------------------------------------------

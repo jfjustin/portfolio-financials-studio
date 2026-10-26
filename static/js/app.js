@@ -23,6 +23,7 @@
     if (ps.detail) b.title = ps.detail;
     $("#ledger-filter").addEventListener("input", renderLedger);
     await refresh();
+    loadTerms();
   }
 
   // "Clear data": empty the database after an explicit typed confirmation
@@ -248,6 +249,7 @@
   const mv = v => (v == null || v === "") ? '<span class="muted">—</span>' : money(v);
 
   function renderSubs(subs) {
+    ENTITIES = [...new Set(subs.map(s => s.entity_name).filter(e => e && e !== "UNKNOWN"))].sort();
     const tb = $("#subs-body"); tb.innerHTML = "";
     if (!subs.length) { tb.innerHTML = '<tr><td colspan="7" class="muted">No files ingested yet. Upload above.</td></tr>'; return; }
     subs.forEach(s => {
@@ -340,13 +342,8 @@
     renderPeriod(s);
     renderFacts(d);
 
-    $("#m-unmapped").innerHTML = unmapped.length
-      ? `<details><summary class="muted small">${unmapped.length} unmapped line(s) found in the file (click)</summary>
-         <table><thead><tr><th>Label</th><th>Value</th><th>Where</th><th></th></tr></thead><tbody>
-         ${unmapped.map((u,i) => `<tr><td>${esc(u.label)}</td><td class="num">${esc(u.value_raw)}</td>
-           <td class="mono">${esc(u.provenance)}</td></tr>`).join("")}
-         </tbody></table></details>`
-      : "";
+    renderMemory(d);
+    renderUnmapped(d, unmapped);
 
     $("#m-audit").innerHTML = d.audit.map(a =>
       `<div class="small mono">${a.ts.replace('T',' ')} · ${a.action}${a.field?(' · '+a.field):''}
@@ -354,6 +351,109 @@
     ).join("");
 
     showModal(true);
+  }
+
+  // ---- format memory: what the app knows about this fund's statements ----
+  function renderMemory(d) {
+    const box = $("#m-memory"), m = d.memory;
+    if (!m) {
+      box.innerHTML = '<p class="small muted" style="margin:0">No fund identified for this file — lines taught below apply to all funds.</p>';
+      return;
+    }
+    const q = m.quarters.length;
+    const col = (m.columns || [])[0];
+    box.innerHTML = `
+      <div class="memory-line">
+        <span><b>${esc(m.entity_name)}</b></span>
+        <span>${q ? `learned from ${q} confirmed quarter${q > 1 ? "s" : ""} (${esc(m.quarters.join(", "))})`
+                  : '<span class="muted">nothing confirmed yet — confirm this file to teach the app its layout</span>'}</span>
+        ${col ? `<span>our column <b>“${esc(col.investor)}”</b> · quarter column <b>“${esc(col.period)}”</b></span>` : ""}
+        ${m.currency ? `<span>currency ${esc(m.currency)}</span>` : ""}
+        <span>${m.n_learned} remembered line${m.n_learned === 1 ? "" : "s"} · ${m.n_taught} taught term${m.n_taught === 1 ? "" : "s"}</span>
+      </div>
+      <details style="margin-top:6px"><summary class="small muted">Fund parameters for the model (click)</summary>
+        <div class="memory-form">
+          <label>How our investor appears in ${esc(m.entity_name)}'s statements
+            <input id="mf-aliases" placeholder="e.g. Shareholder Q, Sample Holdings LP" value="${esc(m.profile.investor_aliases)}"></label>
+          <label>Notes for reading this fund's statements
+            <textarea id="mf-notes" placeholder="e.g. statements are year-to-date; figures in EUR">${esc(m.profile.notes)}</textarea></label>
+          <button class="btn sm" id="mf-save">Save</button>
+        </div>
+      </details>`;
+    $("#mf-save").onclick = async () => {
+      const res = await fetch(`/api/funds/${encodeURIComponent(m.entity_name)}/profile`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ investor_aliases: $("#mf-aliases").value, notes: $("#mf-notes").value }) });
+      toast(res.ok ? `Saved — used the next time a ${m.entity_name} statement is read` : "Not saved");
+    };
+  }
+
+  // lines found in the file that weren't mapped: teach the app what they are
+  function renderUnmapped(d, unmapped) {
+    if (!unmapped.length) { $("#m-unmapped").innerHTML = ""; return; }
+    const s = d.submission, m = d.memory;
+    const opts = d.report_type_metrics.map(x => `<option value="${x.key}">${esc(x.label)}</option>`).join("") +
+      '<option value="ignore">Not a value — skip this line</option>';
+    const scope = m ? `<option value="fund">for ${esc(m.entity_name)}</option>` : "";
+    $("#m-unmapped").innerHTML = `
+      <details><summary class="muted small">${unmapped.length} line(s) found in the file but not mapped — teach the app what they are (click)</summary>
+        <table><thead><tr><th>Line</th><th class="num">Value</th><th>Where</th><th>Teach</th></tr></thead><tbody>
+        ${unmapped.map((u, i) => `<tr>
+          <td>${u.section ? `<div class="small muted">${esc(u.section)}</div>` : ""}${esc(u.label)}</td>
+          <td class="num">${esc(u.value_raw)}</td><td class="mono small">${esc(u.provenance)}</td>
+          <td><div class="teach"><select data-teach-metric="${i}"><option value="">Field…</option>${opts}</select>
+            <select data-teach-scope="${i}">${scope}<option value="all">for all funds</option></select>
+            <button class="btn sm" data-teach="${i}">Teach</button></div></td></tr>`).join("")}
+        </tbody></table></details>`;
+    $$("#m-unmapped [data-teach]").forEach(btn => btn.onclick = async () => {
+      const i = btn.dataset.teach, u = unmapped[i];
+      const metric = $(`[data-teach-metric="${i}"]`).value;
+      if (!metric) { toast("Pick a field first"); return; }
+      const res = await fetch(`/api/submissions/${s.id}/teach`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ label: u.label, section: u.section || "", value_raw: u.value_raw,
+                               metric_key: metric, scope: $(`[data-teach-scope="${i}"]`).value }) });
+      if (!res.ok) { toast("Not taught: " + (await res.text())); return; }
+      toast(metric === "ignore" ? "Remembered — this line will be skipped next time"
+                                : "Recorded and remembered for next time");
+      await openSub(s.id); loadTerms();
+    });
+  }
+
+  // ---- statement terms card (pre-loaded + taught wording) ----
+  let ENTITIES = [];
+  async function loadTerms() {
+    const t = await api("/api/terms");
+    const metricLabel = Object.fromEntries(t.metrics.map(x => [x.key, x.label]));
+    metricLabel.ignore = "— not a value (skip)";
+    $("#t-metric").innerHTML = t.metrics.map(x => `<option value="${x.key}">${esc(x.label)}</option>`).join("") +
+      '<option value="ignore">Not a value — skip</option>';
+    $("#t-scope").innerHTML = '<option value="">All funds</option>' +
+      ENTITIES.map(e => `<option value="${esc(e)}">${esc(e)} only</option>`).join("");
+    const rows = [...t.taught, ...t.presets];
+    $("#terms-count").textContent = ` — ${t.taught.length} taught · ${t.presets.length} pre-loaded`;
+    $("#terms-body").innerHTML = rows.map(r => `<tr>
+        <td>${r.entity_name ? esc(r.entity_name) : '<span class="muted">All funds</span>'}</td>
+        <td class="small">${esc(r.section || "")}</td><td>${esc(r.label)}</td>
+        <td>${esc(metricLabel[r.metric_key] || r.metric_key)}</td>
+        <td><span class="tag">${r.source === "preset" ? "preset" : "taught"}</span></td>
+        <td>${r.source === "preset" ? "" : `<button class="btn sm danger" data-forget="${r.id}" title="Forget this term">✕</button>`}</td></tr>`).join("");
+    $$("#terms-body [data-forget]").forEach(b => b.onclick = async () => {
+      await fetch(`/api/terms/${b.dataset.forget}`, { method: "DELETE" });
+      toast("Term forgotten"); loadTerms();
+    });
+  }
+  function wireTerms() {
+    $("#term-form").onsubmit = async (ev) => {
+      ev.preventDefault();
+      const res = await fetch("/api/terms", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ label: $("#t-label").value, section: $("#t-section").value,
+                               metric_key: $("#t-metric").value, entity_name: $("#t-scope").value || null }) });
+      if (!res.ok) { toast("Not added: " + (await res.text())); return; }
+      $("#t-label").value = ""; $("#t-section").value = "";
+      toast("Term added — used from the next upload"); loadTerms();
+    };
   }
 
   // ---- manual reporting-period correction (calendar ⇄ fiscal quarter) ----
@@ -511,7 +611,7 @@
 
   window.addEventListener("resize", () => { /* charts redraw on refresh */ });
   document.addEventListener("DOMContentLoaded", () => {
-    wireUpload(); wireModal();
+    wireUpload(); wireModal(); wireTerms();
     $("#clear-btn").onclick = clearData;
     boot();
   });

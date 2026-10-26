@@ -245,3 +245,18 @@ table.tbl-report { width: 100%; border-collapse: collapse; font-size: 13px; }
   border: 1px solid var(--line); border-radius: 6px; background: var(--panel); color: var(--ink); }
 .period-bar input { width: 72px; }
 .period-bar .spacer { flex: 1; }
+
+/* format memory */
+.memory-line { display: flex; flex-wrap: wrap; gap: 6px 14px; font-size: 13px; }
+.memory-form { display: grid; grid-template-columns: 1fr 1fr auto; gap: 8px; margin-top: 8px; align-items: end; }
+.memory-form label, .terms-form label { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--muted); }
+.memory-form input, .memory-form textarea, .terms-form input, .terms-form select, .teach select {
+  font: inherit; font-size: 13px; padding: 4px 6px; border: 1px solid var(--line); border-radius: 6px;
+  background: var(--panel); color: var(--ink); }
+.memory-form textarea { min-height: 34px; resize: vertical; }
+.terms-form { display: flex; flex-wrap: wrap; gap: 8px; margin: 10px 0; }
+.terms-form input { min-width: 220px; }
+.teach { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+#terms-card summary { cursor: pointer; list-style: none; }
+#terms-card summary::-webkit-details-marker { display: none; }
+@media (max-width: 720px) { .memory-form { grid-template-columns: 1fr; } }

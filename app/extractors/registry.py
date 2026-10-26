@@ -14,8 +14,9 @@ from typing import Optional
 
 from ..config import settings
 from ..models import (ExtractionResult, FactStatus, FinancialFact, RawItem,
-                      detect_currency, detect_decimal_comma, map_label_to_metric,
-                      parse_number)
+                      detect_currency, detect_decimal_comma, label_key,
+                      map_label_to_metric, parse_number)
+from ..terms import IGNORE, TermIndex
 from ..report_types import REPORT_TYPES, Unit, guess_report_type
 from ..llm import extract_with_llm, get_provider
 from ..llm.capital_account import read_capital_account, select_pages
@@ -70,7 +71,12 @@ def assemble(raw_items: list[RawItem], text_blob: str, filename: str,
     currency = detect_currency(text_blob) or "USD"
 
     # --- map raw items -> best candidate per metric ---
+    # Known wording first (taught for this fund > this fund's confirmed history >
+    # taught for all funds > presets), then the report type's generic synonyms.
+    terms = TermIndex.for_entity(entity, rt_key)
     candidates: dict[str, list[tuple[float, RawItem]]] = {}
+    term_source: dict[int, str] = {}           # id(item) -> where its wording is known from
+    term_lines: dict[str, set] = {}            # metric -> distinct known lines feeding it
     unmapped: list[RawItem] = []
     for item in raw_items:
         if re.search(r"\d{1,3}(?:[.,]\d{3})+", item.label):
@@ -78,7 +84,16 @@ def assemble(raw_items: list[RawItem], text_blob: str, filename: str,
             # across one text line — not a label/value pair we can trust
             unmapped.append(item)
             continue
-        mkey, mconf = map_label_to_metric(rt_key, item.label)
+        hit = terms.lookup(item.section, item.label)
+        if hit and hit[0] == IGNORE:
+            continue                           # a known line that isn't a quarter value
+        if hit and rt.metric_by_key(hit[0]):
+            mkey, mconf = hit[0], hit[1]
+            term_source[id(item)] = hit[2]
+            term_lines.setdefault(mkey, set()).add(
+                (label_key(item.section), label_key(item.label)))
+        else:
+            mkey, mconf = map_label_to_metric(rt_key, item.label)
         spec = rt.metric_by_key(mkey) if mkey else None
         if spec and spec.unit == Unit.CURRENCY and (
                 "%" in item.value_raw
@@ -108,7 +123,7 @@ def assemble(raw_items: list[RawItem], text_blob: str, filename: str,
         """Sheet + column ("Fund 1!D") for cells, page for PDF text — component
         lines of one total sit in the same column as each other."""
         p = item.provenance or ""
-        m = re.match(r"^(.*!)([A-Z]+)\d+$", p)
+        m = re.match(r"^(.*!)([A-Z]+)\d+", p)
         if m:
             return m.group(1) + m.group(2)
         m = re.search(r"col(\d+)", p)
@@ -125,31 +140,57 @@ def assemble(raw_items: list[RawItem], text_blob: str, filename: str,
     primary_sheet = (max(sheet_metric_counts, key=lambda s: len(sheet_metric_counts[s]))
                      if sheet_metric_counts else "")
 
+    # A single net-income line and its breakdown are alternatives, never both: when
+    # known wording supplies the breakdown, a generic "net surplus"-style match goes.
+    breakdown = ("investment_mtm", "net_realized_gain", "other", "accrued_interest")
+    if "equity_income_loss" in candidates and any(
+            id(it) in term_source for k in breakdown for _c, it in candidates.get(k, [])) \
+            and not any(id(it) in term_source for _c, it in candidates["equity_income_loss"]):
+        unmapped.extend(it for _c, it in candidates.pop("equity_income_loss"))
+
     for mkey, cands in candidates.items():
         spec = rt.metric_by_key(mkey)
+        known = [c for c in cands if id(c[1]) in term_source]
+        if known and not spec.aggregate:
+            cands = known      # known wording beats a generic synonym for the same field
+        # several known lines feed one ACTIVITY field ("Capital Loss Q1" + "Capital FX
+        # Gain Q1"); balances, commitments and since-inception totals never add up
+        flow = (spec.category.value in ("income", "distribution") and not spec.since_inception)
+        aggregate = spec.aggregate or (flow and len(term_lines.get(mkey, ())) > 1)
         # choose best: prefer the primary sheet, then higher mapping confidence,
         # then last (right-most / most recent column).
         cands_sorted = sorted(
             cands, key=lambda c: (_sheet_of(c[1]) == primary_sheet, c[0]))
         mconf, item = cands_sorted[-1]
         value, notes = parse_number(item.value_raw, dc)
+        if value is None and id(item) in term_source and item.value_raw.strip() in {"-", "–", "—"}:
+            value, notes = Decimal(0), []   # a printed dash on a known line is nil
         value, unit_flags = _canonical_value(spec.unit, value, notes)
         raw_label, raw_value, provenance = item.label, item.value_raw, item.provenance
+        raw_sections = [item.section]
+        sources = {term_source[id(item)]} if id(item) in term_source else set()
 
-        if spec.aggregate:
+        if aggregate:
             # sum each distinct component line on the chosen sheet/page once
-            parts: dict[str, tuple[RawItem, Decimal]] = {}
+            def _part_key(it: RawItem) -> tuple[str, str]:
+                return it.section.strip().lower(), it.label.strip().lower()
+            parts: dict[tuple[str, str], tuple[RawItem, Decimal]] = {}
             for _c, it in cands:
                 v = parse_number(it.value_raw, dc)[0]
+                if it.value_raw.strip() in {"-", "–", "—"}:
+                    v = Decimal(0)
                 if v is not None and _column_of(it) == _column_of(item):
-                    parts.setdefault(it.label.strip().lower(), (it, v))
+                    parts.setdefault(_part_key(it), (it, v))
             if len(parts) > 1:
                 value = sum((v for _it, v in parts.values()), Decimal(0))
                 raw_label = " + ".join(it.label for it, _v in parts.values())
                 raw_value = " + ".join(it.value_raw for it, _v in parts.values())
                 provenance = "; ".join(it.provenance for it, _v in parts.values())
+                raw_sections = [it.section for it, _v in parts.values()]
+                sources = {term_source[id(it)] for it, _v in parts.values()
+                           if id(it) in term_source}
                 cands = [(c, it) for c, it in cands
-                         if parts.get(it.label.strip().lower(), (None,))[0] is it]
+                         if parts.get(_part_key(it), (None,))[0] is it]
 
         flags = list(unit_flags)
         ncols = re.search(r"cols=(\d+)", provenance or "")
@@ -161,7 +202,7 @@ def assemble(raw_items: list[RawItem], text_blob: str, filename: str,
         same_sheet = [c for c in cands if _sheet_of(c[1]) == chosen_sheet] or cands
         distinct_vals = {parse_number(c[1].value_raw, dc)[0] for c in same_sheet}
         distinct_vals.discard(None)
-        if len(distinct_vals) > 1 and not spec.aggregate:
+        if len(distinct_vals) > 1 and not aggregate:
             flags.append(f"multiple_candidates({len(distinct_vals)})")
         # note (informational) when the same label also appeared on other sheets
         other_sheets = {_sheet_of(c[1]) for c in cands} - {chosen_sheet, ""}
@@ -178,7 +219,9 @@ def assemble(raw_items: list[RawItem], text_blob: str, filename: str,
             period=period, metric_key=mkey, metric_label=spec.label,
             value=value, unit=spec.unit, currency=currency,
             raw_label=raw_label, raw_value=raw_value,
-            provenance=f"{extractor}:{provenance}",
+            provenance=f"{extractor}:{provenance}"
+                       + (f" · known wording ({', '.join(sorted(sources))})" if sources else ""),
+            raw_sections=raw_sections if any(raw_sections) else [],
             confidence=round(confidence, 3), status=status, flags=flags))
 
     # --- LLM fallback: fill required metrics we couldn't map deterministically ---
@@ -237,7 +280,8 @@ def assemble(raw_items: list[RawItem], text_blob: str, filename: str,
         statement_start=(dates.statement_start.isoformat()
                          if dates.statement_start else None),
         booking_date=dates.booking_date.isoformat() if dates.booking_date else None,
-        currency=currency, extractor=extractor, facts=facts,
+        currency=currency, number_format="1.234,56" if dc else "1,234.56",
+        extractor=extractor, facts=facts,
         unmapped=unmapped[:200], warnings=warnings)
 
 
@@ -249,37 +293,75 @@ def extract_file(path: Path, original_name: Optional[str] = None) -> ExtractionR
 
     if ext in EXCEL_EXT:
         raw_items, text = extract_excel(path)
-        return assemble(raw_items, text, name, file_hash, "excel")
+        return _with_model(path, raw_items, text, name, file_hash, "excel")
 
     if ext in CSV_EXT:
         raw_items, text = extract_csv(path)
-        return assemble(raw_items, text, name, file_hash, "csv")
+        return _with_model(path, raw_items, text, name, file_hash, "csv")
 
     if ext in PDF_EXT:
         try:
             raw_items, text = extract_pdf(path)
         except ScannedPdfError as e:
             return _scanned_pdf(path, name, file_hash, str(e))
-        result = assemble(raw_items, text, name, file_hash, "pdf_native", allow_llm=False)
-        if settings.llm_enabled and _needs_model(result, text):
-            pages = pdf_pages(path)
-            images = [(pg["page"], render_page_png(path, pg["page"]))
-                      for pg in pages if not pg["has_text"]][:settings.llm_max_image_pages]
-            answer = read_capital_account(
-                select_pages(pages, settings.llm_max_doc_chars), images, name)
-            if not answer.get("_error") and answer["document_kind"] in (
-                    "investor_statement", "fund_level"):
-                return _apply_model(result, answer, raw_items, text, "pdf_native")
-            if answer.get("_error"):
-                result.warnings.append(f"Model step unavailable: {answer['_error']}")
-        # no (usable) model answer: the generic fill-the-gaps fallback, as before
-        return assemble(raw_items, text, name, file_hash, "pdf_native")
+        return _with_model(path, raw_items, text, name, file_hash, "pdf_native")
 
     return ExtractionResult(
         filename=name, file_hash=file_hash,
         detected_report_type="fund_financials", report_type_confidence=0.0,
         extractor="none", facts=[],
-        warnings=[f"Unsupported file type '{ext}'. Supported: PDF, XLSX, XLSM, XLS."])
+        warnings=[f"Unsupported file type '{ext}'. Supported: PDF, XLSX, XLSM, XLS, CSV."])
+
+
+def _with_model(path: Path, raw_items: list[RawItem], text: str, name: str,
+                file_hash: str, extractor: str) -> ExtractionResult:
+    """Parse deterministically; when the result needs it and a model is
+    configured, let the capital-account model step read the document."""
+    result = assemble(raw_items, text, name, file_hash, extractor, allow_llm=False)
+    note = None
+    if settings.llm_enabled and _needs_model(result, text):
+        if extractor == "pdf_native":
+            pages = pdf_pages(path)
+            images = [(pg["page"], render_page_png(path, pg["page"]))
+                      for pg in pages if not pg["has_text"]][:settings.llm_max_image_pages]
+        else:   # a workbook's sheets (or a CSV) as text "pages"
+            pages, images = _text_pages(text), []
+        answer = read_capital_account(select_pages(pages, settings.llm_max_doc_chars), images,
+                                      name, _model_context(result.entity_name))
+        if not answer.get("_error") and answer["document_kind"] in (
+                "investor_statement", "fund_level"):
+            return _apply_model(result, answer, raw_items, text, extractor)
+        note = f"Model step unavailable: {answer['_error']}" if answer.get("_error") else None
+    # no (usable) model answer: the generic fill-the-gaps fallback, as before
+    out = assemble(raw_items, text, name, file_hash, extractor)
+    if note:
+        out.warnings.append(note)
+    return out
+
+
+def _text_pages(text: str) -> list[dict]:
+    """Split extracted workbook text into one "page" per sheet."""
+    chunks = re.split(r"(?m)^(?=# sheet: )", text or "")
+    return [{"page": i, "text": c.strip(), "has_text": bool(c.strip())}
+            for i, c in enumerate([c for c in chunks if c.strip()], start=1)]
+
+
+def _model_context(entity: str) -> dict:
+    """Known wording + what reviewers confirmed for this fund, for the prompt."""
+    from ..terms import fund_memory, presets, taught
+    ctx: dict = {"entity": entity, "terms": presets(RF), "memory": None}
+    try:
+        ctx["terms"] = ([t for t in taught(RF) if t["entity_name"] == entity]
+                        + [t for t in taught(RF) if t["entity_name"] is None]
+                        + presets(RF))
+        if entity and entity != "UNKNOWN":
+            mem = fund_memory(entity, RF)
+            prof = mem["profile"]
+            if mem["quarters"] or prof.get("investor_aliases") or prof.get("notes"):
+                ctx["memory"] = mem
+    except Exception:
+        pass   # no database available: presets only
+    return ctx
 
 
 # --------------------------------------------------------------------------
@@ -337,9 +419,12 @@ def _apply_model(result: ExtractionResult, answer: dict, raw_items: list[RawItem
     rt = REPORT_TYPES[RF]
 
     # deterministic reading under the roll-forward template, for corroboration
-    parsed = {f.metric_key: f.value for f in assemble(
+    parsed = {f.metric_key: f for f in assemble(
         raw_items, text, result.filename, result.file_hash, extractor,
         force_type=RF, allow_llm=False).facts if f.value is not None} if raw_items else {}
+
+    def _single_column(f: FinancialFact) -> bool:
+        return not any(fl.startswith("multi_column") for fl in f.flags)
 
     facts: list[FinancialFact] = []
     unreadable: list[str] = []
@@ -358,18 +443,31 @@ def _apply_model(result: ExtractionResult, answer: dict, raw_items: list[RawItem
             continue
         value = sum(values, Decimal(0))
         flags = ["llm_suggested"]
-        if value is not None and parsed.get(mkey) == value:
+        pf = parsed.get(mkey)
+        if pf is not None and pf.value == value:
             flags.append("parser_agrees")
+        elif pf is not None and _single_column(pf):
+            flags.append(f"parser_reads({pf.value})")   # worth a look in review
         facts.append(FinancialFact(
             entity_name=result.entity_name, entity_kind=rt.entity_kind, report_type=RF,
             period=result.period, metric_key=mkey, metric_label=spec.label, value=value,
             unit=spec.unit, currency=answer.get("currency") or result.currency,
             raw_label=" + ".join(c["label"] for c in comps),
             raw_value=" + ".join(c["value"] for c in comps),
+            raw_sections=([c.get("section", "") for c in comps]
+                          if any(c.get("section") for c in comps) else []),
             provenance=(f"llm:{provider} [{answer.get('investor_column') or '?'} | "
                         f"{answer.get('period_column') or '?'}]"),
             confidence=0.75 if "parser_agrees" in flags else 0.5,
             status=FactStatus.NEEDS_REVIEW, flags=flags))
+
+    # the parser's clean single-column readings of fields the model didn't return
+    for mkey, pf in parsed.items():
+        if mkey not in answer["fields"] and _single_column(pf) and mkey in (
+                "beginning_balance", "ending_balance", "commitment", "remaining_commitment"):
+            pf.flags.append("not_in_model_reading")
+            pf.status = FactStatus.NEEDS_REVIEW
+            facts.append(pf)
 
     # period: a quarter the filename names wins; else the model's period end
     dates = detect_statement_dates(text, result.filename)
@@ -429,7 +527,7 @@ def _scanned_pdf(path: Path, name: str, file_hash: str, why: str) -> ExtractionR
     if settings.llm_enabled and get_provider().supports_vision:
         images = [(pg["page"], render_page_png(path, pg["page"]))
                   for pg in pages[:settings.llm_max_image_pages]]
-        answer = read_capital_account([], images, name)
+        answer = read_capital_account([], images, name, _model_context(empty.entity_name))
         if not answer.get("_error") and answer["document_kind"] in (
                 "investor_statement", "fund_level"):
             out = _apply_model(empty, answer, [], "", "scan")
@@ -447,7 +545,8 @@ def _scanned_pdf(path: Path, name: str, file_hash: str, why: str) -> ExtractionR
             f.flags.append("ocr")
             f.status = FactStatus.NEEDS_REVIEW
         if settings.llm_enabled and _needs_model(result, text):
-            answer = read_capital_account(sorted(texts.items()), [], name)
+            answer = read_capital_account(sorted(texts.items()), [], name,
+                                          _model_context(result.entity_name))
             if not answer.get("_error") and answer["document_kind"] in (
                     "investor_statement", "fund_level"):
                 return _apply_model(result, answer, raw_items, text, "ocr_tesseract")

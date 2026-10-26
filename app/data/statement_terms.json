@@ -1,0 +1,91 @@
+{
+  "_about": [
+    "Pre-loaded statement wording -> field, from the statement formats seen so far.",
+    "Matching normalises quarters, years, dates and gain/loss wording, so 'Called in Q1, 2026'",
+    "also matches 'Called in Q3, 2027' and 'Capital Loss' also matches 'Capital Gain'.",
+    "'section' (optional) is the heading the line sits under; it separates lines that read the",
+    "same in different blocks (realised vs unrealised). metric 'ignore' = a known line that is",
+    "not a value for the quarter. Reviewers add their own terms in the app; confirmed values",
+    "teach the app each fund's wording automatically. No figures belong in this file."
+  ],
+  "investment_roll_forward": [
+    {"label": "Opening value", "metric": "beginning_balance"},
+    {"label": "Opening balance", "metric": "beginning_balance"},
+    {"label": "Beginning capital account balance as of January 1, 2026", "metric": "beginning_balance"},
+    {"label": "Beginning capital account balance", "metric": "beginning_balance"},
+
+    {"label": "Closing value", "metric": "ending_balance"},
+    {"label": "Closing balance", "metric": "ending_balance"},
+    {"label": "Capital Accounts at Q1", "metric": "ending_balance", "note": "since-inception LP statements"},
+    {"label": "Capital account at fair value", "metric": "ending_balance"},
+    {"label": "Ending capital account balance as of June 30, 2026", "metric": "ending_balance"},
+    {"label": "Ending capital account balance", "metric": "ending_balance"},
+
+    {"label": "Called in Q1, 2026", "metric": "funding", "note": "capital called in the quarter"},
+    {"label": "Capital called", "metric": "funding"},
+    {"label": "Capital contributions", "metric": "funding"},
+    {"label": "Capital contributions received", "metric": "funding"},
+
+    {"label": "Capital distributions", "metric": "return_of_capital"},
+    {"label": "Distributions paid in Q1, 2026", "metric": "return_of_capital"},
+
+    {"section": "Unrealised Capital Gains", "label": "Capital Loss Q1, 2026", "metric": "investment_mtm"},
+    {"section": "Unrealised Capital Gains", "label": "Capital FX Gain Q1, 2026", "metric": "investment_mtm"},
+    {"label": "Unrealized gain (loss) on investments", "metric": "investment_mtm"},
+    {"label": "Unrealized foreign exchange gain (loss)", "metric": "investment_mtm"},
+    {"label": "Net change in unrealized appreciation/(depreciation) on investments", "metric": "investment_mtm"},
+
+    {"section": "Realised Capital Gains", "label": "Capital Gain/(Loss) Q1, 2026", "metric": "net_realized_gain"},
+    {"section": "Realised Capital Gains", "label": "Capital FX Gain/(Loss) Q1, 2026", "metric": "net_realized_gain"},
+    {"label": "Realized loss on investment", "metric": "net_realized_gain"},
+    {"label": "Net realized gain/(loss) from investments", "metric": "net_realized_gain"},
+
+    {"label": "Interest income", "metric": "accrued_interest"},
+
+    {"label": "GP Share and Other Expenses Q1, 2026", "metric": "other"},
+    {"label": "Income rebalancing", "metric": "other"},
+    {"label": "Partnership expenses", "metric": "other"},
+    {"label": "Management fee", "metric": "other"},
+    {"label": "Management fees", "metric": "other"},
+    {"label": "Legal, accounting and professional fees", "metric": "other"},
+    {"label": "Unrealized carried interest", "metric": "other"},
+    {"label": "Provision for foreign withholding tax", "metric": "other"},
+    {"label": "Tax expenses", "metric": "other"},
+    {"label": "Transaction related expenses", "metric": "other"},
+    {"label": "Other expenses", "metric": "other"},
+
+    {"label": "Contributed capital", "metric": "funding", "note": "JV ledger template: take the QTD Change column"},
+    {"label": "Revenue reserve", "metric": "other", "note": "JV ledger template: QTD Change"},
+    {"label": "Revaluation reserve", "metric": "investment_mtm", "note": "JV ledger template: QTD Change"},
+    {"label": "Other income/expenses", "metric": "other", "note": "JV ledger template: QTD Change"},
+    {"label": "Change in capital balance (Sum of A)", "metric": "change"},
+
+    {"label": "Commitment amount", "metric": "commitment"},
+    {"label": "Total committed", "metric": "commitment"},
+    {"label": "Total capital commitment", "metric": "commitment"},
+    {"label": "Capital Commitment", "metric": "commitment"},
+    {"label": "Unfunded capital commitment", "metric": "remaining_commitment"},
+    {"label": "Amount undrawn from original commitment", "metric": "remaining_commitment"},
+    {"label": "Remaining capital commitment", "metric": "remaining_commitment"},
+
+    {"label": "Capital called to date", "metric": "cumulative_contributions"},
+    {"label": "Total Capital Contributions called", "metric": "cumulative_contributions"},
+    {"label": "Total Drawdowns to date", "metric": "cumulative_contributions"},
+    {"label": "Distributions to date", "metric": "cumulative_distributions"},
+
+    {"label": "Called in previous quarters", "metric": "ignore"},
+    {"section": "Realised Capital Gains", "label": "Balance as at Q4, 2025", "metric": "ignore", "note": "sub-account balance, not the capital account"},
+    {"section": "Unrealised Capital Gains", "label": "Balance as at Q4, 2025", "metric": "ignore", "note": "sub-account balance, not the capital account"},
+    {"section": "GP Share and Other Expenses (Net of income)", "label": "Balance as at Q4, 2025", "metric": "ignore", "note": "sub-account balance, not the capital account"},
+    {"label": "Total Realised Capital Gains as at Q1, 2026", "metric": "ignore"},
+    {"label": "Total Unrealised Capital Gains as at Q1, 2026", "metric": "ignore"},
+    {"label": "Total GP Share and Other Expenses as at Q1, 2026", "metric": "ignore"},
+    {"label": "Previous unrealised FX loss transferred to realised FX loss Q1, 2026", "metric": "ignore"},
+    {"label": "Previous unrealised loss transferred to realised loss Q1, 2026", "metric": "ignore"},
+    {"label": "Maximum recallable distributions", "metric": "ignore"},
+    {"label": "Balance of recallable distributions", "metric": "ignore"},
+    {"label": "Amount drawn down from original commitment", "metric": "ignore"},
+    {"label": "Ending capital account balance as % of total partners' capital", "metric": "ignore"},
+    {"label": "% of Partnership", "metric": "ignore"}
+  ]
+}

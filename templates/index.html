@@ -183,6 +183,31 @@
         <tbody id="subs-body"></tbody>
       </table>
     </section>
+
+    <!-- Statement terms (format memory) -->
+    <section class="card" id="terms-card">
+      <details>
+        <summary><h2 style="display:inline">Statement terms</h2>
+          <span class="small muted" id="terms-count"></span></summary>
+        <p class="small muted">How statement lines map to fields. <b>Preset</b> wording ships with the app;
+          <b>taught</b> wording comes from reviewers (here or from a file's unrecognised lines). Each fund's
+          confirmed values also teach the app that fund's wording automatically. Quarters, years, dates and
+          gain/loss wording are matched loosely, so a term taught for Q1 also covers Q2.</p>
+        <form class="terms-form" id="term-form">
+          <input id="t-section" placeholder="Heading above the line (optional)">
+          <input id="t-label" placeholder="Line label, e.g. Called in Q1, 2026" required>
+          <select id="t-metric"></select>
+          <select id="t-scope"><option value="">All funds</option></select>
+          <button class="btn sm primary" type="submit">Add term</button>
+        </form>
+        <div style="overflow-x:auto">
+        <table class="tbl-tight">
+          <thead><tr><th>Scope</th><th>Heading</th><th>Line label</th><th>Field</th><th>Source</th><th></th></tr></thead>
+          <tbody id="terms-body"></tbody>
+        </table>
+        </div>
+      </details>
+    </section>
   </div>
 
   <!-- Review modal -->
@@ -215,6 +240,9 @@
       </div>
       <p class="small muted" style="margin:6px 0 0">Change either one — the other follows. Saving re-dates every value in
         this file (audited); roll-forward quarters are re-linked to the quarter before.</p>
+      <hr class="hr">
+      <h2 style="margin:0 0 8px">Format memory</h2>
+      <div id="m-memory"></div>
       <hr class="hr">
       <h2 style="margin:0 0 8px">Extracted values — confirm, edit, or reject each</h2>
       <p class="small muted" style="margin-top:0">Editing a value or metric, or confirming/rejecting, writes an audit-trail entry. Only <b>auto</b>/<b>confirmed</b> values feed the dashboard &amp; export.</p>

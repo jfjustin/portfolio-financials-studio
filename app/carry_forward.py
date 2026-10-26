@@ -222,7 +222,9 @@ def rederive_following(entity: str, period: str) -> int:
             if r["reported_value"] is not None:
                 reported[r["metric_key"]] = Decimal(r["reported_value"])
             elif r["value"] is not None and not (
-                    "carried_forward" in r["flags"] and not r["raw_value"]):
+                    not r["raw_value"]
+                    and {"carried_forward", "derived_from_activity"} & set(r["flags"])):
+                # values this check derived itself (nothing printed) aren't "reported"
                 reported[r["metric_key"]] = Decimal(r["value"])
         priors = db.quarter_metrics(entity, RF)
         priors.pop(q, None)
