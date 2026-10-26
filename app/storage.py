@@ -69,3 +69,41 @@ def _store_azure(raw_bytes: bytes, key: str) -> str:
     base = (settings.azure_storage_account_url.rstrip("/")
             if settings.azure_storage_account_url else "azure")
     return f"{base}/{settings.azure_storage_container}/{key}"
+
+
+def load_source(source_key: str | None, filename: str, file_hash: str) -> Path | None:
+    """A local path to the stored copy of an uploaded file (for re-reading it),
+    or None. Tries the recorded key first, then the stored copies whose name and
+    content hash match — older submissions didn't record their key."""
+    import hashlib
+    import tempfile
+
+    def _sha(b: bytes) -> str:
+        return hashlib.sha256(b).hexdigest()
+
+    if source_key and not source_key.startswith(("http", "azure")):
+        p = Path(source_key)
+        if p.exists():
+            return p
+    if settings.storage_backend == "azure":
+        try:
+            container = _blob_container_client()
+            names = ([source_key.rsplit("/", 1)[-1]] if source_key else []) + sorted(
+                (b.name for b in container.list_blobs()
+                 if b.name.endswith(f"__{Path(filename).name}")), reverse=True)
+            for name in names:
+                data = container.download_blob(name).readall()
+                if _sha(data) == file_hash:
+                    tmp = Path(tempfile.mkdtemp()) / Path(filename).name
+                    tmp.write_bytes(data)
+                    return tmp
+        except Exception:
+            return None
+        return None
+    for p in sorted(settings.upload_dir.glob(f"*__{Path(filename).name}"), reverse=True):
+        try:
+            if _sha(p.read_bytes()) == file_hash:
+                return p
+        except OSError:
+            continue
+    return None

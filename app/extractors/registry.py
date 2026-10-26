@@ -16,6 +16,7 @@ from ..config import settings
 from ..models import (ExtractionResult, FactStatus, FinancialFact, RawItem,
                       detect_currency, detect_decimal_comma, label_key,
                       map_label_to_metric, parse_number)
+from .. import db
 from ..terms import IGNORE, TermIndex
 from ..report_types import REPORT_TYPES, Unit, guess_report_type
 from ..llm import extract_with_llm, get_provider
@@ -129,7 +130,9 @@ def assemble(raw_items: list[RawItem], text_blob: str, filename: str,
         m = re.search(r"col(\d+)", p)
         if m:
             return "col" + m.group(1)
-        return p.split(" ")[0]
+        # PDF text: the page — and the statement block when a page holds
+        # several side by side ("p3 block2 text")
+        return p.split(" text")[0].split(" ocr")[0]
 
     sheet_metric_counts: dict[str, set] = {}
     for mkey, cands in candidates.items():
@@ -349,8 +352,12 @@ def _text_pages(text: str) -> list[dict]:
 def _model_context(entity: str) -> dict:
     """Known wording + what reviewers confirmed for this fund, for the prompt."""
     from ..terms import fund_memory, presets, taught
-    ctx: dict = {"entity": entity, "terms": presets(RF), "memory": None}
+    ctx: dict = {"entity": entity, "terms": presets(RF), "memory": None, "commitment": None}
     try:
+        from ..terms import our_commitment
+        amount, src = our_commitment(entity, RF) if entity and entity != "UNKNOWN" else (None, "")
+        if amount:
+            ctx["commitment"] = f"{amount:,.0f} ({src})"
         ctx["terms"] = ([t for t in taught(RF) if t["entity_name"] == entity]
                         + [t for t in taught(RF) if t["entity_name"] is None]
                         + presets(RF))
@@ -402,15 +409,7 @@ def _apply_model(result: ExtractionResult, answer: dict, raw_items: list[RawItem
     note = f" Note: {answer['notes']}" if answer.get("notes") else ""
 
     if answer["document_kind"] != "investor_statement" or not answer["fields"]:
-        # fund-level figures must never land in our investor's roll-forward
-        if result.detected_report_type == RF:
-            result = assemble(raw_items, text, result.filename, result.file_hash, extractor,
-                              force_type="fund_financials", allow_llm=False)
-        result.warnings.append(
-            f"The '{provider}' model read this as a fund-level report — {lp}'s own capital "
-            f"account isn't identifiable in it, so nothing was added to {lp}'s "
-            f"roll-forward. Upload {lp}'s capital-account statement for this fund.{note}")
-        return result
+        return _apply_fund_level(result, answer, raw_items, text, extractor)
 
     if answer.get("number_format") in ("1.234,56", "1,234.56"):
         dc = answer["number_format"] == "1.234,56"
@@ -501,6 +500,200 @@ def _apply_model(result: ExtractionResult, answer: dict, raw_items: list[RawItem
         currency=answer.get("currency") or result.currency,
         extractor=f"{extractor}+llm", facts=facts, unmapped=result.unmapped,
         warnings=warnings)
+
+
+# whole-fund figures (roll-forward field names) -> fund-level metrics
+_FUND_LEVEL_MAP = {"ending_balance": "nav", "funding": "capital_called",
+                   "return_of_capital": "distributions", "accrued_interest": "total_income",
+                   "other": "total_expenses", "net_realized_gain": "realized_gain",
+                   "investment_mtm": "unrealized_gain", "equity_income_loss": "net_income"}
+_PRO_RATA_KEYS = ("beginning_balance", "funding", "return_of_capital", "dividends",
+                  "accrued_interest", "other", "net_realized_gain", "investment_mtm",
+                  "equity_income_loss")
+
+
+def _apply_fund_level(result: ExtractionResult, answer: dict, raw_items: list[RawItem],
+                      text: str, extractor: str) -> ExtractionResult:
+    """A fund-level report (whole-fund statements, maybe a table of investors).
+
+    Our investor's quarter is the fund's quarter x our share, when the share is
+    known — our commitment (our row in the report, the fund parameter, or a
+    confirmed commitment) over total commitments. Funds allocate pro-rata to
+    commitment, which our row's capital account cross-checks. Without a share,
+    the fund's own figures are kept as fund-level values and nothing is added to
+    our roll-forward.
+    """
+    from ..terms import our_commitment
+    from decimal import ROUND_HALF_UP
+    lp = settings.lp_names.split(",")[0].strip() or "our investor"
+    provider = settings.llm_provider
+    note = f" Note: {answer['notes']}" if answer.get("notes") else ""
+    entity = result.entity_name
+    if answer.get("number_format") in ("1.234,56", "1,234.56"):
+        dc = answer["number_format"] == "1.234,56"
+    else:
+        dc = detect_decimal_comma(text)
+
+    def num(raw: Optional[str]) -> Optional[Decimal]:
+        if raw is None:
+            return None
+        raw = raw.strip()
+        return Decimal(0) if raw in {"-", "–", "—", "nil", "Nil"} else parse_number(raw, dc)[0]
+
+    fund: dict[str, tuple[Decimal, list[dict]]] = {}
+    for key, comps in (answer.get("fund_fields") or {}).items():
+        vals = [num(c["value"]) for c in comps]
+        if vals and all(v is not None for v in vals):
+            fund[key] = (sum(vals, Decimal(0)), comps)
+    row = answer.get("investor_row") or {}
+    row_label = row.get("row_label") or "?"
+    row_commit, row_cap = num(row.get("commitment")), num(row.get("capital_account"))
+
+    commit, commit_src = (abs(row_commit), f"row '{row_label}'") if row_commit else (None, "")
+    if commit is None:
+        try:
+            commit, commit_src = our_commitment(entity, RF)
+        except Exception:
+            commit, commit_src = None, ""
+    total_commit = abs(fund["commitment"][0]) if fund.get("commitment") else None
+    share, basis = None, ""
+    if commit and total_commit:
+        share = commit / total_commit
+        basis = f"commitment {commit:,.0f} ({commit_src}) of total commitments {total_commit:,.0f}"
+    elif row_cap and fund.get("ending_balance") and fund["ending_balance"][0]:
+        share = row_cap / fund["ending_balance"][0]
+        basis = (f"row '{row_label}' capital account {row_cap:,.0f} of fund net assets "
+                 f"{fund['ending_balance'][0]:,.0f}")
+
+    # period: a quarter the filename names wins; else the model's period end
+    dates = detect_statement_dates(text, result.filename)
+    model_end = _iso(answer.get("period_end"))
+    period = (dates.quarter if dates.explicit_quarter
+              else quarter_label(model_end) if model_end else result.period)
+    bounds = quarter_bounds(period) if re.fullmatch(r"20\d{2}-Q[1-4]", period or "") else None
+    currency = answer.get("currency") or result.currency
+    col = f"[whole fund | {answer.get('period_column') or '?'}]"
+
+    # our own statement for this quarter already on file: don't compete with it
+    try:
+        own = [f for f in db.facts_for_quarter(entity, RF, period)
+               if f["status"] != "rejected" and "pro_rata" not in f["flags"]]
+    except Exception:
+        own = []
+
+    base = dict(filename=result.filename, file_hash=result.file_hash, entity_name=entity,
+                period=period, period_start=bounds[0].isoformat() if bounds else None,
+                period_end=bounds[1].isoformat() if bounds else None,
+                booking_date=result.booking_date, currency=currency,
+                number_format="1.234,56" if dc else "1,234.56",
+                extractor=f"{extractor}+llm", unmapped=result.unmapped)
+
+    if share is None or own:
+        # fund-level values: the parser's reading of the fund's statements, with
+        # the model's figures as a cross-check and to fill what the parser missed
+        if result.detected_report_type != "fund_financials":
+            result = assemble(raw_items, text, result.filename, result.file_hash,
+                              extractor, force_type="fund_financials", allow_llm=False)
+        facts_out = list(result.facts)
+        by_key = {f.metric_key: f for f in facts_out}
+        frt = REPORT_TYPES["fund_financials"]
+        for key, (val, comps) in fund.items():
+            spec = frt.metric_by_key(_FUND_LEVEL_MAP.get(key, ""))
+            if spec is None:
+                continue
+            pf = by_key.get(spec.key)
+            if pf is not None and pf.value is not None:
+                if abs(pf.value) == abs(val):
+                    pf.flags.append("model_agrees")
+                else:
+                    pf.flags.append(f"model_reads({val})")
+                    pf.status = FactStatus.NEEDS_REVIEW
+                continue
+            facts_out.append(FinancialFact(
+                entity_name=entity, entity_kind=frt.entity_kind, report_type=frt.key,
+                period=period, metric_key=spec.key, metric_label=spec.label, value=val,
+                unit=spec.unit, currency=currency,
+                raw_label=" + ".join(c["label"] for c in comps),
+                raw_value=" + ".join(c["value"] for c in comps),
+                provenance=f"llm:{provider} {col}", confidence=0.5,
+                status=FactStatus.NEEDS_REVIEW, flags=["llm_suggested"]))
+        for f in facts_out:
+            f.period = period
+        rt_key, conf = "fund_financials", max(result.report_type_confidence, 0.7)
+        if own:
+            ours = {f["metric_key"]: f["value"] for f in own}
+            check = ""
+            if share is not None and fund.get("ending_balance") and ours.get("ending_balance"):
+                computed = fund["ending_balance"][0] * share
+                check = (f" Pro-rata check: fund net assets x {share:.4%} = {computed:,.0f} vs "
+                         f"{lp}'s statement {Decimal(ours['ending_balance']):,.0f}.")
+            msg = (f"Fund-level report — {lp}'s own statement for {entity} {period} is already "
+                   f"on file, so this report's figures are kept as fund-level values only."
+                   f"{check}{note}")
+        else:
+            msg = (f"Fund-level report — {lp}'s own figures for {entity} aren't identifiable in it "
+                   f"(no column for {lp}, or investor names are redacted). Enter {lp}'s "
+                   f"commitment to {entity} (or its row name) under Format memory → Fund "
+                   f"parameters and click 'Save & re-read' — {lp}'s quarter is then computed "
+                   f"from the fund's figures. The fund's own figures were kept for reference.{note}")
+        return ExtractionResult(detected_report_type=rt_key, report_type_confidence=conf,
+                                facts=facts_out, warnings=[msg], **base)
+
+    # our quarter = the fund's quarter x our share
+    rt = REPORT_TYPES[RF]
+    unit = Decimal(1)
+    facts_out: list[FinancialFact] = []
+    # the parser's reading of the same fund figures, to corroborate the model's
+    parsed_fund = {f.metric_key: f.value for f in assemble(
+        raw_items, text, result.filename, result.file_hash, extractor,
+        force_type=RF, allow_llm=False).facts if f.value is not None} if raw_items else {}
+
+    def add(key: str, value: Decimal, raw_label: str, raw_value: str, prov: str,
+            extra: tuple = ()) -> None:
+        spec = rt.metric_by_key(key)
+        facts_out.append(FinancialFact(
+            entity_name=entity, entity_kind=rt.entity_kind, report_type=RF, period=period,
+            metric_key=key, metric_label=spec.label, value=value, unit=spec.unit,
+            currency=currency, raw_label=raw_label, raw_value=raw_value,
+            provenance=f"{prov} · llm:{provider}", confidence=0.5,
+            status=FactStatus.NEEDS_REVIEW, flags=["llm_suggested", "pro_rata", *extra]))
+
+    for key in _PRO_RATA_KEYS:
+        if key in fund:
+            val, comps = fund[key]
+            agree = (("parser_agrees",) if parsed_fund.get(key) is not None
+                     and abs(parsed_fund[key]) == abs(val) else ())
+            add(key, (val * share).quantize(unit, ROUND_HALF_UP),
+                " + ".join(c["label"] for c in comps), f"{val} x {share:.6f}",
+                f"pro-rata {share:.4%} of fund {rt.metric_by_key(key).label} {val:,.0f}", agree)
+    if fund.get("ending_balance") or row_cap is not None:
+        computed = (fund["ending_balance"][0] * share).quantize(unit, ROUND_HALF_UP) \
+            if fund.get("ending_balance") else None
+        if row_cap is not None:
+            extra = ()
+            if computed is not None and abs(row_cap - computed) > max(unit, abs(computed) * Decimal("0.005")):
+                extra = (f"pro_rata_mismatch({computed})",)
+            add("ending_balance", row_cap, f"{row_label}: capital account", row.get("capital_account") or "",
+                f"row '{row_label}' capital account"
+                + (f" (pro-rata check {computed:,.0f})" if computed is not None else ""), extra)
+        else:
+            val, comps = fund["ending_balance"]
+            add("ending_balance", computed, " + ".join(c["label"] for c in comps),
+                f"{val} x {share:.6f}", f"pro-rata {share:.4%} of fund net assets {val:,.0f}")
+    add("commitment", commit, f"{lp} commitment", f"{commit}", f"{commit_src}")
+    if row.get("paid_in") and num(row["paid_in"]) is not None:
+        add("cumulative_contributions", num(row["paid_in"]), f"{row_label}: paid in",
+            row["paid_in"], f"row '{row_label}'")
+    if row.get("distributions") and num(row["distributions"]) is not None:
+        add("cumulative_distributions", num(row["distributions"]), f"{row_label}: distributions",
+            row["distributions"], f"row '{row_label}'")
+
+    warning = (f"Fund-level report: {lp}'s quarter for {entity} computed pro-rata — {basis} "
+               f"= {share:.4%}. This assumes the fund allocates to investors in proportion "
+               f"to commitment; check the share and the fund's figures before confirming.{note}")
+    return ExtractionResult(detected_report_type=RF, report_type_confidence=0.7,
+                            facts=facts_out, warnings=[warning],
+                            statement_start=None, **base)
 
 
 def _iso(v):

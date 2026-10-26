@@ -42,6 +42,7 @@ submissions = Table(
     Column("unmapped", Text),                            # json list
     Column("uploaded_at", String(40), nullable=False),
     Column("number_format", String(16)),                 # "1,234.56" | "1.234,56"
+    Column("source_key", Text),                          # stored copy (for re-reading)
 )
 
 facts = Table(
@@ -100,6 +101,7 @@ fund_profiles = Table(
     "fund_profiles", metadata,
     Column("entity_name", String(512), primary_key=True),
     Column("investor_aliases", Text),    # how our investor appears in this fund's statements
+    Column("commitment", String(64)),    # our commitment to this fund (for fund-level reports)
     Column("notes", Text),               # anything the model should know about the format
     Column("updated_by", String(128)),
     Column("updated_at", String(40)),
@@ -222,11 +224,12 @@ def _fact_value_str(v: Optional[Decimal]) -> Optional[str]:
 # --------------------------------------------------------------------------
 # Writes
 # --------------------------------------------------------------------------
-def save_extraction(result: ExtractionResult) -> int:
+def save_extraction(result: ExtractionResult, source_key: Optional[str] = None) -> int:
     """Persist an ExtractionResult and all its facts. Returns submission_id."""
     eng = get_engine()
     with eng.begin() as conn:
         res = conn.execute(insert(submissions).values(
+            source_key=source_key,
             filename=result.filename, file_hash=result.file_hash,
             report_type=result.detected_report_type,
             report_type_confidence=result.report_type_confidence,
@@ -241,28 +244,92 @@ def save_extraction(result: ExtractionResult) -> int:
             ts=_now(), submission_id=sub_id, action="ingest",
             note=(f"{result.extractor}: {len(result.facts)} facts, "
                   f"{len(result.unmapped)} unmapped")))
-        for f in result.facts:
-            unit = f.unit if isinstance(f.unit, str) else f.unit.value
-            status = f.status if isinstance(f.status, str) else f.status.value
-            fres = conn.execute(insert(facts).values(
-                submission_id=sub_id, entity_name=f.entity_name,
-                entity_kind=f.entity_kind, report_type=f.report_type, period=f.period,
-                metric_key=f.metric_key, metric_label=f.metric_label,
-                value=_fact_value_str(f.value), unit=unit, currency=f.currency,
-                raw_label=f.raw_label, raw_value=f.raw_value, provenance=f.provenance,
-                confidence=f.confidence, status=status, flags=json.dumps(f.flags),
-                created_at=_now(), updated_at=_now(),
-                period_start=result.period_start, period_end=result.period_end,
-                statement_start=result.statement_start, booking_date=result.booking_date,
-                reported_value=_fact_value_str(f.reported_value),
-                raw_sections=json.dumps(f.raw_sections) if any(f.raw_sections) else None))
-            fact_id = int(fres.inserted_primary_key[0])
-            conn.execute(insert(audit).values(
-                ts=_now(), submission_id=sub_id, fact_id=fact_id,
-                action="auto_accept" if status == "auto" else "flag",
-                new_value=_fact_value_str(f.value),
-                note="; ".join(f.flags) if f.flags else None))
+        _insert_facts(conn, sub_id, result, result.facts)
         return sub_id
+
+
+def _insert_facts(conn, sub_id: int, result: ExtractionResult, facts_: list) -> None:
+    for f in facts_:
+        unit = f.unit if isinstance(f.unit, str) else f.unit.value
+        status = f.status if isinstance(f.status, str) else f.status.value
+        fres = conn.execute(insert(facts).values(
+            submission_id=sub_id, entity_name=f.entity_name,
+            entity_kind=f.entity_kind, report_type=f.report_type, period=f.period,
+            metric_key=f.metric_key, metric_label=f.metric_label,
+            value=_fact_value_str(f.value), unit=unit, currency=f.currency,
+            raw_label=f.raw_label, raw_value=f.raw_value, provenance=f.provenance,
+            confidence=f.confidence, status=status, flags=json.dumps(f.flags),
+            created_at=_now(), updated_at=_now(),
+            period_start=result.period_start, period_end=result.period_end,
+            statement_start=result.statement_start, booking_date=result.booking_date,
+            reported_value=_fact_value_str(f.reported_value),
+            raw_sections=json.dumps(f.raw_sections) if any(f.raw_sections) else None))
+        fact_id = int(fres.inserted_primary_key[0])
+        conn.execute(insert(audit).values(
+            ts=_now(), submission_id=sub_id, fact_id=fact_id,
+            action="auto_accept" if status == "auto" else "flag",
+            new_value=_fact_value_str(f.value),
+            note="; ".join(f.flags) if f.flags else None))
+
+
+def replace_extraction(sub_id: int, result: ExtractionResult, user: str = "local") -> dict:
+    """Re-read of a stored file: refresh the submission in place. Values a
+    reviewer confirmed or rejected stay; every other value is replaced by the
+    new reading (a confirmed field isn't duplicated). Audited."""
+    eng = get_engine()
+    with eng.begin() as conn:
+        old = conn.execute(select(facts).where(facts.c.submission_id == sub_id)).mappings().all()
+        decided = [r for r in old if r["status"] in ("confirmed", "rejected")]
+        confirmed_keys = {r["metric_key"] for r in decided if r["status"] == "confirmed"}
+        stale = [r["id"] for r in old if r["status"] not in ("confirmed", "rejected")]
+        if stale:
+            conn.execute(facts.delete().where(facts.c.id.in_(stale)))
+        # reviewed values follow the file to its (possibly corrected) entity and
+        # period, but keep their own type: a confirmed fund-level figure stays one
+        conn.execute(update(facts).where(facts.c.submission_id == sub_id).values(
+            entity_name=result.entity_name, period=result.period,
+            period_start=result.period_start, period_end=result.period_end,
+            updated_at=_now()))
+        conn.execute(update(submissions).where(submissions.c.id == sub_id).values(
+            report_type=result.detected_report_type,
+            report_type_confidence=result.report_type_confidence,
+            entity_name=result.entity_name, period=result.period,
+            currency=result.currency, extractor=result.extractor, status="pending",
+            number_format=result.number_format, warnings=json.dumps(result.warnings),
+            unmapped=json.dumps([i.model_dump() for i in result.unmapped])))
+        new = [f for f in result.facts if f.metric_key not in confirmed_keys]
+        _insert_facts(conn, sub_id, result, new)
+        conn.execute(insert(audit).values(
+            ts=_now(), submission_id=sub_id, action="reread", user=user,
+            note=(f"{result.extractor}: replaced {len(stale)} unreviewed values with "
+                  f"{len(new)}; kept {len(decided)} reviewed")))
+    return {"replaced": len(stale), "added": len(new), "kept": len(decided)}
+
+
+def supersede_pro_rata(entity: str, report_type: str, period: str, by_sub: int,
+                       user: str = "system") -> int:
+    """An investor's own statement arrived for a quarter that so far only had
+    figures computed pro-rata from a fund-level report: retire the unreviewed
+    pro-rata values so the quarter has one source."""
+    eng = get_engine()
+    n = 0
+    with eng.begin() as conn:
+        rows = conn.execute(select(facts).where(facts.c.entity_name == entity)
+                            .where(facts.c.report_type == report_type)
+                            .where(facts.c.period == period)
+                            .where(facts.c.submission_id != by_sub)
+                            .where(facts.c.status.in_(("auto", "needs_review")))).mappings().all()
+        for r in rows:
+            if "pro_rata" not in json.loads(r["flags"] or "[]"):
+                continue
+            conn.execute(update(facts).where(facts.c.id == r["id"])
+                         .values(status="rejected", updated_at=_now()))
+            conn.execute(insert(audit).values(
+                ts=_now(), submission_id=r["submission_id"], fact_id=r["id"], action="reject",
+                field="status", old_value=r["status"], new_value="rejected", user=user,
+                note=f"superseded by the investor's own statement (submission #{by_sub})"))
+            n += 1
+    return n
 
 
 def update_fact(fact_id: int, *, value: Optional[str] = None,

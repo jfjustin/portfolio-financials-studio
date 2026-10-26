@@ -248,7 +248,9 @@ table.tbl-report { width: 100%; border-collapse: collapse; font-size: 13px; }
 
 /* format memory */
 .memory-line { display: flex; flex-wrap: wrap; gap: 6px 14px; font-size: 13px; }
-.memory-form { display: grid; grid-template-columns: 1fr 1fr auto; gap: 8px; margin-top: 8px; align-items: end; }
+.memory-form { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 8px; align-items: end; }
+.memory-form .span2 { grid-column: 1 / -1; }
+.memory-actions { grid-column: 1 / -1; display: flex; gap: 8px; justify-content: flex-end; }
 .memory-form label, .terms-form label { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--muted); }
 .memory-form input, .memory-form textarea, .terms-form input, .terms-form select, .teach select {
   font: inherit; font-size: 13px; padding: 4px 6px; border: 1px solid var(--line); border-radius: 6px;

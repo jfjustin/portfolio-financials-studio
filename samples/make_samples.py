@@ -268,6 +268,67 @@ def format_memory_pdfs():
     ])
 
 
+def fund_level_report_pdf():
+    """Fund 79 quarterly report (made-up, European number format): three
+    financial statements side by side on one page, then a capital-accounts
+    table of investors with redacted names — no column for any one investor."""
+    from fpdf import FPDF
+    pdf = FPDF(orientation="L")
+    pdf.add_page()
+    pdf.set_font("helvetica", "B", 11)
+    pdf.cell(0, 8, "FINANCIAL STATEMENTS - Quarterly report 31 March 2026", ln=True)
+    blocks = [
+        [("ASSETS", None), ("Investments at value", "80.000.000"), ("Cash", "5.000.000"),
+         ("Total assets", "85.000.000"), ("LIABILITIES", None),
+         ("Accrued liabilities", "50.000"), ("Total liabilities", "50.000"),
+         ("Net assets", "84.950.000")],
+        [("INVESTMENT INCOME", None), ("Interest", "40.000"),
+         ("Total investment income", "40.000"), ("EXPENSES", None),
+         ("Management fee", "500.000"), ("Professional fee", "10.000"),
+         ("Total expenses", "510.000")],
+        [("CHANGES IN NET ASSETS", None), ("Net investment income", "-470.000"),
+         ("Changes in net unrealized", "2.420.000"),
+         ("Change in net assets from operations", "1.950.000"),
+         ("DISTRIBUTIONS TO SHAREHOLDERS", "0"), ("CAPITAL TRANSACTION", "10.000.000"),
+         ("NET ASSETS", None), ("Beginning of the period", "73.000.000"),
+         ("End of the period", "84.950.000")],
+    ]
+    top = pdf.get_y() + 4
+    for b, rows in enumerate(blocks):
+        x = 10 + b * 95
+        y = top
+        for label, value in rows:
+            pdf.set_xy(x, y)
+            pdf.set_font("helvetica", "B" if value is None else "", 9)
+            pdf.cell(60, 6, label)
+            if value is not None:
+                pdf.cell(25, 6, value, align="R")
+            y += 6
+    pdf.add_page()
+    pdf.set_font("helvetica", "B", 11)
+    pdf.cell(0, 8, "CAPITAL ACCOUNTS", ln=True)
+    pdf.set_font("helvetica", "", 9)
+    pdf.cell(0, 6, "Shareholder | shares | % | Committed (EUR) | Paid in capital (EUR) | "
+                   "Capital account at fair value (EUR)", ln=True)
+    for name, shares, pct, committed, paid, account in [
+            ("Shareholder A", "100.000", "10,00%", "10.000.000", "8.000.000", "8.495.000"),
+            ("Shareholder B", "20.000", "2,00%", "2.000.000", "1.600.000", "1.699.000"),
+            ("Shareholder C", "20.000", "2,00%", "2.000.000", "1.600.000", "1.699.000"),
+            ("Shareholder D", "860.000", "86,00%", "86.000.000", "68.800.000", "73.057.000"),
+            ("TOTAL", "1.000.000", "100,00%", "100.000.000", "80.000.000", "84.950.000")]:
+        pdf.cell(0, 6, f"{name} {shares} {pct} {committed} {paid} {account}", ln=True)
+    pdf.cell(0, 6, "Total commitments 100.000.000", ln=True)
+    pdf.output(str(OUT / "Fund 79_Q1 2026_Quarterly report.pdf"))
+    print("wrote Fund 79_Q1 2026_Quarterly report.pdf")
+    # and the investor's own statement for the same quarter (for supersede)
+    _lp_statement_pdf("Fund 79_Q1 2026 Statement_Sample Holdings LP.pdf",
+                      "Limited Partner Fund Statement - Q1, 2026", [
+        ("Total committed", "100,000,000", "2,000,000"),
+        ("Called in Q1, 2026", "10,000,000", "200,000"),
+        ("Capital Accounts at Q1", "84,950,000", "1,699,000"),
+    ])
+
+
 if __name__ == "__main__":
     fund_financials()
     jv_holdings()
@@ -276,4 +337,5 @@ if __name__ == "__main__":
     pcap_pdfs()
     lp_statement_two_column_pdf()
     format_memory_pdfs()
+    fund_level_report_pdf()
     print("\nSample files ready in", OUT)

@@ -86,6 +86,29 @@
     {"label": "Balance of recallable distributions", "metric": "ignore"},
     {"label": "Amount drawn down from original commitment", "metric": "ignore"},
     {"label": "Ending capital account balance as % of total partners' capital", "metric": "ignore"},
-    {"label": "% of Partnership", "metric": "ignore"}
+    {"label": "% of Partnership", "metric": "ignore"},
+
+    {"section": "NET ASSETS", "label": "Beginning of the period", "metric": "beginning_balance", "note": "fund statement of changes in net assets"},
+    {"section": "NET ASSETS", "label": "End of the period", "metric": "ending_balance", "note": "fund statement of changes in net assets"},
+    {"label": "CAPITAL TRANSACTION", "metric": "funding", "note": "fund statement of changes in net assets"},
+    {"label": "DISTRIBUTIONS TO SHAREHOLDERS", "metric": "return_of_capital"},
+    {"label": "Changes in net unrealized appreciation/depreciation", "metric": "investment_mtm"},
+    {"label": "Changes in net unrealized", "metric": "investment_mtm", "note": "label wrapped onto two lines"},
+    {"label": "Change in net unrealized", "metric": "investment_mtm", "note": "label wrapped onto two lines"},
+    {"label": "Total investment income", "metric": "accrued_interest"},
+    {"label": "Changes in net assets", "metric": "ignore", "note": "total change incl. capital; not an activity line"},
+    {"label": "Net realized/unrealized gains (losses)", "metric": "ignore", "note": "subtotal"}
+  ],
+  "fund_financials": [
+    {"label": "CAPITAL TRANSACTION", "metric": "capital_called"},
+    {"label": "DISTRIBUTIONS TO SHAREHOLDERS", "metric": "distributions"},
+    {"label": "Change in net assets from operations", "metric": "net_income"},
+    {"label": "Change in net assets resulting from operations", "metric": "net_income"},
+    {"label": "Changes in net unrealized appreciation/depreciation", "metric": "unrealized_gain"},
+    {"label": "Changes in net unrealized", "metric": "unrealized_gain", "note": "label wrapped onto two lines"},
+    {"label": "Change in net unrealized", "metric": "unrealized_gain", "note": "label wrapped onto two lines"},
+    {"section": "NET ASSETS", "label": "End of the period", "metric": "nav"},
+    {"label": "Net realized/unrealized gains (losses)", "metric": "ignore", "note": "subtotal"},
+    {"label": "Changes in net assets", "metric": "ignore"}
   ]
 }

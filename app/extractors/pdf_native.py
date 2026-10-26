@@ -119,6 +119,74 @@ def parse_statement_lines(text: str, provenance: str) -> list[RawItem]:
     return items
 
 
+_AMOUNT_RX = re.compile(rf"^{_AMOUNT}$")
+
+
+def _statement_blocks(page) -> list[tuple[float, float]]:
+    """x-ranges of statements printed side by side on one page, or [] for an
+    ordinary page. A block is a region between clear vertical gaps holding
+    several "label + figure" lines; regions of bare figures (a block's value
+    columns) are merged into the block on their left, so a normal label | value
+    page — even with several figure columns — stays one block."""
+    try:
+        words = page.extract_words(x_tolerance=1.5, y_tolerance=2)
+    except Exception:
+        return []
+    if len(words) < 30:
+        return []
+    width = int(float(page.width)) + 2
+    lines: dict[int, list[dict]] = {}
+    for w in words:
+        lines.setdefault(int(w["top"] // 3), []).append(w)
+    cover = [0] * width
+    for ws in lines.values():
+        seen = set()
+        for w in ws:
+            seen.update(range(int(w["x0"]), min(width, int(w["x1"]) + 1)))
+        for x in seen:
+            cover[x] += 1
+    threshold = max(1, int(len(lines) * 0.03))   # a few full-width titles may cross
+    lo, hi = int(width * 0.05), int(width * 0.95)
+    gaps, x = [], lo
+    while x < hi:
+        if cover[x] <= threshold:
+            start = x
+            while x < hi and cover[x] <= threshold:
+                x += 1
+            if x - start >= 10:
+                gaps.append((start + x) / 2)
+        x += 1
+    if not gaps:
+        return []
+    edges = [0.0] + gaps + [float(page.width)]
+    regions = list(zip(edges[:-1], edges[1:]))
+
+    def kinds(x0: float, x1: float) -> tuple[int, int, int]:
+        both = figures = text = 0
+        for ws in lines.values():
+            inside = [w for w in ws if w["x0"] >= x0 - 0.5 and w["x1"] <= x1 + 0.5]
+            if not inside:
+                continue
+            fig = any(_AMOUNT_RX.match(w["text"]) or w["text"] in ("-", "–", "—")
+                      for w in inside)
+            alpha = any(re.search(r"[A-Za-z]{3}", w["text"]) for w in inside)
+            both += fig and alpha
+            figures += fig and not alpha
+            text += alpha and not fig
+        return both, figures, text
+
+    merged: list[tuple[float, float]] = []
+    for x0, x1 in regions:
+        both, figures, text = kinds(x0, x1)
+        if merged and both == 0 and figures >= max(1, text):
+            merged[-1] = (merged[-1][0], x1)        # a value column of the block to its left
+        else:
+            merged.append((x0, x1))
+    merged = [r for r in merged if sum(kinds(*r)) > 0]   # drop empty margins
+    statements = [r for r in merged if kinds(*r)[0] >= 4]
+    return merged if len(statements) >= 2 else []
+
+
 def extract_pdf(path: Path) -> tuple[list[RawItem], str]:
     raw_items: list[RawItem] = []
     text_parts: list[str] = []
@@ -159,14 +227,26 @@ def extract_pdf(path: Path) -> tuple[list[RawItem], str]:
                                 provenance=f"p{pno} table{tno} r{rno}c{i+1}"))
 
             # --- free-text key/value lines (dot leaders / aligned columns) ---
-            for ln in page_text.splitlines():
-                m = _LINE_KV.match(ln.strip())
-                if m:
-                    raw_items.append(RawItem(
-                        label=m.group("label").strip(" .:-"),
-                        value_raw=m.group("value").strip(),
-                        provenance=f"p{pno} text"))
-            raw_items.extend(parse_statement_lines(page_text, f"p{pno}"))
+            # Statements printed side by side on one page are read block by
+            # block; read across, their lines interleave into nonsense.
+            blocks = _statement_blocks(page)
+            if blocks:
+                text_parts[-1:] = []   # replace the interleaved page text
+                parts = [(f"p{pno} block{k}",
+                          page.within_bbox((x0, 0, x1, page.height)).extract_text() or "")
+                         for k, (x0, x1) in enumerate(blocks, start=1)]
+                text_parts.extend(t for _p, t in parts)
+            else:
+                parts = [(f"p{pno}", page_text)]
+            for prov, part in parts:
+                for ln in part.splitlines():
+                    m = _LINE_KV.match(ln.strip())
+                    if m:
+                        raw_items.append(RawItem(
+                            label=m.group("label").strip(" .:-"),
+                            value_raw=m.group("value").strip(),
+                            provenance=f"{prov} text"))
+                raw_items.extend(parse_statement_lines(part, prov))
 
     # scanned detection: essentially no text across the doc
     if total_chars < max(40, 15 * n_pages):

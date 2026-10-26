@@ -93,6 +93,10 @@ def context_text(ctx: Optional[dict]) -> str:
         notes = (mem.get("profile") or {}).get("notes")
         if notes:
             lines.append(f"  - reviewer notes on this fund's statements: {notes}")
+    commitment = ctx.get("commitment")
+    if commitment:
+        lines.append(f"Our investor's commitment to {entity} is {commitment} — use it to find "
+                     "our row in a table of investors when names are missing or redacted.")
     if lines:
         lines.append("Use this as guidance. Where this document clearly differs, follow the "
                      "document and say what changed in \"notes\".")
@@ -143,11 +147,29 @@ Return ONE quarter of OUR investor's capital-account roll-forward as a JSON obje
    "currency": ISO code (USD, EUR, ...),
    "number_format": "1,234.56" or "1.234,56" (how this document writes numbers),
    "notes": one short sentence on anything a reviewer should check.
+5. When "document_kind" is "fund_level", ALSO return:
+   "fund_fields": the WHOLE FUND's figures for the current quarter, using the same
+     field names and the same components format — beginning_balance = net assets at
+     the start of the quarter, funding = capital called / contributed in the quarter,
+     return_of_capital = distributions in the quarter (negative), accrued_interest =
+     investment income in the quarter, other = fees and expenses in the quarter
+     (negative), net_realized_gain, investment_mtm = change in unrealized in the
+     quarter, ending_balance = net assets at quarter end, commitment = TOTAL
+     commitments of all investors. Prefer the fund's statement of changes in net
+     assets / statement of operations for the quarter.
+   "investor_row": if the document has a table of individual investors (e.g. capital
+     accounts) and the guidance below identifies OUR row — by a name/alias, or by our
+     commitment amount — return that row as {{"row_label": "...", "commitment": "...",
+     "paid_in": "...", "distributions": "...", "capital_account": "..."}} with values
+     exactly as printed (capital_account = the row's capital account / NAV at quarter
+     end). If several rows match our commitment and show identical figures, use any of
+     them and say so in notes. If ours can't be identified, return null.
 
 JSON shape:
 {{"document_kind": "...", "investor_column": "...", "period_column": "...",
   "period_end": "...", "period_start": null, "currency": "...", "number_format": "...",
   "fields": {{"funding": {{"components": [{{"section": "...", "label": "...", "value": "..."}}]}}}},
+  "fund_fields": {{}}, "investor_row": null,
   "notes": "..."}}"""
     known = context_text(context)
     if known:
@@ -210,7 +232,23 @@ def read_capital_account(page_texts: list[tuple[int, str]],
             fields[key] = [{"label": str(c.get("label", key)), "value": str(c["value"]),
                             "section": str(c.get("section") or "").strip()}
                            for c in comps]
+    fund_fields: dict[str, list[dict]] = {}
+    for key, spec in (data.get("fund_fields") or {}).items():
+        if key not in FIELD_GUIDE or not isinstance(spec, dict):
+            continue
+        comps = [c for c in spec.get("components") or []
+                 if isinstance(c, dict) and str(c.get("value", "")).strip()]
+        if comps:
+            fund_fields[key] = [{"label": str(c.get("label", key)), "value": str(c["value"]),
+                                 "section": str(c.get("section") or "").strip()}
+                                for c in comps]
+    row = data.get("investor_row")
+    investor_row = ({k: _s(row.get(k)) for k in
+                     ("row_label", "commitment", "paid_in", "distributions", "capital_account")}
+                    if isinstance(row, dict) else None)
     return {
+        "fund_fields": fund_fields,
+        "investor_row": investor_row,
         "document_kind": str(data.get("document_kind") or "other"),
         "investor_column": _s(data.get("investor_column")),
         "period_column": _s(data.get("period_column")),

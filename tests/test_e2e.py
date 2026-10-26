@@ -85,6 +85,7 @@ def main() -> int:
     manual_period()
     statement_formats(samples)
     format_memory(samples)
+    fund_level_pro_rata(samples)
     browser_caching()
     clear_data(samples)
 
@@ -416,6 +417,105 @@ def format_memory(samples: Path) -> None:
               "a taught term can be forgotten")
         check(any(a["action"] == "teach_term" for a in db.get_audit(limit=500)),
               "teaching is in the audit trail")
+    finally:
+        settings.llm_provider, registry.get_provider, capital_account.get_provider = saved
+
+
+def fund_level_pro_rata(samples: Path) -> None:
+    """A fund-level report (whole-fund statements side by side, investors in a
+    table with redacted names): our quarter = fund quarter x our share, once our
+    commitment is known; until then, fund-level values only."""
+    from decimal import Decimal
+
+    from fastapi.testclient import TestClient
+
+    from app.extractors import registry
+    from app.extractors.pdf_native import extract_pdf
+    from app.llm import capital_account
+    from app.main import app
+
+    client = TestClient(app)
+    report = samples / "Fund 79_Q1 2026_Quarterly report.pdf"
+    statement = samples / "Fund 79_Q1 2026 Statement_Sample Holdings LP.pdf"
+    if not report.exists():
+        import subprocess
+        subprocess.run([sys.executable, str(samples / "make_samples.py")], check=True)
+
+    items, _t = extract_pdf(report)
+    blocks = {i.provenance.split(" text")[0] for i in items if "block" in i.provenance}
+    by_label = {i.label: i.value_raw for i in items}
+    check(len(blocks) >= 3 and by_label.get("Beginning of the period") == "73.000.000"
+          and by_label.get("Total expenses") == "510.000",
+          "side-by-side statements are read block by block")
+
+    class Model(_FakeModel):
+        def complete_json(self, messages: list) -> dict:
+            prompt = messages[0]["content"][0]["text"]
+            self.prompts.append(prompt)
+            c = lambda label, value: {"components": [{"label": label, "value": value}]}
+            if "Statement_Sample" in prompt:          # the investor's own statement
+                return {"document_kind": "investor_statement", "currency": "EUR",
+                        "investor_column": "Sample Holdings LP", "period_column": "Q1, 2026",
+                        "period_end": "2026-03-31", "number_format": "1,234.56",
+                        "fields": {"funding": c("Called in Q1, 2026", "200,000"),
+                                   "ending_balance": c("Capital Accounts at Q1", "1,699,000")}}
+            known = "commitment to Fund 79 is 2,000,000" in prompt
+            return {"document_kind": "fund_level", "currency": "EUR",
+                    "period_column": "31 March 2026", "period_end": "2026-03-31",
+                    "number_format": "1.234,56", "fields": {},
+                    "fund_fields": {
+                        "beginning_balance": c("Beginning of the period", "73.000.000"),
+                        "funding": c("CAPITAL TRANSACTION", "10.000.000"),
+                        "return_of_capital": c("DISTRIBUTIONS TO SHAREHOLDERS", "0"),
+                        "accrued_interest": c("Total investment income", "40.000"),
+                        "other": c("Total expenses", "-510.000"),
+                        "investment_mtm": c("Changes in net unrealized", "2.420.000"),
+                        "ending_balance": c("End of the period", "84.950.000"),
+                        "commitment": c("Total commitments", "100.000.000")},
+                    "investor_row": ({"row_label": "Shareholder B", "commitment": "2.000.000",
+                                      "paid_in": "1.600.000", "capital_account": "1.699.000"}
+                                     if known else None)}
+
+    fake = Model()
+    saved = (settings.llm_provider, registry.get_provider, capital_account.get_provider)
+    settings.llm_provider = "azure"
+    registry.get_provider = capital_account.get_provider = lambda: fake
+    try:
+        # 1. nothing known about our stake: fund-level values only, and a clear ask
+        r = process_path(report, allow_duplicate=True)
+        sid = r["submission_id"]
+        by = {f["metric_key"]: f for f in db.get_facts(sid)}
+        check(r["report_type"] == "fund_financials"
+              and Decimal(by["nav"]["value"]) == Decimal("84950000")
+              and "model_agrees" in by["nav"]["flags"],
+              "no stake known: the fund's own figures, parser and model agreeing")
+        check(any("Fund parameters" in w and "commitment" in w for w in r["warnings"]),
+              "it asks for our commitment (or row) to compute our share")
+
+        # 2. commitment set, file re-read: our quarter, pro-rata, checked against our row
+        client.post("/api/funds/Fund 79/profile", json={"commitment": "2,000,000"})
+        res = client.post(f"/api/submissions/{sid}/reread")
+        by = {f["metric_key"]: f for f in db.get_facts(sid) if f["status"] != "rejected"}
+        v = lambda k: Decimal(by[k]["value"]) if k in by and by[k]["value"] is not None else None
+        check(res.status_code == 200 and db.get_submission(sid)["report_type"]
+              == "investment_roll_forward", "re-read with the commitment → our roll-forward")
+        check(v("beginning_balance") == 1460000 and v("funding") == 200000
+              and v("accrued_interest") == 800 and v("other") == -10200
+              and v("investment_mtm") == 48400 and v("ending_balance") == 1699000,
+              "our quarter = fund quarter x 2% (1,460,000 → 1,699,000)")
+        check(all("pro_rata" in f["flags"] and f["status"] == "needs_review" for f in by.values())
+              and "parser_agrees" in by["beginning_balance"]["flags"]
+              and not any(fl.startswith("pro_rata_mismatch") for fl in by["ending_balance"]["flags"]),
+              "pro-rata values are flagged, corroborated, and match our row")
+        check(by["ending_balance"]["currency"] == "EUR"
+              and any("pro-rata" in w for w in json.loads(db.get_submission(sid)["warnings"])),
+              "the share and its basis are stated for the reviewer")
+
+        # 3. our own statement for the quarter arrives: it replaces the pro-rata values
+        r2 = process_path(statement, allow_duplicate=True)
+        left = [f for f in db.get_facts(sid) if f["status"] != "rejected"]
+        check(r2["report_type"] == "investment_roll_forward" and not left,
+              "the investor's own statement supersedes the pro-rata values")
     finally:
         settings.llm_provider, registry.get_provider, capital_account.get_provider = saved
 

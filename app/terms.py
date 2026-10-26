@@ -151,14 +151,15 @@ def fund_profile(entity: str) -> dict:
     with db.get_engine().connect() as conn:
         row = conn.execute(select(db.fund_profiles)
                            .where(db.fund_profiles.c.entity_name == entity)).mappings().first()
-    return dict(row) if row else {"entity_name": entity, "investor_aliases": "", "notes": ""}
+    return dict(row) if row else {"entity_name": entity, "investor_aliases": "",
+                                  "commitment": "", "notes": ""}
 
 
 def set_fund_profile(entity: str, *, investor_aliases: str = "", notes: str = "",
-                     user: str = "local") -> dict:
+                     commitment: str = "", user: str = "local") -> dict:
     p = db.fund_profiles
     vals = dict(investor_aliases=investor_aliases.strip(), notes=notes.strip(),
-                updated_by=user, updated_at=_now())
+                commitment=commitment.strip(), updated_by=user, updated_at=_now())
     with db.get_engine().begin() as conn:
         if conn.execute(select(p.c.entity_name).where(p.c.entity_name == entity)).first():
             conn.execute(update(p).where(p.c.entity_name == entity).values(**vals))
@@ -167,8 +168,29 @@ def set_fund_profile(entity: str, *, investor_aliases: str = "", notes: str = ""
         conn.execute(insert(db.audit).values(
             ts=_now(), action="fund_profile", user=user, field=entity,
             new_value=json.dumps({"investor_aliases": vals["investor_aliases"],
-                                  "notes": vals["notes"]})))
+                                  "commitment": vals["commitment"], "notes": vals["notes"]})))
     return fund_profile(entity)
+
+
+def our_commitment(entity: str, report_type: str) -> tuple[Optional[Decimal], str]:
+    """Our commitment to a fund, and where it came from: the fund parameter a
+    reviewer set, else the latest confirmed commitment value for that fund."""
+    from .models import parse_number
+    prof = fund_profile(entity)
+    if prof.get("commitment"):
+        v = parse_number(prof["commitment"])[0]
+        if v:
+            return abs(v), "fund parameter"
+    f = db.facts
+    with db.get_engine().connect() as conn:
+        row = conn.execute(select(f.c.value).where(f.c.entity_name == entity)
+                           .where(f.c.report_type == report_type)
+                           .where(f.c.metric_key == "commitment")
+                           .where(f.c.status == "confirmed")
+                           .where(f.c.value.is_not(None)).order_by(f.c.id.desc())).first()
+    if row and Decimal(row[0]):
+        return abs(Decimal(row[0])), "confirmed commitment"
+    return None, ""
 
 
 def fund_memory(entity: str, report_type: str) -> dict:

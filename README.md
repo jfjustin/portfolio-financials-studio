@@ -161,6 +161,11 @@ for `azure`/`openai`, else local Tesseract). It reads the investor named in
 `LP_NAMES` and the current-quarter column. Every value goes to review; see
 GUIDE §6b.
 
+**Fund-level reports** (GUIDE §6d) compute our quarter pro-rata from the fund's
+figures once our commitment to that fund is known. Side-by-side statements are
+read block by block, and our row in an investor table is used as a check. Any
+stored file can be re-read after teaching the app something new.
+
 **Format memory** (GUIDE §6c): the parser and the model both use known statement
 wording. It's pre-loaded (`app/data/statement_terms.json`), taught by reviewers
 (for one fund or all), and learned from each fund's confirmed values. Each new

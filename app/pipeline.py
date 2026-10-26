@@ -20,7 +20,8 @@ from .validate import validate_facts
 
 def process_path(path: Path, *, save_copy: bool = True,
                  allow_duplicate: bool = False,
-                 display_name: Optional[str] = None) -> dict[str, Any]:
+                 display_name: Optional[str] = None,
+                 source_key: Optional[str] = None) -> dict[str, Any]:
     """Process a file already on disk. Returns a summary dict."""
     result = extract_file(path, original_name=display_name)
 
@@ -44,14 +45,12 @@ def process_path(path: Path, *, save_copy: bool = True,
     # optionally keep an immutable copy of the source (local dir or Azure Blob)
     if save_copy:
         try:
-            storage.store_source(path.read_bytes(), path.name)
+            source_key = storage.store_source(path.read_bytes(), path.name) or source_key
         except Exception:
             pass  # copy is best-effort; extraction already succeeded
 
-    sub_id = db.save_extraction(result)
-    # an earlier quarter arriving late re-anchors the quarters already on file
-    if result.detected_report_type == carry_forward.RF:
-        carry_forward.rederive_following(result.entity_name, result.period)
+    sub_id = db.save_extraction(result, source_key=source_key)
+    _after_save(result, sub_id)
 
     n_auto = sum(1 for f in result.facts if f.status == "auto")
     n_review = sum(1 for f in result.facts if f.status == "needs_review")
@@ -77,13 +76,44 @@ def process_path(path: Path, *, save_copy: bool = True,
     }
 
 
+def _after_save(result, sub_id: int) -> None:
+    if result.detected_report_type != carry_forward.RF:
+        return
+    # the investor's own statement replaces figures computed pro-rata from a
+    # fund-level report for the same quarter
+    if result.facts and not any("pro_rata" in f.flags for f in result.facts):
+        db.supersede_pro_rata(result.entity_name, carry_forward.RF, result.period, sub_id)
+    # an earlier quarter arriving late re-anchors the quarters already on file
+    carry_forward.rederive_following(result.entity_name, result.period)
+
+
+def reprocess_submission(sub_id: int, user: str = "local") -> dict[str, Any]:
+    """Re-read a stored file with everything the app knows now (taught terms,
+    the fund's memory and parameters, the current model). Reviewed values stay."""
+    sub = db.get_submission(sub_id)
+    if not sub:
+        raise KeyError(f"submission {sub_id} not found")
+    path = storage.load_source(sub.get("source_key"), sub["filename"], sub["file_hash"])
+    if path is None:
+        raise FileNotFoundError("the stored copy of this file wasn't found — upload it again")
+    result = extract_file(path, original_name=sub["filename"])
+    carry_forward.apply_to_result(result)
+    checks = validate_facts(result.detected_report_type, result.facts)
+    counts = db.replace_extraction(sub_id, result, user=user)
+    _after_save(result, sub_id)
+    return {"status": "ok", "submission_id": sub_id, "report_type": result.detected_report_type,
+            "entity_name": result.entity_name, "period": result.period,
+            "extractor": result.extractor, **counts,
+            "checks": [c.to_dict() for c in checks], "warnings": result.warnings}
+
+
 def process_upload(filename: str, raw_bytes: bytes,
                    allow_duplicate: bool = False) -> dict[str, Any]:
     """Process bytes received from the web upload endpoint."""
     settings.ensure_dirs()
     safe_name = Path(filename).name
     # keep the canonical immutable copy (local dir or Azure Blob)
-    storage.store_source(raw_bytes, safe_name)
+    source_key = storage.store_source(raw_bytes, safe_name)
     # extractors need a path with the right suffix; use a short-lived temp file
     suffix = Path(safe_name).suffix
     with tempfile.NamedTemporaryFile(suffix=suffix, delete=False,
@@ -92,7 +122,7 @@ def process_upload(filename: str, raw_bytes: bytes,
         tmp = Path(tf.name)
     try:
         return process_path(tmp, save_copy=False, allow_duplicate=allow_duplicate,
-                            display_name=safe_name)
+                            display_name=safe_name, source_key=source_key or None)
     finally:
         try:
             tmp.unlink()

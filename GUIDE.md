@@ -310,10 +310,45 @@ parser read the same number, and always goes to review.
 |---|---|
 | **The investor's own capital-account statement** (one or several columns) | Recorded as that investor's roll-forward for the quarter. If no opening balance is printed and no earlier quarter is on file, it's derived as ending − quarter activity (badge **Σ**). |
 | **Scanned statement** | Read from the page image by the vision model (Azure OpenAI / OpenAI), or by local Tesseract OCR if installed. Every value goes to review. |
-| **Fund-level report** (LP/investor report, fund financial statements, a table of many investors with redacted names) | Kept as fund-level figures, **not** added to our investor's roll-forward. A note says so, and asks for the investor's own capital-account statement. |
+| **Fund-level report** (LP/investor report, fund financial statements, a table of many investors with redacted names) | Fund-level figures, plus our quarter computed **pro-rata** once our commitment is known. See §6d. |
 
 Without a model, everything still works for parser-friendly layouts. Anything
 the parser can't settle is flagged for review rather than guessed.
+
+## 6d. Fund-level reports (no column for our investor)
+
+Some funds only send the fund's quarterly report: statements for the whole fund,
+and maybe a capital-accounts table where every investor's name is redacted. Our
+quarter can still be derived, because funds allocate to investors in proportion
+to commitment:
+
+**our quarter = the fund's quarter × our share** (our commitment ÷ total commitments)
+
+1. **Upload the report.**
+   - Statements printed side by side on one page are read block by block, so
+     the fund's figures come out right even without a model.
+   - The model, if configured, reads them too and cross-checks them
+     (*model agrees* / *model reads …*).
+   - Without our share the figures stay **fund-level**, and a note asks for it.
+2. **Tell the app our stake:** open the file's review panel, then *Format memory
+   → Fund parameters*. Enter **our commitment to this fund**, or the name of our
+   row in the investor table, and click **Save & re-read**. If a commitment value
+   is already confirmed for that fund (e.g. from its own statement in an earlier
+   quarter), it's used automatically.
+3. **The re-read records our quarter.** Opening balance, capital called,
+   distributions, income, expenses and unrealised change are each the fund's
+   figure × our share, flagged **pro_rata**. The ending balance is our row's
+   capital account when the table has one, and it's checked against the
+   pro-rata figure: a gap over 0.5% is flagged **pro_rata_mismatch**. The
+   reviewer note states the share and how it was worked out. Everything goes to
+   review.
+4. **If our own statement for that quarter arrives later,** its figures replace
+   the pro-rata ones (unreviewed pro-rata values are retired automatically, with
+   an audit entry). If our statement is already on file, the fund report stays
+   fund-level and only cross-checks it.
+
+**Save & re-read** works for any file: it reads the stored copy again with
+everything the app knows now. Reviewed values stay; unreviewed ones are replaced.
 
 ## 6c. Teaching the app new formats (format memory)
 

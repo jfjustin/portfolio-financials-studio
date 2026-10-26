@@ -105,7 +105,8 @@ FUND_FINANCIALS = ReportType(
            "schedule of investments", "nav", "net asset value", "capital account",
            # fund-level financial statements / LP & investor reports
            "statement of financial position", "statement of assets and liabilities",
-           "statement of changes in net assets", "notes to combined financial statements",
+           "statement of changes in net assets", "changes in net assets",
+           "notes to combined financial statements",
            "notes to the financial statements", "combined statement",
            "portfolio summary", "investor report", "lp report", "quarterly report"),
     metrics=(
@@ -281,7 +282,7 @@ INVESTMENT_ROLL_FORWARD = ReportType(
            "partner's capital account", "partner capital account", "capital accounts at",
            "investor capital account", "statement of individual partner",
            "beginning capital", "ending capital account balance", "summary for bsr",
-           "changes in capital", "changes in net assets", "partners' capital",
+           "changes in capital", "partners' capital",
            "change in capital balance", "equity income"),
     metrics=(
         MetricSpec("beginning_balance", "Beginning Balance", Unit.CURRENCY,

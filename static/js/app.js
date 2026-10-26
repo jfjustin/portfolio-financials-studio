@@ -375,16 +375,35 @@
         <div class="memory-form">
           <label>How our investor appears in ${esc(m.entity_name)}'s statements
             <input id="mf-aliases" placeholder="e.g. Shareholder Q, Sample Holdings LP" value="${esc(m.profile.investor_aliases)}"></label>
-          <label>Notes for reading this fund's statements
+          <label>Our commitment to ${esc(m.entity_name)}
+            <input id="mf-commitment" placeholder="e.g. 5,000,000 — for fund-level reports" value="${esc(m.profile.commitment)}"></label>
+          <label class="span2">Notes for reading this fund's statements
             <textarea id="mf-notes" placeholder="e.g. statements are year-to-date; figures in EUR">${esc(m.profile.notes)}</textarea></label>
-          <button class="btn sm" id="mf-save">Save</button>
+          <div class="memory-actions">
+            <button class="btn sm" id="mf-save">Save</button>
+            <button class="btn sm primary" id="mf-reread" title="Save, then read this file again with the parameters">Save &amp; re-read</button>
+          </div>
         </div>
       </details>`;
-    $("#mf-save").onclick = async () => {
+    const save = async () => {
       const res = await fetch(`/api/funds/${encodeURIComponent(m.entity_name)}/profile`, {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ investor_aliases: $("#mf-aliases").value, notes: $("#mf-notes").value }) });
-      toast(res.ok ? `Saved — used the next time a ${m.entity_name} statement is read` : "Not saved");
+        body: JSON.stringify({ investor_aliases: $("#mf-aliases").value,
+                               commitment: $("#mf-commitment").value, notes: $("#mf-notes").value }) });
+      if (!res.ok) { toast("Not saved: " + (await res.text())); return false; }
+      return true;
+    };
+    $("#mf-save").onclick = async () => {
+      if (await save()) toast(`Saved — used the next time a ${m.entity_name} statement is read`);
+    };
+    $("#mf-reread").onclick = async () => {
+      if (!(await save())) return;
+      toast("Re-reading the file…");
+      const res = await fetch(`/api/submissions/${d.submission.id}/reread`, { method: "POST" });
+      if (!res.ok) { toast("Re-read failed: " + (await res.text())); return; }
+      const r = await res.json();
+      toast(`Re-read: ${r.added} value(s) from the new reading · ${r.kept} reviewed value(s) kept`);
+      await openSub(d.submission.id);
     };
   }
 

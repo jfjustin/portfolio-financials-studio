@@ -322,6 +322,7 @@ def _memory_summary(entity: Optional[str], report_type: str) -> Optional[dict]:
             "currency": mem["currency"], "n_learned": len(mem["learned"]),
             "n_taught": len(mem["taught"]),
             "profile": {"investor_aliases": mem["profile"].get("investor_aliases") or "",
+                        "commitment": mem["profile"].get("commitment") or "",
                         "notes": mem["profile"].get("notes") or ""}}
 
 
@@ -374,9 +375,27 @@ def fund_memory(entity: str, report_type: str = carry_forward.RF):
 @app.post("/api/funds/{entity}/profile")
 async def set_fund_profile(entity: str, request: Request):
     body = await request.json()
+    commitment = str(body.get("commitment") or "").strip()
+    if commitment:
+        from .models import parse_number
+        if parse_number(commitment)[0] is None:
+            raise HTTPException(400, f"can't read a number from '{commitment}'")
     return terms.set_fund_profile(entity, investor_aliases=str(body.get("investor_aliases") or ""),
-                                  notes=str(body.get("notes") or ""),
+                                  notes=str(body.get("notes") or ""), commitment=commitment,
                                   user=auth.current_user(request) or "local")
+
+
+@app.post("/api/submissions/{sub_id}/reread")
+def reread_submission(sub_id: int, request: Request):
+    """Re-read a stored file with what the app knows now (taught terms, the
+    fund's memory and parameters, the current model). Reviewed values stay."""
+    from .pipeline import reprocess_submission
+    try:
+        return reprocess_submission(sub_id, user=auth.current_user(request) or "local")
+    except KeyError:
+        raise HTTPException(404, "submission not found")
+    except FileNotFoundError as e:
+        raise HTTPException(409, str(e))
 
 
 @app.post("/api/submissions/{sub_id}/teach")
