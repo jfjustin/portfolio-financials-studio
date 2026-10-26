@@ -105,7 +105,7 @@ class Settings(BaseSettings):
     # rests on the model. "none" = deterministic-only (no model calls at all).
     llm_provider: LLMProviderName = "none"
     llm_timeout_s: int = 120
-    llm_temperature: float = 0.0
+    llm_temperature: float = 0.5
     llm_max_doc_chars: int = 24000  # document text budget sent to the model
     llm_max_image_pages: int = 4    # scanned pages sent as images (vision models)
     # Who "our" investor is in LP statements, so the model reads that investor's
