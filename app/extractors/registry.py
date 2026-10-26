@@ -602,7 +602,13 @@ def _apply_fund_level(result: ExtractionResult, answer: dict, raw_items: list[Ra
             if spec is None:
                 continue
             pf = by_key.get(spec.key)
-            if pf is not None and pf.value is not None:
+            if pf is not None and pf.value is None:
+                # the parser found the line but no figure ("-"): the model's reading fills it
+                pf.value, pf.status = val, FactStatus.NEEDS_REVIEW
+                pf.flags = [fl for fl in pf.flags if fl != "no_value"] + ["llm_suggested"]
+                pf.provenance += f" · value read by llm:{provider}"
+                continue
+            if pf is not None:
                 if abs(pf.value) == abs(val):
                     pf.flags.append("model_agrees")
                 else:

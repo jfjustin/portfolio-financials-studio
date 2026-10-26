@@ -102,8 +102,9 @@
   "fund_financials": [
     {"label": "CAPITAL TRANSACTION", "metric": "capital_called"},
     {"label": "DISTRIBUTIONS TO SHAREHOLDERS", "metric": "distributions"},
-    {"label": "Change in net assets from operations", "metric": "net_income"},
-    {"label": "Change in net assets resulting from operations", "metric": "net_income"},
+    {"label": "Net investment income", "metric": "net_income", "note": "income less expenses"},
+    {"label": "Change in net assets from operations", "metric": "ignore", "note": "includes gains; not net income"},
+    {"label": "Change in net assets resulting from operations", "metric": "ignore", "note": "includes gains; not net income"},
     {"label": "Changes in net unrealized appreciation/depreciation", "metric": "unrealized_gain"},
     {"label": "Changes in net unrealized", "metric": "unrealized_gain", "note": "label wrapped onto two lines"},
     {"label": "Change in net unrealized", "metric": "unrealized_gain", "note": "label wrapped onto two lines"},
