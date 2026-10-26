@@ -62,15 +62,17 @@ Document text:
 JSON:"""
 
 
-def chat_completion_json(client, *, model: str, prompt: str, temperature: float,
-                         timeout: int):
+def chat_completion_json(client, *, model: str, prompt: str = "", temperature: float,
+                         timeout: int, messages: Optional[list] = None):
     """Chat completion requesting a JSON object response, resilient to models
     that reject a custom `temperature` (newer reasoning-tier models — e.g. the
     gpt-5 family — only accept their default and 400 on anything else).
     Retries once without `temperature` when that specific error is detected.
+    `messages` (OpenAI chat format, may include image parts) overrides `prompt`.
     """
-    kwargs = dict(model=model, messages=[{"role": "user", "content": prompt}],
-                 response_format={"type": "json_object"}, timeout=timeout)
+    kwargs = dict(model=model,
+                  messages=messages or [{"role": "user", "content": prompt}],
+                  response_format={"type": "json_object"}, timeout=timeout)
     try:
         return client.chat.completions.create(temperature=temperature, **kwargs)
     except Exception as e:
@@ -132,6 +134,14 @@ class LLMProvider(ABC):
     @abstractmethod
     def extract(self, text: str, report_type_key: str) -> LLMResult:
         """Return field suggestions for the document, or {} on any failure."""
+
+    # Whether complete_json() accepts image parts (scanned pages).
+    supports_vision: bool = False
+
+    def complete_json(self, messages: list) -> dict:
+        """Run a chat request (OpenAI message format) that must answer with one
+        JSON object; returns the parsed object or {"_error": ...}. Never raises."""
+        return {"_error": f"{self.name}: free-form requests not supported"}
 
     def available(self) -> bool:
         """Whether this provider is configured/reachable (best-effort, cheap)."""

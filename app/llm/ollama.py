@@ -26,6 +26,24 @@ class OllamaProvider(LLMProvider):
         return {"provider": "ollama", "available": self.available(),
                 "host": settings.ollama_host, "model": settings.ollama_model}
 
+    def complete_json(self, messages: list) -> dict:
+        # text-only: flatten the chat into one prompt (image parts are skipped)
+        prompt = "\n\n".join(
+            part["text"] if isinstance(part, dict) else str(part)
+            for m in messages
+            for part in (m["content"] if isinstance(m["content"], list) else [m["content"]])
+            if not isinstance(part, dict) or part.get("type", "text") == "text")
+        try:
+            r = requests.post(f"{settings.ollama_host}/api/generate", json={
+                "model": settings.ollama_model, "prompt": prompt, "stream": False,
+                "format": "json", "options": {"temperature": settings.llm_temperature}},
+                timeout=settings.llm_timeout_s)
+            r.raise_for_status()
+            raw = r.json().get("response", "")
+        except Exception as e:
+            return {"_error": str(e)}
+        return extract_json(raw) or {"_error": "model did not return JSON"}
+
     def extract(self, text: str, report_type_key: str) -> LLMResult:
         try:
             payload = {

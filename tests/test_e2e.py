@@ -82,6 +82,7 @@ def main() -> int:
 
     roll_forward_continuity(samples)
     manual_period()
+    statement_formats(samples)
     browser_caching()
     clear_data(samples)
 
@@ -190,6 +191,112 @@ def manual_period() -> None:
     check([(q["period_label"], q["fiscal_label"]) for q in rows]
           == [("2026-Q1", "FY2026 Q2"), ("2026-Q2", "FY2026 Q3")],
           "moving it back restores the consecutive Q1 → Q2 roll-forward")
+
+
+class _FakeModel:
+    """Stands in for Azure OpenAI in CI: answers like the real model would."""
+    name, supports_vision = "fake", True
+
+    def __init__(self) -> None:
+        self.mode, self.prompts = "investor", []
+
+    def complete_json(self, messages: list) -> dict:
+        self.prompts.append(messages[0]["content"][0]["text"])
+        if self.mode == "fund_level":
+            return {"document_kind": "fund_level", "fields": {},
+                    "notes": "only partnership totals"}
+        c = lambda label, value: {"components": [{"label": label, "value": value}]}
+        return {"document_kind": "investor_statement",
+                "investor_column": "Sample Holdings LP", "period_column": "Q1, 2026",
+                "period_end": "2026-03-31", "period_start": "2026-01-01",
+                "currency": "EUR", "number_format": "1,234.56",
+                "fields": {
+                    "funding": c("Called in Q1, 2026", "40,000"),
+                    "investment_mtm": {"components": [
+                        {"label": "Capital Loss Q1, 2026", "value": "(30,000)"},
+                        {"label": "Capital FX Gain Q1, 2026", "value": "10,000"}]},
+                    "other": c("GP Share and Other Expenses Q1, 2026", "(5,000)"),
+                    "ending_balance": c("Capital Accounts at Q1", "2,015,000"),
+                    "commitment": c("Total committed", "2,000,000"),
+                    "cumulative_contributions": c("Total Capital Contributions called",
+                                                  "2,040,000")}}
+
+
+def statement_formats(samples: Path) -> None:
+    """Statements in layouts other than the ones the parser was built around."""
+    from decimal import Decimal
+
+    from app.extractors import registry
+    from app.extractors.base import detect_statement_dates
+    from app.llm import capital_account
+    from app.models import detect_decimal_comma, parse_number
+
+    # European numbers, decided per document
+    eu = "Investments at value 420.318.775 Cash 8.214.009 Management fee 612.500 12,35%"
+    check(detect_decimal_comma(eu) and not detect_decimal_comma("Total 2,468,135 (51,790)"),
+          "document number style detected (1.234.567 vs 1,234,567)")
+    check(parse_number("612.500", True)[0] == 612500 and parse_number("-381.240", True)[0] == -381240
+          and parse_number("12,35%", True)[0] == Decimal("12.35")
+          and parse_number("420.318.775")[0] == 420318775,
+          "European-format values parse to the right magnitude")
+    # date forms seen in real statements
+    check(detect_statement_dates("", "Fund 3 Capital account Mar 31 2026 - LP.pdf").quarter == "2026-Q1"
+          and detect_statement_dates("3 months to 31-Mar-26", "x.pdf").quarter == "2026-Q1"
+          and detect_statement_dates("Quarterly report –31 March 2026", "x.pdf").quarter == "2026-Q1"
+          and detect_statement_dates("", "Fund 8_Q1_2026_Redacted.pdf").quarter == "2026-Q1",
+          "'Mar 31 2026', '31-Mar-26', '31 March 2026', 'Q1_2026' all → 2026-Q1")
+
+    lp = samples / "Fund 77_Q1 2026 Statement_Sample Holdings LP.pdf"
+    if not lp.exists():
+        import subprocess
+        subprocess.run([sys.executable, str(samples / "make_samples.py")], check=True)
+
+    # without a model: the two-column lines are flagged, not trusted
+    r = process_path(lp, allow_duplicate=True)
+    facts_ = db.get_facts(r["submission_id"])
+    check(r["report_type"] == "investment_roll_forward" and r["period"] == "2026-Q1",
+          "LP statement recognised as a roll-forward for 2026-Q1")
+    check(facts_ and all(any(fl.startswith("multi_column") for fl in f["flags"])
+                         and f["status"] == "needs_review" for f in facts_),
+          "two-column picks are flagged for review without a model")
+
+    # with a model: our investor's column and the quarter's lines
+    fake = _FakeModel()
+    saved = (settings.llm_provider, registry.get_provider, capital_account.get_provider)
+    settings.llm_provider = "azure"
+    registry.get_provider = capital_account.get_provider = lambda: fake
+    try:
+        r = process_path(lp, allow_duplicate=True)
+        by = {f["metric_key"]: f for f in db.get_facts(r["submission_id"])}
+        v = lambda k: Decimal(by[k]["value"]) if k in by and by[k]["value"] is not None else None
+        check("Sample Holdings LP" in fake.prompts[-1] or "Lam Research" in fake.prompts[-1],
+              "model is told which investor is ours (LP_NAMES)")
+        check(r["report_type"] == "investment_roll_forward" and by["funding"]["currency"] == "EUR"
+              and v("funding") == 40000 and v("investment_mtm") == -20000
+              and v("other") == -5000 and v("ending_balance") == 2015000,
+              "model reading: investor column, quarter lines, components summed by code")
+        check("parser_agrees" in by["other"]["flags"]
+              and all("llm_suggested" in f["flags"] and f["status"] == "needs_review"
+                      for k, f in by.items() if k != "beginning_balance"),
+              "model values are suggestions; parser agreement is recorded")
+        check(v("beginning_balance") == 2000000
+              and "derived_from_activity" in by["beginning_balance"]["flags"],
+              "unprinted opening balance = ending − quarter activity (flagged)")
+        check(v("cumulative_contributions") == 2040000 and "funding" in by
+              and v("funding") != 2040000, "cumulative total kept out of quarter funding")
+
+        n_calls = len(fake.prompts)
+        process_path(samples / "Fund 99_2026 Q1 PCAP_Sample Holdings LP.pdf", allow_duplicate=True)
+        check(len(fake.prompts) == n_calls,
+              "a statement the parser reads completely never calls the model")
+
+        fake.mode = "fund_level"
+        r = process_path(lp, allow_duplicate=True)
+        check(r["report_type"] == "fund_financials"
+              and any("fund-level" in w for w in r["warnings"]),
+              "fund-level reports stay out of the investor's roll-forward, with a note")
+    finally:
+        settings.llm_provider, registry.get_provider, capital_account.get_provider = saved
 
 
 def browser_caching() -> None:

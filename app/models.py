@@ -94,10 +94,23 @@ def detect_currency(text: str) -> Optional[str]:
     return _CURRENCY_SYMBOLS.get(m.group(1)) if m else None
 
 
-def parse_number(raw: str) -> tuple[Optional[Decimal], list[str]]:
+_EU_GROUPED = re.compile(r"(?<![\d.,])\d{1,3}(?:\.\d{3})+(?:,\d+)?(?![\d.,])")
+_US_GROUPED = re.compile(r"(?<![\d.,])\d{1,3}(?:,\d{3})+(?:\.\d+)?(?![\d.,])")
+
+
+def detect_decimal_comma(text: str) -> bool:
+    """True when a document writes numbers European-style ("420.318.775",
+    "1.234,56") rather than "420,318,775" — decided by which grouping dominates."""
+    return len(_EU_GROUPED.findall(text or "")) > len(_US_GROUPED.findall(text or ""))
+
+
+def parse_number(raw: str, decimal_comma: Optional[bool] = None
+                 ) -> tuple[Optional[Decimal], list[str]]:
     """Parse a financial value robustly. Returns (value, notes).
 
     Handles: $1,234.50 | (1,234) negative | 45% | 1.2m | 3.4bn | – / — (empty) | -
+    and European notation (1.234.567 / 1.234,56) — `decimal_comma` is the
+    document-level style from detect_decimal_comma(); None = infer per value.
     Returns None when there is genuinely no number (so it can be flagged, not zeroed).
     """
     notes: list[str] = []
@@ -123,6 +136,16 @@ def parse_number(raw: str) -> tuple[Optional[Decimal], list[str]]:
 
     # strip everything except digits, separators, sign
     cleaned = re.sub(r"[^0-9.,\-]", "", s)
+    # a minus written after a space ("- 1.234") or a leading "-" both mean negative
+    if cleaned.startswith("-") and not negative:
+        negative, cleaned = True, cleaned.lstrip("-")
+    if decimal_comma and not (cleaned.count(",") and cleaned.count(".")):
+        # document writes 1.234.567 / 1.234,56: dots group thousands
+        if cleaned.count(".") and (cleaned.count(".") > 1 or re.fullmatch(r"\d{1,3}\.\d{3}", cleaned)):
+            cleaned = cleaned.replace(".", "")
+        cleaned = cleaned.replace(",", ".")
+    elif cleaned.count(".") > 1 and re.fullmatch(r"\d{1,3}(?:\.\d{3})+", cleaned):
+        cleaned = cleaned.replace(".", "")   # "420.318.775" can only be grouping
     # handle European "1.234,56" vs US "1,234.56"
     if cleaned.count(",") and cleaned.count("."):
         if cleaned.rfind(",") > cleaned.rfind("."):   # comma is decimal sep
@@ -158,7 +181,8 @@ def parse_number(raw: str) -> tuple[Optional[Decimal], list[str]]:
 # Label -> canonical metric mapping
 # --------------------------------------------------------------------------
 _SINCE_INCEPTION = re.compile(
-    r"closing date|inception|cumulative|life[- ]to[- ]date|\bltd\b|since (?:the )?(?:fund|first)")
+    r"closing date|inception|cumulative|life[- ]to[- ]date|\bltd\b|since (?:the )?(?:fund|first)"
+    r"|(?<!year )\bto date\b|in previous quarters")
 
 
 def is_since_inception_label(label: str) -> bool:

@@ -169,10 +169,46 @@ def pcap_pdfs():
     ])
 
 
+def lp_statement_two_column_pdf():
+    """A since-inception LP statement in euros with a 'Total Partnership' column
+    next to the investor's own column and quarter-labelled activity lines (no
+    opening balance printed) — made-up numbers. Investor quarter: called 40,000,
+    unrealised -30,000 + FX 10,000, expenses -5,000; capital account 2,015,000."""
+    from fpdf import FPDF
+    pdf = FPDF()
+    pdf.add_page()
+    pdf.set_font("helvetica", "B", 12)
+    pdf.cell(0, 7, "Quarterly report Q1, 2026", ln=True)
+    pdf.cell(0, 7, "Limited Partner Fund Statement as at Q1", ln=True)
+    pdf.set_font("helvetica", "", 10)
+    pdf.cell(0, 6, "(all figures in EUR)", ln=True)
+    pdf.cell(110, 6, "")
+    pdf.cell(40, 6, "Total Partnership", align="R")
+    pdf.cell(40, 6, "Sample Holdings LP", ln=True, align="R")
+    rows = [
+        ("Total committed", "100,000,000", "2,000,000"),
+        ("Total Capital Contributions called", "102,000,000", "2,040,000"),
+        ("Called in previous quarters", "100,000,000", "2,000,000"),
+        ("Called in Q1, 2026", "2,000,000", "40,000"),
+        ("Distributions to date", "-", "-"),
+        ("Capital Loss Q1, 2026", "(1,500,000)", "(30,000)"),
+        ("Capital FX Gain Q1, 2026", "500,000", "10,000"),
+        ("GP Share and Other Expenses Q1, 2026", "(250,000)", "(5,000)"),
+        ("Capital Accounts at Q1", "100,750,000", "2,015,000"),
+    ]
+    for label, total, ours in rows:
+        pdf.cell(110, 6, label)
+        pdf.cell(40, 6, total, align="R")
+        pdf.cell(40, 6, ours, ln=True, align="R")
+    pdf.output(str(OUT / "Fund 77_Q1 2026 Statement_Sample Holdings LP.pdf"))
+    print("wrote Fund 77_Q1 2026 Statement_Sample Holdings LP.pdf")
+
+
 if __name__ == "__main__":
     fund_financials()
     jv_holdings()
     direct_investment()
     jv_equity_income_pdf()
     pcap_pdfs()
+    lp_statement_two_column_pdf()
     print("\nSample files ready in", OUT)

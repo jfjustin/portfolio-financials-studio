@@ -71,9 +71,24 @@ class AzureOpenAIProvider(LLMProvider):
             self._init_error = f"Azure OpenAI client init failed: {e}"
         return self._client, self._init_error
 
+    supports_vision = True
+
     def available(self) -> bool:
         client, _ = self._client_or_error()
         return client is not None
+
+    def complete_json(self, messages: list) -> dict:
+        client, err = self._client_or_error()
+        if client is None:
+            return {"_error": err or "Azure OpenAI unavailable"}
+        try:
+            resp = chat_completion_json(
+                client, model=settings.azure_openai_deployment, messages=messages,
+                temperature=settings.llm_temperature, timeout=settings.llm_timeout_s)
+            raw = resp.choices[0].message.content or ""
+        except Exception as e:
+            return {"_error": str(e)}
+        return extract_json(raw) or {"_error": "model did not return JSON"}
 
     def status(self) -> dict:
         client, err = self._client_or_error()

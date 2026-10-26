@@ -651,7 +651,7 @@ def rebuild_investment_views() -> None:
     for f in facts_:
         flags_ = [fl for fl in json.loads(f.get("flags") or "[]")
                   if fl in ("carried_forward", "ytd_decumulated", "reconciling_plug",
-                            "prior_quarter_missing")]
+                            "prior_quarter_missing", "derived_from_activity")]
         if flags_ or f.get("reported_value") is not None:
             notes_by_key.setdefault((f["entity_name"], f["period"]), {})[f["metric_key"]] = {
                 "flags": flags_, "reported": _as_float(f.get("reported_value")),

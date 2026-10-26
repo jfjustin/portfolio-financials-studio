@@ -234,6 +234,7 @@
     ytd_decumulated: ["YTD→Q", "year-to-date figure less the year's earlier quarters"],
     reconciling_plug: ["plug", "includes a reconciling amount so beginning + activity = ending"],
     prior_quarter_missing: ["!", "prior quarter not on file — value as printed"],
+    derived_from_activity: ["Σ", "not printed — ending balance less the quarter's activity"],
   };
   function rfBadge(n) {
     const tips = (n.flags || []).map(f => (RF_BADGES[f] || [f, f])[1]);

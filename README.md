@@ -153,6 +153,14 @@ Select with the `LLM_PROVIDER` environment variable:
 | `openai` | public OpenAI cloud | leaves to OpenAI | quick trials |
 | `ollama` | local machine | nothing leaves the machine | fully offline with a model |
 
+With a model configured, investor statements in layouts the parser doesn't
+fully cover are read by a dedicated capital-account step. It covers
+multi-column (fund total vs. investor, quarter vs. YTD/inception) and
+since-inception statements, European number formats, and scanned pages (vision
+for `azure`/`openai`, else local Tesseract). It reads the investor named in
+`LP_NAMES` and the current-quarter column. Every value goes to review; see
+GUIDE §6b.
+
 ### Customer Microsoft model (Azure OpenAI)
 
 Connects to an Azure OpenAI **deployment** in the customer's own subscription, so

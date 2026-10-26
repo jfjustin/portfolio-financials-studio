@@ -102,7 +102,12 @@ FUND_FINANCIALS = ReportType(
     label="Fund Financials",
     entity_kind="fund",
     hints=("fund financial", "statement of assets", "statement of operations",
-           "schedule of investments", "nav", "net asset value", "capital account"),
+           "schedule of investments", "nav", "net asset value", "capital account",
+           # fund-level financial statements / LP & investor reports
+           "statement of financial position", "statement of assets and liabilities",
+           "statement of changes in net assets", "notes to combined financial statements",
+           "notes to the financial statements", "combined statement",
+           "portfolio summary", "investor report", "lp report", "quarterly report"),
     metrics=(
         MetricSpec("total_assets", "Total Assets", Unit.CURRENCY,
                    ("total assets",), role="total", required=True,
@@ -272,6 +277,9 @@ INVESTMENT_ROLL_FORWARD = ReportType(
     label="Investment Roll-Forward",
     entity_kind="fund",
     hints=("roll forward", "rollforward", "capital account", "capital account statement",
+           "limited partner capital account", "limited partner fund statement",
+           "partner's capital account", "partner capital account", "capital accounts at",
+           "investor capital account", "statement of individual partner",
            "beginning capital", "ending capital account balance", "summary for bsr",
            "changes in capital", "changes in net assets", "partners' capital",
            "change in capital balance", "equity income"),

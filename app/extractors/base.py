@@ -108,9 +108,11 @@ def normalize_period(text: str) -> Optional[str]:
 _DATE_RX = re.compile(
     r"\b(?P<iso>20\d{2})[-/.](?P<iso_m>\d{1,2})[-/.](?P<iso_d>\d{1,2})\b"
     r"|\b(?P<a>\d{1,2})[-/.](?P<b>\d{1,2})[-/.](?P<y>20\d{2})\b"
-    r"|\b(?P<mon>[a-z]{3,9})\.?\s+(?P<md>\d{1,2}),?\s+(?P<my>20\d{2})\b",
+    r"|\b(?P<mon>[a-z]{3,9})\.?\s+(?P<md>\d{1,2}),?\s+(?P<my>20\d{2})\b"
+    # "31 March 2026", "31-Mar-26", "31 Mar. 2026"
+    r"|\b(?P<dd>\d{1,2})[\s\-]+(?P<mon2>[a-z]{3,9})\.?[\s\-]+(?P<yy>20\d{2}|\d{2})\b",
     re.I)
-_QUARTER_RX = re.compile(r"\bq([1-4])[\s\-]*(20\d{2})\b|\b(20\d{2})[\s\-]*q([1-4])\b", re.I)
+_QUARTER_RX = re.compile(r"\bq([1-4])[\s,\-]*(20\d{2})\b|\b(20\d{2})[\s,\-]*q([1-4])\b", re.I)
 _BOOKING_CTX = re.compile(r"(month|date posted|posting date|posted|prepared|printed)\s*:?\s*$", re.I)
 _START_CTX = re.compile(r"(beginning[^\n]{0,80}?\bas of|\bfrom|\bsince|\bopening[^\n]{0,40}?\bas of)\s*$",
                         re.I)
@@ -122,6 +124,7 @@ _END_CTX = re.compile(r"(\bended|\bending[^\n]{0,80}?\bas of|\bthrough|\bperiod 
 class StatementDates:
     """Dates a statement carries, by role. `quarter` is "YYYY-Qn"."""
     quarter: Optional[str] = None
+    explicit_quarter: bool = False          # "Q1 2026" named in the filename
     statement_start: Optional[date] = None  # coverage start the document states
     statement_end: Optional[date] = None    # results date the document states
     booking_date: Optional[date] = None     # e.g. a JV voucher's booking month
@@ -134,9 +137,13 @@ def _iter_dates(text: str):
             d = _safe_date(int(m.group("iso")), int(m.group("iso_m")), int(m.group("iso_d")))
         elif m.group("y"):
             d = _mdy(int(m.group("a")), int(m.group("b")), int(m.group("y")))
-        else:
+        elif m.group("mon"):
             mon = _MONTHS.get(m.group("mon").lower())
             d = _safe_date(int(m.group("my")), mon, int(m.group("md"))) if mon else None
+        else:
+            mon = _MONTHS.get(m.group("mon2").lower())
+            yy = int(m.group("yy"))
+            d = _safe_date(yy if yy > 99 else 2000 + yy, mon, int(m.group("dd"))) if mon else None
         if d:
             yield d, text[max(0, m.start() - 90):m.start()], text[m.end():m.end() + 12]
 
@@ -200,7 +207,7 @@ def detect_statement_dates(text: str, filename: str) -> StatementDates:
 
     out.statement_end = (fname_dates[0] if fname_dates else None) or text_end or fallback
     if explicit_q:
-        out.quarter = explicit_q
+        out.quarter, out.explicit_quarter = explicit_q, True
     elif out.statement_end:
         out.quarter = quarter_label(out.statement_end)
     return out

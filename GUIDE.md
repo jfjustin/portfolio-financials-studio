@@ -273,6 +273,48 @@ row traces back (via `source`) to the file and cell/line it came from.
 
 Add metrics/synonyms in `app/report_types.py` — the whole pipeline adapts.
 
+## 6b. Statements in different formats
+
+Nothing is tied to a particular fund. Every fund's statement goes through the
+same two layers.
+
+**1. Parser (deterministic, always on).** It reads statements laid out as
+label + figure:
+
+- **Numbers:** US `1,234,567.89` and European `1.234.567,89` styles, decided
+  per document.
+- **Dates:** "Q1, 2026", "31 March 2026", "31-Mar-26" and "Mar 31 2026", in the
+  filename or the text.
+- **Several figure columns** (e.g. *Total Partnership | our investor*, or
+  *3 months | year to date | inception*): it keeps the right-most and marks
+  the value `multi_column(n)` for review.
+
+**2. Model step (when a model is configured).** It runs when the parser's
+roll-forward is incomplete, has multi-column picks, or doesn't add up; when a
+document talks about capital accounts or names our investor; and on every
+scanned PDF. The model is told:
+
+- **Who our investor is** (`LP_NAMES`), so it reads that investor's column,
+  never the fund total.
+- **To use the current quarter's column**, never year-to-date or inception. On
+  cumulative statements, it uses only the lines labelled for the quarter
+  ("Called in Q1, 2026").
+- **To copy the printed lines** that make up each field. The app parses and
+  sums them; the model does no arithmetic.
+
+Each value shows which column and period it came from (e.g. *[Lam Research |
+Q1, 2026]*). It is flagged `llm_suggested`, gets `parser_agrees` when the
+parser read the same number, and always goes to review.
+
+| What you upload | What happens |
+|---|---|
+| **The investor's own capital-account statement** (one or several columns) | Recorded as that investor's roll-forward for the quarter. If no opening balance is printed and no earlier quarter is on file, it's derived as ending − quarter activity (badge **Σ**). |
+| **Scanned statement** | Read from the page image by the vision model (Azure OpenAI / OpenAI), or by local Tesseract OCR if installed. Every value goes to review. |
+| **Fund-level report** (LP/investor report, fund financial statements, a table of many investors with redacted names) | Kept as fund-level figures, **not** added to our investor's roll-forward. A note says so, and asks for the investor's own capital-account statement. |
+
+Without a model, everything still works for parser-friendly layouts. Anything
+the parser can't settle is flagged for review rather than guessed.
+
 ---
 
 ## 7. Understanding the trust signals

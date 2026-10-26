@@ -26,10 +26,16 @@ _LINE_KV = re.compile(
 _NUMISH = re.compile(r"[0-9]")
 
 # Statement layouts where pdfplumber puts a single space between the label and
-# a right-aligned figure: "Capital distributions (73,202)",
-# "Beginning capital account balance as of January 1, 2026 $ 1,175,980".
-_AMOUNT = (r"\(?-?\$?\s?(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?\)?%?")
-_LINE_TAIL = re.compile(rf"^(?P<label>.*?[A-Za-z\)\$:%]|.*?\b20\d{{2}})\s+(?P<value>{_AMOUNT})\s*\*?$")
+# a right-aligned figure: "Capital distributions (12,345)",
+# "Beginning capital account balance as of January 1, 2026 $ 2,345,678".
+# US "1,234,567.89" or European "1.234.567,89" grouping, "(1,234)" negatives
+_AMOUNT = (r"\(?\s?-?\s?[\$€£]?\s?(?:\d{1,3}(?:[.,]\d{3})+|\d+)(?:[.,]\d+)?\s?\)?%?")
+_CELL = rf"(?:{_AMOUNT}|-|–|—)"   # a figure, or a dash for an empty column
+# label, then one or more figure columns ("Total committed 90,000,000 2,500,000")
+_LINE_TAIL = re.compile(
+    rf"^(?P<label>.*?(?:[A-Za-z\)\$:%]|\bQ[1-4]|\b20\d{{2}}))\s+"
+    rf"(?P<values>{_CELL}(?:\s+{_CELL})*)\s*\*?$")
+_CELL_RX = re.compile(_CELL)
 _BARE_AMOUNT = re.compile(rf"^(?P<value>{_AMOUNT})\s*\*?$")
 # "... as of June 30, 2026" — the trailing year is part of a date, not an amount
 _ENDS_WITH_MONTH_DAY = re.compile(
@@ -72,12 +78,18 @@ def parse_statement_lines(text: str, provenance: str) -> list[RawItem]:
             continue
         m = _LINE_TAIL.match(ln)
         if m:
-            label = m.group("label").rstrip(" $:").strip()
-            value = m.group("value").strip()
-            is_date_year = re.fullmatch(r"20\d{2}", value) and _ENDS_WITH_MONTH_DAY.search(label)
-            if not is_date_year and re.search(r"[A-Za-z]{3}", label):
+            label = m.group("label").rstrip(" $€£:").strip()
+            cells = [c.strip() for c in _CELL_RX.findall(m.group("values")) if c.strip()]
+            value = cells[-1] if cells else ""
+            is_date_year = (len(cells) == 1 and re.fullmatch(r"20\d{2}", value)
+                            and _ENDS_WITH_MONTH_DAY.search(label))
+            if cells and not is_date_year and re.search(r"[A-Za-z]{3}", label):
+                # several figure columns (e.g. Total fund | this investor, or
+                # quarter | YTD | inception): keep the right-most, record how
+                # many there were so the pick gets reviewed
+                cols = f" cols={len(cells)}" if len(cells) > 1 else ""
                 items.append(RawItem(label=label, value_raw=value,
-                                     provenance=f"{provenance} text"))
+                                     provenance=f"{provenance} text{cols}"))
                 pending_label = ""
                 continue
         if _SECTION_HEADER.match(ln):
@@ -146,3 +158,35 @@ def extract_pdf(path: Path) -> tuple[list[RawItem], str]:
             "this looks like a scanned/image PDF and needs OCR.")
 
     return raw_items, "\n".join(text_parts)
+
+
+# --------------------------------------------------------------------------
+# Page access for the model step: layout-preserving text (columns stay lined
+# up, so "which column is the investor's / the quarter's" is answerable) and
+# page images for scanned pages.
+# --------------------------------------------------------------------------
+def pdf_pages(path: Path) -> list[dict]:
+    """[{"page": n, "text": layout text, "has_text": bool}] for every page."""
+    out = []
+    with pdfplumber.open(path) as pdf:
+        for pno, page in enumerate(pdf.pages, start=1):
+            plain = page.extract_text() or ""
+            try:
+                layout = page.extract_text(layout=True) or plain
+            except Exception:
+                layout = plain
+            # trim the wide left/right padding layout mode adds
+            layout = "\n".join(ln.rstrip() for ln in layout.splitlines())
+            out.append({"page": pno, "text": layout.strip("\n"),
+                        "has_text": len(plain.strip()) >= 40})
+    return out
+
+
+def render_page_png(path: Path, page_no: int, resolution: int = 150) -> bytes:
+    """PNG bytes of one page (1-based), for vision models / OCR."""
+    import io
+    with pdfplumber.open(path) as pdf:
+        img = pdf.pages[page_no - 1].to_image(resolution=resolution).original
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    return buf.getvalue()

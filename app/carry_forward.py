@@ -35,7 +35,7 @@ FLOW_KEYS = ("funding", "equity_income_loss", "return_of_capital", "dividends", 
              "accrued_interest", "note_conversion", "gain_loss_on_conversion",
              "acquisition_impact", "impairment")
 DERIVED_FLAGS = ("carried_forward", "ytd_decumulated", "reconciling_plug",
-                 "prior_quarter_missing")
+                 "prior_quarter_missing", "derived_from_activity")
 TOL = Decimal(1)
 
 
@@ -102,6 +102,15 @@ def derive(quarter: str, statement_start: Optional[date],
             d.set("beginning_balance", prev_end, "carried_forward",
                   f"carried forward from {prev} ending {_fmt(prev_end)}"
                   + (f"; document printed {_fmt(beg_rep)}" if beg_rep is not None else ""))
+    elif beg_rep is None and not ytd_start and reported.get("ending_balance") is not None \
+            and any(k in reported for k in FLOW_KEYS):
+        # since-inception statements print the quarter's activity and the
+        # closing balance but no opening one: opening = closing − activity
+        acts = sum((reported[k] for k in FLOW_KEYS if k in reported), Decimal(0))
+        beg = reported["ending_balance"] - acts
+        d.set("beginning_balance", beg, "derived_from_activity",
+              f"not printed — ending {_fmt(reported['ending_balance'])} less quarter "
+              f"activity {_fmt(acts)}; {prev} not on file to carry forward")
     elif ytd_start and beg_rep is not None:
         d.flag("beginning_balance", "prior_quarter_missing")
         d.warnings.append(
@@ -129,7 +138,9 @@ def derive(quarter: str, statement_start: Optional[date],
 
     # 3) reconcile beginning + activity = ending
     end = reported.get("ending_balance")
-    if ("beginning_balance" in d.values or decumulated) and beg is not None and end is not None:
+    derived_only = d.flags.get("beginning_balance") == ["derived_from_activity"]
+    if (("beginning_balance" in d.values and not derived_only) or decumulated) \
+            and beg is not None and end is not None:
         flows = {k: d.values.get(k, reported[k]) for k in FLOW_KEYS if k in reported}
         resid = end - beg - sum(flows.values(), Decimal(0))
         if abs(resid) > TOL:
