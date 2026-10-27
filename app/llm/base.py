@@ -73,13 +73,25 @@ def chat_completion_json(client, *, model: str, prompt: str = "", temperature: f
     kwargs = dict(model=model,
                   messages=messages or [{"role": "user", "content": prompt}],
                   response_format={"type": "json_object"}, timeout=timeout)
-    try:
-        return client.chat.completions.create(temperature=temperature, **kwargs)
-    except Exception as e:
-        msg = str(e).lower()
-        if "temperature" in msg and ("unsupported_value" in msg or "not support" in msg):
-            return client.chat.completions.create(**kwargs)
-        raise
+    optional = {"temperature": temperature}
+    if settings.llm_reasoning_effort:
+        optional["reasoning_effort"] = settings.llm_reasoning_effort
+    # Models differ in which tuning parameters they accept (the gpt-5 family
+    # rejects a custom temperature; older models reject reasoning_effort): drop
+    # whichever one the model refuses and try again.
+    for _ in range(len(optional) + 1):
+        try:
+            return client.chat.completions.create(**kwargs, **optional)
+        except Exception as e:
+            msg = str(e).lower()
+            refused = [k for k in optional if k in msg and any(
+                w in msg for w in ("unsupported", "not support", "unrecognized",
+                                   "unknown parameter", "invalid"))]
+            if not refused:
+                raise
+            for k in refused:
+                optional.pop(k)
+    return client.chat.completions.create(**kwargs)
 
 
 def strip_reasoning(s: str) -> str:

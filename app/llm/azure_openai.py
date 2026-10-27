@@ -56,6 +56,7 @@ class AzureOpenAIProvider(LLMProvider):
                     azure_endpoint=settings.azure_openai_endpoint,
                     api_version=settings.azure_openai_api_version,
                     azure_ad_token_provider=token_provider,
+                    max_retries=0,   # a retry would overrun the request limit
                 )
             else:
                 if not settings.azure_openai_api_key:
@@ -66,6 +67,7 @@ class AzureOpenAIProvider(LLMProvider):
                     azure_endpoint=settings.azure_openai_endpoint,
                     api_version=settings.azure_openai_api_version,
                     api_key=settings.azure_openai_api_key,
+                    max_retries=0,   # a retry would overrun the request limit
                 )
         except Exception as e:  # pragma: no cover
             self._init_error = f"Azure OpenAI client init failed: {e}"

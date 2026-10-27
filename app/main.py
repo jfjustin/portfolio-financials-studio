@@ -18,6 +18,7 @@ from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import (HTMLResponse, JSONResponse, RedirectResponse,
                                StreamingResponse)
 from fastapi.staticfiles import StaticFiles
+from starlette.concurrency import run_in_threadpool
 from fastapi.templating import Jinja2Templates
 
 from . import auth, carry_forward, db, fabric_export, performance, terms
@@ -191,7 +192,10 @@ async def upload(files: list[UploadFile] = File(...),
     for f in files:
         raw = await f.read()
         try:
-            res = process_upload(f.filename, raw, allow_duplicate=allow_duplicate)
+            # model calls take a while: keep them off the event loop so the rest
+            # of the app stays responsive during an upload
+            res = await run_in_threadpool(process_upload, f.filename, raw,
+                                          allow_duplicate=allow_duplicate)
         except Exception as e:  # never crash the whole batch on one bad file
             res = {"status": "error", "filename": f.filename, "message": str(e)}
         results.append(res)

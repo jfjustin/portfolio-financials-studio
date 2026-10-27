@@ -18,7 +18,9 @@
     const b = $("#llm-badge");
     const ps = h.provider_status || {};
     if (!h.llm_enabled) { b.textContent = "Deterministic only (no model)"; b.className = "badge"; }
-    else if (ps.available) { b.textContent = h.llm_provider + " ✓"; b.className = "badge on"; }
+    else if (ps.available) {
+      b.textContent = h.llm_provider + (ps.deployment || ps.model ? " · " + (ps.deployment || ps.model) : "") + " ✓";
+      b.className = "badge on"; }
     else { b.textContent = h.llm_provider + " unavailable"; b.className = "badge off"; }
     if (ps.detail) b.title = ps.detail;
     $("#ledger-filter").addEventListener("input", renderLedger);
@@ -281,19 +283,34 @@
     input.addEventListener("change", () => uploadFiles(input.files));
   }
 
+  // one request per file: a model reading can take a minute or two, and each
+  // request must finish within the host's time limit
   async function uploadFiles(fileList) {
     if (!fileList || !fileList.length) return;
-    const fd = new FormData();
-    for (const f of fileList) fd.append("files", f);
-    $("#upload-status").textContent = `Processing ${fileList.length} file(s)…`;
-    const res = await api("/api/upload", { method: "POST", body: fd });
+    const files = Array.from(fileList);
+    $("#upload-results").innerHTML = "";
+    for (const [i, f] of files.entries()) {
+      $("#upload-status").textContent =
+        `Processing ${i + 1} of ${files.length}: ${f.name}… (a model reading can take a minute or two)`;
+      const fd = new FormData();
+      fd.append("files", f);
+      let results;
+      try {
+        const res = await fetch("/api/upload", { method: "POST", body: fd });
+        results = res.ok ? (await res.json()).results
+          : [{ status: "error", filename: f.name, message: `HTTP ${res.status} — the server didn't finish this file in time; try it on its own` }];
+      } catch (e) {
+        results = [{ status: "error", filename: f.name, message: String(e) }];
+      }
+      renderUploadResults(results, true);
+    }
     $("#upload-status").textContent = "";
-    renderUploadResults(res.results);
     await refresh();
   }
 
-  function renderUploadResults(results) {
-    const box = $("#upload-results"); box.innerHTML = "";
+  function renderUploadResults(results, append) {
+    const box = $("#upload-results");
+    if (!append) box.innerHTML = "";
     results.forEach(r => {
       const div = document.createElement("div");
       div.className = "result " + (r.status || "ok");

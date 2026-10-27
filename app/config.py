@@ -104,7 +104,13 @@ class Settings(BaseSettings):
     # Its output is ALWAYS routed to human review; the accuracy guarantee never
     # rests on the model. "none" = deterministic-only (no model calls at all).
     llm_provider: LLMProviderName = "none"
-    llm_timeout_s: int = 120
+    # one model call per file must finish inside Azure App Service's ~230 s
+    # request limit (uploads are sent one file per request)
+    llm_timeout_s: int = 180
+    # GPT-5-class / o-series models: how hard to think ("minimal", "low",
+    # "medium", "high"); blank = the model's default. Ignored by models that
+    # don't support it.
+    llm_reasoning_effort: str = ""
     llm_temperature: float = 0.5
     llm_max_doc_chars: int = 24000  # document text budget sent to the model
     llm_max_image_pages: int = 4    # scanned pages sent as images (vision models)

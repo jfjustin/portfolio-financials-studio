@@ -322,7 +322,8 @@ def _with_model(path: Path, raw_items: list[RawItem], text: str, name: str,
     configured, let the capital-account model step read the document."""
     result = assemble(raw_items, text, name, file_hash, extractor, allow_llm=False)
     note = None
-    if settings.llm_enabled and _needs_model(result, text):
+    tried = settings.llm_enabled and _needs_model(result, text)
+    if tried:
         if extractor == "pdf_native":
             pages = pdf_pages(path)
             images = [(pg["page"], render_page_png(path, pg["page"]))
@@ -335,8 +336,10 @@ def _with_model(path: Path, raw_items: list[RawItem], text: str, name: str,
                 "investor_statement", "fund_level"):
             return _apply_model(result, answer, raw_items, text, extractor)
         note = f"Model step unavailable: {answer['_error']}" if answer.get("_error") else None
-    # no (usable) model answer: the generic fill-the-gaps fallback, as before
-    out = assemble(raw_items, text, name, file_hash, extractor)
+    # no (usable) model answer. The generic fill-the-gaps fallback is another
+    # model call, so it's only used when the model step didn't already run —
+    # two long calls would overrun the request limit.
+    out = assemble(raw_items, text, name, file_hash, extractor, allow_llm=not tried)
     if note:
         out.warnings.append(note)
     return out

@@ -29,7 +29,7 @@ class OpenAIProvider(LLMProvider):
         except Exception as e:  # pragma: no cover
             self._init_error = f"openai SDK not installed ({e}). Run: pip install openai"
             return None, self._init_error
-        kwargs = {"api_key": settings.openai_api_key}
+        kwargs = {"api_key": settings.openai_api_key, "max_retries": 0}
         if settings.openai_base_url:
             kwargs["base_url"] = settings.openai_base_url
         try:
