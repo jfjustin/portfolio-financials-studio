@@ -186,6 +186,20 @@ pip install "openai>=1.40" "azure-identity>=1.17"
 ./run.sh
 ```
 
+**Choosing the model.** The model is whatever deployment `AZURE_OPENAI_DEPLOYMENT`
+names, so switching is one app setting. The capital-account step needs a model
+that does chat completions with JSON output and reads images (for scans), and
+`LLM_REASONING_EFFORT=high` makes GPT-5/6-class models read more carefully. Each
+file's model reading must finish within App Service's ~230 s request limit
+(uploads go one file per request; calls time out at 180 s). Benchmarked on four
+hard statements (two-column, scanned, fund-level, reserves workbook):
+
+| Deployment | Result | Time per file |
+|---|---|---|
+| GPT-6 Astra (flagship) | all correct | 19–52 s |
+| GPT-6.1 Sol (near-Astra, ~1/5 the price) | all correct | 21–39 s |
+| gpt-5-mini | one misread | 25–48 s |
+
 Keyless (recommended for enterprise): set `AZURE_USE_ENTRA_ID=true` and
 authenticate with `azure-identity` (`DefaultAzureCredential`: managed identity,
 `az login`, or environment credentials) — no API key stored anywhere.
