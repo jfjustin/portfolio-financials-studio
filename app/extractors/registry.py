@@ -548,6 +548,24 @@ def _apply_fund_level(result: ExtractionResult, answer: dict, raw_items: list[Ra
         vals = [num(c["value"]) for c in comps]
         if vals and all(v is not None for v in vals):
             fund[key] = (sum(vals, Decimal(0)), comps)
+    # Fund statements print expenses and distributions as positive amounts under
+    # their headings, and the model copies figures as printed. The fund's quarter
+    # must reconcile (beginning + activity = ending): use the signs that make it.
+    flipped: list[str] = []
+    if fund.get("beginning_balance") and fund.get("ending_balance"):
+        flows = [k for k in ("funding", "return_of_capital", "dividends", "accrued_interest",
+                             "other", "net_realized_gain", "investment_mtm",
+                             "equity_income_loss") if k in fund]
+        target = fund["ending_balance"][0] - fund["beginning_balance"][0]
+        tol = max(Decimal(1), abs(target) * Decimal("0.005"))
+        for flip in ([], ["other"], ["return_of_capital"], ["other", "return_of_capital"]):
+            flip = [k for k in flip if k in fund and fund[k][0] > 0]
+            total = sum((fund[k][0] * (-1 if k in flip else 1) for k in flows), Decimal(0))
+            if abs(total - target) <= tol:
+                for k in flip:
+                    fund[k] = (-fund[k][0], fund[k][1])
+                flipped = flip
+                break
     row = answer.get("investor_row") or {}
     row_label = row.get("row_label") or "?"
     row_commit, row_cap = num(row.get("commitment")), num(row.get("capital_account"))
@@ -697,9 +715,12 @@ def _apply_fund_level(result: ExtractionResult, answer: dict, raw_items: list[Ra
         add("cumulative_distributions", num(row["distributions"]), f"{row_label}: distributions",
             row["distributions"], f"row '{row_label}'")
 
+    signs = (f" Printed as positive amounts, {' and '.join(rt.metric_by_key(k).label for k in flipped)} "
+             f"were taken as outflows so the fund's quarter reconciles." if flipped else "")
     warning = (f"Fund-level report: {lp}'s quarter for {entity} computed pro-rata — {basis} "
                f"= {share:.4%}. This assumes the fund allocates to investors in proportion "
-               f"to commitment; check the share and the fund's figures before confirming.{note}")
+               f"to commitment; check the share and the fund's figures before confirming."
+               f"{signs}{note}")
     return ExtractionResult(detected_report_type=RF, report_type_confidence=0.7,
                             facts=facts_out, warnings=[warning],
                             statement_start=None, **base)

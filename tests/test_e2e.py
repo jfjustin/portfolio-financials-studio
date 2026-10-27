@@ -468,7 +468,7 @@ def fund_level_pro_rata(samples: Path) -> None:
                         "funding": c("CAPITAL TRANSACTION", "10.000.000"),
                         "return_of_capital": c("DISTRIBUTIONS TO SHAREHOLDERS", "0"),
                         "accrued_interest": c("Total investment income", "40.000"),
-                        "other": c("Total expenses", "-510.000"),
+                        "other": c("Total expenses", "510.000"),   # as printed
                         "investment_mtm": c("Changes in net unrealized", "2.420.000"),
                         "ending_balance": c("End of the period", "84.950.000"),
                         "commitment": c("Total commitments", "100.000.000")},
@@ -507,9 +507,11 @@ def fund_level_pro_rata(samples: Path) -> None:
               and "parser_agrees" in by["beginning_balance"]["flags"]
               and not any(fl.startswith("pro_rata_mismatch") for fl in by["ending_balance"]["flags"]),
               "pro-rata values are flagged, corroborated, and match our row")
-        check(by["ending_balance"]["currency"] == "EUR"
-              and any("pro-rata" in w for w in json.loads(db.get_submission(sid)["warnings"])),
+        warns = json.loads(db.get_submission(sid)["warnings"])
+        check(by["ending_balance"]["currency"] == "EUR" and any("pro-rata" in w for w in warns),
               "the share and its basis are stated for the reviewer")
+        check(any("taken as outflows" in w for w in warns),
+              "expenses printed as positive amounts get the sign that reconciles the fund")
 
         # 3. our own statement for the quarter arrives: it replaces the pro-rata values
         r2 = process_path(statement, allow_duplicate=True)
