@@ -262,3 +262,8 @@ table.tbl-report { width: 100%; border-collapse: collapse; font-size: 13px; }
 #terms-card summary { cursor: pointer; list-style: none; }
 #terms-card summary::-webkit-details-marker { display: none; }
 @media (max-width: 720px) { .memory-form { grid-template-columns: 1fr; } }
+
+/* currency under each amount */
+.cur-line { margin-top: 4px; font-size: 12px; color: var(--muted); display: flex; gap: 6px; align-items: center; }
+.cur-line select, .period-bar select#p-currency { font: inherit; font-size: 12px; padding: 2px 4px;
+  border: 1px solid var(--line); border-radius: 6px; background: var(--panel); color: var(--ink); }

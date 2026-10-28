@@ -334,6 +334,7 @@ def supersede_pro_rata(entity: str, report_type: str, period: str, by_sub: int,
 
 def update_fact(fact_id: int, *, value: Optional[str] = None,
                 metric_key: Optional[str] = None, status: Optional[str] = None,
+                currency: Optional[str] = None,
                 note: str = "", user: str = "local") -> None:
     """Edit a fact and append an audit row for each changed field."""
     eng = get_engine()
@@ -348,6 +349,8 @@ def update_fact(fact_id: int, *, value: Optional[str] = None,
             changes.append(("metric_key", row["metric_key"], metric_key))
         if status is not None and status != row["status"]:
             changes.append(("status", row["status"], status))
+        if currency is not None and currency != row["currency"]:
+            changes.append(("currency", row["currency"], currency))
 
         if changes:
             vals = {field: new for field, _old, new in changes}
@@ -433,6 +436,31 @@ def extend_fact(fact_id: int, *, add_value: Decimal, label: str, value_raw: str,
             ts=_now(), submission_id=row["submission_id"], fact_id=fact_id, action="edit",
             field="value", old_value=_fact_value_str(old),
             new_value=_fact_value_str(old + add_value), user=user, note=note))
+
+
+def set_submission_currency(sub_id: int, currency: str, user: str = "local") -> int:
+    """Set a file's currency and every money value in it (audited per value).
+    Returns how many values changed."""
+    eng = get_engine()
+    n = 0
+    with eng.begin() as conn:
+        row = conn.execute(select(submissions.c.currency).where(submissions.c.id == sub_id)).first()
+        if row is None:
+            raise KeyError(f"submission {sub_id} not found")
+        conn.execute(update(submissions).where(submissions.c.id == sub_id)
+                     .values(currency=currency))
+        for f in conn.execute(select(facts).where(facts.c.submission_id == sub_id)
+                              .where(facts.c.unit == "currency")).mappings().all():
+            if f["currency"] == currency:
+                continue
+            conn.execute(update(facts).where(facts.c.id == f["id"])
+                         .values(currency=currency, updated_at=_now()))
+            conn.execute(insert(audit).values(
+                ts=_now(), submission_id=sub_id, fact_id=f["id"], action="edit",
+                field="currency", old_value=f["currency"], new_value=currency, user=user,
+                note="file currency set"))
+            n += 1
+    return n
 
 
 def set_fact_source(fact_id: int, *, raw_label: str, raw_value: str, section: str) -> None:

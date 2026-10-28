@@ -89,13 +89,54 @@ _SCALE = {"k": 1_000, "thousand": 1_000,
           "bn": 1_000_000_000, "b": 1_000_000_000, "billion": 1_000_000_000}
 
 
+_CCY_STATED = re.compile(
+    r"(?:figures|amounts|expressed|presented|reported|stated)\s+in\s+(?:thousands\s+of\s+)?"
+    r"(usd|eur|gbp|chf|jpy|cny|rmb|hkd|sgd|cad|aud|sek|nok|dkk)\b"
+    r"|\(\s*(usd|eur|gbp|chf|jpy|cny|rmb|hkd|sgd|cad|aud|sek|nok|dkk)\s*\)"
+    r"|\bin\s+(usd|eur|gbp|chf|jpy|cny|rmb|hkd|sgd|cad|aud|sek|nok|dkk)\b", re.I)
+_CCY_CODE = re.compile(r"\b(usd|eur|gbp|chf|jpy|cny|rmb|hkd|sgd|cad|aud|sek|nok|dkk)\b", re.I)
+_CCY_SIGN = {"$": "USD", "€": "EUR", "£": "GBP", "¥": "CNY"}
+
+
 def detect_currency(text: str) -> Optional[str]:
-    t = text.lower()
-    for sym, code in _CURRENCY_SYMBOLS.items():
-        if sym in t:
-            return code
-    m = re.search(r"\b(usd|eur|gbp|cny|rmb|hkd|sgd)\b", t)
-    return _CURRENCY_SYMBOLS.get(m.group(1)) if m else None
+    """The currency a document reports in. A stated reporting currency
+    ("all figures in €", "(EUR)" column headers, "Expressed in United States
+    dollars") outweighs codes that merely appear (e.g. portfolio companies listed
+    in other currencies); then the most frequent code or sign wins."""
+    t = text or ""
+    votes: dict[str, float] = {}
+
+    def vote(code: str, w: float) -> None:
+        code = {"RMB": "CNY"}.get(code.upper(), code.upper())
+        votes[code] = votes.get(code, 0) + w
+
+    def fx_table(m) -> bool:
+        # currencies named in an FX-rate table ("China CNY B/S Rate", "EUR FX Rate
+        # USD") aren't what the document reports in
+        return re.search(r"\b(rates?|fx)\b", t[max(0, m.start() - 25):m.end() + 25], re.I) is not None
+
+    for m in _CCY_STATED.finditer(t):
+        if fx_table(m):
+            continue
+        stated = m.group(1) or m.group(3)
+        vote(next(g for g in m.groups() if g), 5 if stated else 2)   # "(EUR)" headers count less
+    for m in re.finditer(r"(?:figures|amounts)\s+in\s+([€$£¥])", t, re.I):
+        vote(_CCY_SIGN[m.group(1)], 5)
+    if re.search(r"expressed in united states dollars|in u\.?s\.? dollars", t, re.I):
+        vote("USD", 5)
+    if re.search(r"expressed in euros?\b|in euros?\b", t, re.I):
+        vote("EUR", 5)
+    for m in _CCY_CODE.finditer(t):
+        if not fx_table(m):
+            vote(m.group(1), 1)
+    for sign, code in _CCY_SIGN.items():
+        n = t.count(sign)
+        if n:
+            vote(code, min(n, 50) * 0.5)
+    for alias, code in (("us$", "USD"), ("hk$", "HKD"), ("s$", "SGD"), ("元", "CNY")):
+        if alias in t.lower():
+            vote(code, 2)
+    return max(votes, key=votes.get) if votes else None
 
 
 _EU_GROUPED = re.compile(r"(?<![\d.,])\d{1,3}(?:\.\d{3})+(?:,\d+)?(?![\d.,])")

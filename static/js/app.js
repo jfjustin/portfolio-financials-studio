@@ -357,6 +357,7 @@
       : '<div class="muted small">No submission-level warnings.</div>';
 
     renderPeriod(s);
+    renderFileCurrency(s);
     renderFacts(d);
 
     renderMemory(d);
@@ -492,6 +493,27 @@
     };
   }
 
+  // ---- currency of a value / of a whole file ----
+  const CURRENCIES = ["USD", "EUR", "GBP", "CHF", "JPY", "CNY", "HKD", "SGD", "CAD", "AUD",
+                      "SEK", "NOK", "DKK", "INR", "KRW", "TWD", "ILS"];
+  function currencyOptions(cur) {
+    const list = !cur || CURRENCIES.includes(cur) ? CURRENCIES : [cur, ...CURRENCIES];
+    return list.map(c => `<option${c === cur ? " selected" : ""}>${esc(c)}</option>`).join("");
+  }
+  function renderFileCurrency(s) {
+    $("#p-currency").innerHTML = currencyOptions(s.currency || "USD");
+    $("#p-currency-apply").onclick = async () => {
+      const cur = $("#p-currency").value;
+      const res = await fetch(`/api/submissions/${s.id}/currency`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ currency: cur }) });
+      if (!res.ok) { toast("Not changed: " + (await res.text())); return; }
+      const r = await res.json();
+      toast(`File set to ${r.currency} — ${r.changed} value(s) changed (audited)`);
+      await openSub(s.id);
+    };
+  }
+
   // ---- manual reporting-period correction (calendar ⇄ fiscal quarter) ----
   const FYE = window.FYE_MONTH || 9;
   const FY_START = FYE % 12 + 1;
@@ -590,7 +612,11 @@
           <td><select class="edit metric" data-id="${f.id}">${opts}</select>
               <div class="small muted mono" title="source">${esc(f.raw_label||"")} · ${esc(f.provenance||"")}</div></td>
           <td><input class="edit val" data-id="${f.id}" value="${f.value==null?'':esc(f.value)}"
-               placeholder="(no value)"> <span class="small muted">${esc(f.unit)} ${esc(f.currency)}</span>
+               placeholder="(no value)">
+               ${f.unit === "currency"
+                 ? `<div class="cur-line">Currency <select class="edit cur" data-id="${f.id}"
+                      title="Currency of this value">${currencyOptions(f.currency)}</select></div>`
+                 : `<div class="cur-line">${esc(f.unit)}</div>`}
                ${flags?('<div>'+flags+'</div>'):''}</td>
           <td class="num small muted">${(f.confidence*100||0).toFixed(0)}%</td>
           <td><span class="pill ${f.status}">${f.status.replace('_',' ')}</span></td>
@@ -609,6 +635,8 @@
     });
     $$("#facts-body .metric").forEach(sel =>
       sel.addEventListener("change", () => saveFact(sel.dataset.id, { metric_key: sel.value })));
+    $$("#facts-body .cur").forEach(sel =>
+      sel.addEventListener("change", () => saveFact(sel.dataset.id, { currency: sel.value })));
     $$("#facts-body [data-confirm]").forEach(b =>
       b.onclick = () => saveFact(b.dataset.confirm, { status: "confirmed" }, true));
     $$("#facts-body [data-reject]").forEach(b =>

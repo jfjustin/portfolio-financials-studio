@@ -469,6 +469,7 @@ def _apply_model(result: ExtractionResult, answer: dict, raw_items: list[RawItem
                 "beginning_balance", "ending_balance", "commitment", "remaining_commitment"):
             pf.flags.append("not_in_model_reading")
             pf.status = FactStatus.NEEDS_REVIEW
+            pf.currency = answer.get("currency") or pf.currency
             facts.append(pf)
 
     # period: a quarter the filename names wins; else the model's period end
@@ -646,6 +647,8 @@ def _apply_fund_level(result: ExtractionResult, answer: dict, raw_items: list[Ra
                 status=FactStatus.NEEDS_REVIEW, flags=["llm_suggested"]))
         for f in facts_out:
             f.period = period
+            if f.unit in (Unit.CURRENCY, "currency"):
+                f.currency = currency       # the currency the document reports in
         rt_key, conf = "fund_financials", max(result.report_type_confidence, 0.7)
         if own:
             ours = {f["metric_key"]: f["value"] for f in own}

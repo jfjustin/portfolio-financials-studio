@@ -86,6 +86,7 @@ def main() -> int:
     statement_formats(samples)
     format_memory(samples)
     fund_level_pro_rata(samples)
+    currency_controls()
     browser_caching()
     clear_data(samples)
 
@@ -520,6 +521,39 @@ def fund_level_pro_rata(samples: Path) -> None:
               "the investor's own statement supersedes the pro-rata values")
     finally:
         settings.llm_provider, registry.get_provider, capital_account.get_provider = saved
+
+
+def currency_controls() -> None:
+    """The currency a document reports in, and the reviewer's override."""
+    from fastapi.testclient import TestClient
+
+    from app.main import app
+    from app.models import detect_currency
+
+    check(detect_currency("Portfolio: Acme USD, Beta USD, Gamma USD. (all figures in EUR) "
+                          "Fair Value (EUR) Cost (EUR)") == "EUR",
+          "stated reporting currency beats currencies merely listed")
+    check(detect_currency("Ending balance EUR EUR EUR. China CNY B/S Rate 6.8 (RMB) I/S Rate")
+          == "EUR", "currencies in an FX-rate table are ignored")
+
+    client = TestClient(app)
+    sub = next(s for s in db.list_submissions() if s["entity_name"] == "Fund 79")
+    money = [f for f in db.get_facts(sub["id"]) if f["unit"] == "currency"]
+    check(money and all(f["currency"] == "EUR" for f in money),
+          "fund-level values carry the report's currency (EUR)")
+    fid = money[0]["id"]
+    client.post(f"/api/facts/{fid}", json={"currency": "usd"})
+    check(db.get_fact(fid)["currency"] == "USD"
+          and any(a["field"] == "currency" and a["new_value"] == "USD"
+                  for a in db.get_audit(sub["id"])),
+          "a value's currency can be changed (audited)")
+    res = client.post(f"/api/submissions/{sub['id']}/currency", json={"currency": "GBP"})
+    check(res.status_code == 200 and db.get_submission(sub["id"])["currency"] == "GBP"
+          and all(f["currency"] == "GBP" for f in db.get_facts(sub["id"]) if f["unit"] == "currency"),
+          "a whole file's currency can be set in one step")
+    check(client.post(f"/api/submissions/{sub['id']}/currency",
+                      json={"currency": "euro"}).status_code == 400,
+          "currency must be a 3-letter code")
 
 
 def browser_caching() -> None:

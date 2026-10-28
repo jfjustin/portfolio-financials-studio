@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import csv
 import hashlib
+import re
 import io
 import secrets
 from pathlib import Path
@@ -473,13 +474,18 @@ async def teach_line(sub_id: int, request: Request):
 @app.post("/api/facts/{fact_id}")
 async def edit_fact(fact_id: int, request: Request):
     body = await request.json()
+    currency = body.get("currency")
+    if currency is not None:
+        currency = _currency_code(currency)
     try:
         db.update_fact(
             fact_id,
             value=body.get("value"),
             metric_key=body.get("metric_key"),
             status=body.get("status"),
+            currency=currency,
             note=body.get("note", ""),
+            user=auth.current_user(request) or "local",
         )
     except KeyError:
         raise HTTPException(404, "fact not found")
@@ -488,6 +494,24 @@ async def edit_fact(fact_id: int, request: Request):
     if fact and fact["report_type"] == carry_forward.RF:
         carry_forward.rederive_following(fact["entity_name"], fact["period"])
     return {"status": "ok"}
+
+
+def _currency_code(raw) -> str:
+    code = str(raw or "").strip().upper()
+    if not re.fullmatch(r"[A-Z]{3}", code):
+        raise HTTPException(400, "currency must be a 3-letter code such as EUR or USD")
+    return code
+
+
+@app.post("/api/submissions/{sub_id}/currency")
+async def set_submission_currency(sub_id: int, request: Request):
+    """Set a file's currency and every money value in it."""
+    code = _currency_code((await request.json()).get("currency"))
+    try:
+        n = db.set_submission_currency(sub_id, code, user=auth.current_user(request) or "local")
+    except KeyError:
+        raise HTTPException(404, "submission not found")
+    return {"status": "ok", "currency": code, "changed": n}
 
 
 @app.post("/api/submissions/{sub_id}/confirm")
