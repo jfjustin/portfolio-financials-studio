@@ -329,6 +329,18 @@ def fund_level_report_pdf():
     ])
 
 
+def lake_flow_pdf():
+    """Fund 80, Q1 2026 (made-up): a file no other check uploads, for the lake flow."""
+    _lp_statement_pdf("Fund 80_Q1 2026 Statement_Sample Holdings LP.pdf",
+                      "Limited Partner Fund Statement - Q1, 2026", [
+        ("Total committed", "40,000,000", "1,000,000"),
+        ("Called in Q1, 2026", "800,000", "20,000"),
+        ("Unrealised Capital Gains",),
+        ("Capital Loss Q1, 2026", "(400,000)", "(10,000)"),
+        ("Capital Accounts at Q1", "40,400,000", "1,010,000"),
+    ])
+
+
 if __name__ == "__main__":
     fund_financials()
     jv_holdings()
@@ -338,4 +350,5 @@ if __name__ == "__main__":
     lp_statement_two_column_pdf()
     format_memory_pdfs()
     fund_level_report_pdf()
+    lake_flow_pdf()
     print("\nSample files ready in", OUT)

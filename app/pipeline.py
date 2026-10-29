@@ -12,7 +12,7 @@ import tempfile
 from pathlib import Path
 from typing import Any, Optional
 
-from . import carry_forward, db, storage
+from . import carry_forward, db, lake, storage
 from .config import settings
 from .extractors.registry import extract_file
 from .validate import validate_facts
@@ -51,6 +51,9 @@ def process_path(path: Path, *, save_copy: bool = True,
 
     sub_id = db.save_extraction(result, source_key=source_key)
     _after_save(result, sub_id)
+    # 02 Land + 04 Bronze: the original and the extraction as produced
+    lake.record_extraction(sub_id, result, path, revision=1)
+    lake.request_sync()
 
     n_auto = sum(1 for f in result.facts if f.status == "auto")
     n_review = sum(1 for f in result.facts if f.status == "needs_review")
@@ -101,6 +104,9 @@ def reprocess_submission(sub_id: int, user: str = "local") -> dict[str, Any]:
     checks = validate_facts(result.detected_report_type, result.facts)
     counts = db.replace_extraction(sub_id, result, user=user)
     _after_save(result, sub_id)
+    lake.record_extraction(sub_id, result, path,
+                           revision=db.get_submission(sub_id).get("revision") or 1)
+    lake.request_sync()
     return {"status": "ok", "submission_id": sub_id, "report_type": result.detected_report_type,
             "entity_name": result.entity_name, "period": result.period,
             "extractor": result.extractor, **counts,

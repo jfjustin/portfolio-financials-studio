@@ -21,6 +21,8 @@ os.environ["DATABASE_URL"] = ""
 os.environ["AZURE_STORAGE_ACCOUNT_URL"] = ""
 os.environ["AZURE_STORAGE_CONNECTION_STRING"] = ""
 os.environ["AUTH_MODE"] = "none"
+os.environ["LAKE_BACKEND"] = "none"          # lake_flow() turns on a local lake itself
+os.environ["LAKE_AUTO_SYNC"] = "false"       # tests sync explicitly
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
@@ -87,6 +89,7 @@ def main() -> int:
     format_memory(samples)
     fund_level_pro_rata(samples)
     currency_controls()
+    lake_flow(samples)
     browser_caching()
     clear_data(samples)
 
@@ -554,6 +557,101 @@ def currency_controls() -> None:
     check(client.post(f"/api/submissions/{sub['id']}/currency",
                       json={"currency": "euro"}).status_code == 400,
           "currency must be a 3-letter code")
+
+
+def lake_flow(samples: Path) -> None:
+    """The medallion flow on a local lake: Land -> Bronze -> Silver -> Gold,
+    with only approved values reaching Gold."""
+    from fastapi.testclient import TestClient
+
+    from app import lake
+    from app.main import app
+
+    settings.lake_backend = "local"
+    settings.publish_auto_accepted = False      # strict mode first: approved values only
+    try:
+        client = TestClient(app)
+        q1 = samples / "Fund 80_Q1 2026 Statement_Sample Holdings LP.pdf"
+        if not q1.exists():
+            import subprocess
+            subprocess.run([sys.executable, str(samples / "make_samples.py")], check=True)
+        r = process_path(q1, allow_duplicate=True)
+        sid = r["submission_id"]
+        doc = lake.document_id(db.get_submission(sid)["file_hash"])
+        reg = [x for x in lake.read_table("land_document_registry") if x["submission_id"] == sid]
+        landed = Path(reg[0]["landed_path"]) if reg else None
+        check(reg and reg[0]["document_id"] == doc and reg[0]["revision"] == 1
+              and landed is not None and landed.exists() and landed.read_bytes() == q1.read_bytes(),
+              "02 Land: original landed as received, document registered")
+        raw = [x for x in lake.read_table("bronze_raw_records") if x["submission_id"] == sid]
+        bronze = settings.data_dir / "lake" / "Files" / "bronze" / doc / "extraction_r1.json"
+        check(raw and any(x["mapped_metric"] == "funding" for x in raw)
+              and all(x["locator"] for x in raw) and bronze.exists()
+              and json.loads(bronze.read_text())["document_id"] == doc,
+              "04 Bronze: every line read, with page evidence, plus the raw extraction")
+
+        status = client.post("/api/lake/sync").json()
+        silver = lake.read_table("silver_financial_metric")
+        gold = lake.read_table("gold_fact_financial_metric")
+        n_all = len(db.get_facts())
+        n_approved = len(db.trusted_facts())
+        check(not status["last_error"] and len(silver) == n_all,
+              "04 Silver: every standardized value, in every review state")
+        check(len(gold) == n_approved and all(g["review_status"] == "confirmed" for g in gold)
+              and not any(g["document_id"] == doc for g in gold),
+              "04 Gold: approved values only — this unreviewed file isn't there")
+
+        # approve the file -> its values reach Gold at reporting version 1
+        client.post(f"/api/submissions/{sid}/confirm")
+        for f in db.get_facts(sid):
+            if f["status"] == "needs_review":
+                db.update_fact(f["id"], status="confirmed", note="test approval")
+        lake.sync()
+        gold = [g for g in lake.read_table("gold_fact_financial_metric") if g["document_id"] == doc]
+        check(gold and {g["reporting_version"] for g in gold} == {1},
+              "approving a file publishes it to Gold (reporting version 1)")
+        lake.sync()
+        check({g["reporting_version"] for g in lake.read_table("gold_fact_financial_metric")
+               if g["document_id"] == doc} == {1},
+              "re-syncing unchanged data doesn't bump the version")
+        f0 = next(f for f in db.get_facts(sid) if f["metric_key"] == "funding")
+        db.update_fact(f0["id"], value="20001", note="test restatement")
+        lake.sync()
+        check({g["reporting_version"] for g in lake.read_table("gold_fact_financial_metric")
+               if g["document_id"] == doc} == {2},
+              "changing approved data publishes a new reporting version")
+        dims = {t: lake.read_table(t) for t in ("gold_dim_entity", "gold_dim_period",
+                                                "gold_dim_metric", "gold_fact_investment_quarter",
+                                                "gold_publication")}
+        check(all(dims.values()) and any(p["fiscal_label"] == "FY2026 Q2"
+                                         for p in dims["gold_dim_period"]),
+              "Gold dimensions and the roll-forward are written for Power BI")
+
+        # default mode: auto-accepted values are published too, unreviewed never
+        settings.publish_auto_accepted = True
+        lake.sync()
+        gold_all = lake.read_table("gold_fact_financial_metric")
+        statuses = {g["review_status"] for g in gold_all}
+        check(len(gold_all) == len(db.trusted_facts()) and "auto" in statuses
+              and "needs_review" not in statuses,
+              "default: Gold publishes approved + auto-accepted values, never unreviewed")
+        settings.publish_auto_accepted = False
+
+        # files uploaded before the lake existed are landed by the backfill
+        res = client.post("/api/lake/backfill").json()
+        registered = {x["submission_id"] for x in lake.read_table("land_document_registry")}
+        check(res["landed"] > 0 and registered >= {s["id"] for s in db.list_submissions()},
+              "backfill lands every file uploaded before the lake was switched on")
+
+        # re-read: revision 2 registered, original not landed twice
+        client.post(f"/api/submissions/{sid}/reread")
+        revs = sorted(x["revision"] for x in lake.read_table("land_document_registry")
+                      if x["submission_id"] == sid)
+        check(revs == [1, 2] and (bronze.parent / "extraction_r2.json").exists(),
+              "a re-read is registered as revision 2 (original kept once)")
+    finally:
+        settings.lake_backend = "none"
+        settings.publish_auto_accepted = True
 
 
 def browser_caching() -> None:

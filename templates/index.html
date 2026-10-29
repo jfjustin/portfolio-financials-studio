@@ -184,6 +184,17 @@
       </table>
     </section>
 
+    <!-- Data lake (medallion flow) -->
+    <section class="card" id="lake-card" hidden>
+      <h2 style="margin:0 0 6px">Data lake <span class="small muted" id="lake-where"></span></h2>
+      <p class="small muted" style="margin:0 0 8px">Originals land as received; every extraction is kept in
+        Bronze; Silver holds every value; <b>Gold holds published values only</b> — never values waiting for
+        review — the tables Power BI and Fabric build on. Writes follow each change automatically.</p>
+      <div class="lake-stages" id="lake-stages"></div>
+      <div class="small muted" id="lake-sync-line" style="margin-top:8px"></div>
+      <div style="margin-top:8px"><button class="btn sm" id="lake-sync">Sync now</button></div>
+    </section>
+
     <!-- Statement terms (format memory) -->
     <section class="card" id="terms-card">
       <details>

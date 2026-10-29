@@ -334,7 +334,9 @@ def _with_model(path: Path, raw_items: list[RawItem], text: str, name: str,
                                       name, _model_context(result.entity_name))
         if not answer.get("_error") and answer["document_kind"] in (
                 "investor_statement", "fund_level"):
-            return _apply_model(result, answer, raw_items, text, extractor)
+            out = _apply_model(result, answer, raw_items, text, extractor)
+            out.raw_items, out.model_reading = raw_items, answer
+            return out
         note = f"Model step unavailable: {answer['_error']}" if answer.get("_error") else None
     # no (usable) model answer. The generic fill-the-gaps fallback is another
     # model call, so it's only used when the model step didn't already run —
@@ -342,6 +344,7 @@ def _with_model(path: Path, raw_items: list[RawItem], text: str, name: str,
     out = assemble(raw_items, text, name, file_hash, extractor, allow_llm=not tried)
     if note:
         out.warnings.append(note)
+    out.raw_items = raw_items
     return out
 
 
@@ -758,6 +761,7 @@ def _scanned_pdf(path: Path, name: str, file_hash: str, why: str) -> ExtractionR
                 "investor_statement", "fund_level"):
             out = _apply_model(empty, answer, [], "", "scan")
             out.warnings.insert(0, "Scanned PDF — read from the page images.")
+            out.model_reading = answer
             return out
         empty.warnings.append(f"Vision model could not read the scan: "
                               f"{answer.get('_error') or answer.get('document_kind')}.")
@@ -775,9 +779,12 @@ def _scanned_pdf(path: Path, name: str, file_hash: str, why: str) -> ExtractionR
                                           _model_context(result.entity_name))
             if not answer.get("_error") and answer["document_kind"] in (
                     "investor_statement", "fund_level"):
-                return _apply_model(result, answer, raw_items, text, "ocr_tesseract")
+                out = _apply_model(result, answer, raw_items, text, "ocr_tesseract")
+                out.raw_items, out.model_reading = raw_items, answer
+                return out
         result.warnings.insert(0, "Scanned PDF — text read by local OCR (Tesseract); "
                                   "check every value against the page.")
+        result.raw_items = raw_items
         return result
 
     empty.warnings.append(

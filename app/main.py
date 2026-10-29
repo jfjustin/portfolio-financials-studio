@@ -22,7 +22,7 @@ from fastapi.staticfiles import StaticFiles
 from starlette.concurrency import run_in_threadpool
 from fastapi.templating import Jinja2Templates
 
-from . import auth, carry_forward, db, fabric_export, performance, terms
+from . import auth, carry_forward, db, fabric_export, lake, performance, terms
 from .config import settings
 from .llm import get_provider
 from .pipeline import process_upload
@@ -58,6 +58,18 @@ def asset_url(path: str) -> str:
 
 
 templates.env.globals["asset_url"] = asset_url
+
+
+@app.middleware("http")
+async def lake_follows_changes(request: Request, call_next):
+    """Any successful change (upload, edit, confirm, teach, clear, ...) is
+    followed by a background Silver/Gold sync of the lake."""
+    response = await call_next(request)
+    if (request.method in ("POST", "PUT", "PATCH", "DELETE")
+            and request.url.path.startswith("/api/") and response.status_code < 400
+            and not request.url.path.startswith("/api/lake/")):
+        lake.request_sync()
+    return response
 
 
 @app.middleware("http")
@@ -561,6 +573,29 @@ async def set_period(sub_id: int, request: Request):
             carry_forward.rederive_following(sub["entity_name"], old)
     return {"status": "ok", "old_period": old, "period": period,
             "fiscal_label": db.fiscal_info(period)["fiscal_label"]}
+
+
+@app.get("/api/lake/status")
+def lake_status():
+    """Where the lake is and what was last written to each layer."""
+    return lake.status()
+
+
+@app.post("/api/lake/sync")
+def lake_sync():
+    """Write Silver and Gold now (normally automatic after each change)."""
+    if not lake.enabled():
+        raise HTTPException(409, "no lake configured (LAKE_BACKEND)")
+    return lake.sync()
+
+
+@app.post("/api/lake/backfill")
+def lake_backfill():
+    """Land files uploaded before the lake was switched on, then sync."""
+    if not lake.enabled():
+        raise HTTPException(409, "no lake configured (LAKE_BACKEND)")
+    counts = lake.backfill()
+    return {**counts, "status": lake.sync()}
 
 
 @app.post("/api/admin/clear")

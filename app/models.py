@@ -70,6 +70,10 @@ class ExtractionResult(BaseModel):
     facts: list[FinancialFact] = Field(default_factory=list)
     unmapped: list[RawItem] = Field(default_factory=list)  # found but not mapped
     warnings: list[str] = Field(default_factory=list)
+    # for the lake's Bronze layer: every line the extractor read, and the
+    # model's reading as it answered (neither is stored in the app database)
+    raw_items: list[RawItem] = Field(default_factory=list, exclude=True)
+    model_reading: Optional[dict[str, Any]] = Field(default=None, exclude=True)
 
 
 # --------------------------------------------------------------------------

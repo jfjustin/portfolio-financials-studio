@@ -101,11 +101,20 @@ Every change writes an **audit-trail** entry (old → new, when) shown at the bo
 The header also shows the submission's **period and fiscal-year badge** (e.g.
 `2026-Q1` and `FY2026 Q2`) — see §4b.
 
-### ③ Confirm
-- **Confirm all & lock in** promotes the submission's `auto` values to `confirmed`
-  and marks it reviewed.
-- For `needs_review` rows, accept them individually (confirm) or fix the value
-  first. **Only confirmed/auto rows enter the ledger and charts.**
+### ③ Approve (publish to Gold)
+- **Confirm all & lock in** approves the values the app accepted automatically
+  and marks the file reviewed.
+- Rows that need review are approved one by one (✓), after fixing the value if
+  needed.
+- **What's published:** the ledger, charts, exports and the lake's Gold layer
+  hold values you approved plus values the app **auto-accepted** (high
+  confidence, passed every check). Values waiting for review are never
+  published. For strict approval-only publishing, an administrator sets
+  `PUBLISH_AUTO_ACCEPTED=false`. Auto-accepted values then wait for *Confirm all
+  & lock in*.
+- With a lake configured, published values reach Gold a moment later, with a
+  new reporting version for that fund and quarter. The *Data lake* card shows
+  what each layer holds. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 ### ④ Read the results
 Scroll the dashboard top-to-bottom:

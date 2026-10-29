@@ -23,6 +23,17 @@ audit-trailed extraction pipeline, and the domain model of an
 investment-intelligence app (entity classification, capital-account
 roll-forwards, workbook field mapping).
 
+## Architecture
+
+**The lake is the system of record. Fabric is the analytics backbone. Azure AI
+does the reading.** The app lands every original, keeps every extraction (Bronze)
+and every standardized value (Silver). It publishes **approved and
+auto-accepted values to Gold** (never values waiting for review), the
+dimensional tables Power BI and Fabric build on. See
+[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md). Settings: `LAKE_BACKEND`
+(`none` | `local` | `adls` | `onelake`), `LAKE_ACCOUNT_URL`, `LAKE_FILESYSTEM`,
+`LAKE_ROOT`, `PUBLISH_AUTO_ACCEPTED`.
+
 ## See it in action
 
 Two recordings of the complete workflow — upload → extraction → sectioned

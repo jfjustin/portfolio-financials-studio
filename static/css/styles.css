@@ -267,3 +267,7 @@ table.tbl-report { width: 100%; border-collapse: collapse; font-size: 13px; }
 .cur-line { margin-top: 4px; font-size: 12px; color: var(--muted); display: flex; gap: 6px; align-items: center; }
 .cur-line select, .period-bar select#p-currency { font: inherit; font-size: 12px; padding: 2px 4px;
   border: 1px solid var(--line); border-radius: 6px; background: var(--panel); color: var(--ink); }
+
+/* data lake card */
+.lake-stages { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 8px; }
+.lake-stage { border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; background: var(--panel); }

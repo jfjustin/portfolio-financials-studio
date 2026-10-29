@@ -43,6 +43,7 @@ submissions = Table(
     Column("uploaded_at", String(40), nullable=False),
     Column("number_format", String(16)),                 # "1,234.56" | "1.234,56"
     Column("source_key", Text),                          # stored copy (for re-reading)
+    Column("revision", Integer),                         # extraction revision (re-reads bump it)
 )
 
 facts = Table(
@@ -95,6 +96,19 @@ statement_terms = Table(
     Column("note", Text),
     Column("created_by", String(128)),
     Column("created_at", String(40)),
+)
+
+# Gold publications: a reporting version per entity and period, bumped each
+# time that slice of approved data changes (lake Gold carries the version).
+publications = Table(
+    "publications", metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("entity_name", String(512), nullable=False),
+    Column("period", String(64), nullable=False),
+    Column("version", Integer, nullable=False),
+    Column("content_hash", String(64), nullable=False),
+    Column("n_values", Integer),
+    Column("published_at", String(40)),
 )
 
 fund_profiles = Table(
@@ -229,7 +243,7 @@ def save_extraction(result: ExtractionResult, source_key: Optional[str] = None) 
     eng = get_engine()
     with eng.begin() as conn:
         res = conn.execute(insert(submissions).values(
-            source_key=source_key,
+            source_key=source_key, revision=1,
             filename=result.filename, file_hash=result.file_hash,
             report_type=result.detected_report_type,
             report_type_confidence=result.report_type_confidence,
@@ -290,7 +304,10 @@ def replace_extraction(sub_id: int, result: ExtractionResult, user: str = "local
             entity_name=result.entity_name, period=result.period,
             period_start=result.period_start, period_end=result.period_end,
             updated_at=_now()))
+        rev = conn.execute(select(submissions.c.revision)
+                           .where(submissions.c.id == sub_id)).scalar() or 1
         conn.execute(update(submissions).where(submissions.c.id == sub_id).values(
+            revision=rev + 1,
             report_type=result.detected_report_type,
             report_type_confidence=result.report_type_confidence,
             entity_name=result.entity_name, period=result.period,
@@ -677,6 +694,33 @@ def facts_for_quarter(entity: str, report_type: str, period: str) -> list[dict[s
         return out
 
 
+def record_publications(slices: dict[tuple[str, str], tuple[str, int]]) -> dict[tuple[str, str], int]:
+    """Given {(entity, period): (content_hash, n_values)} for the approved data
+    now, bump the reporting version of every slice whose content changed.
+    Returns {(entity, period): current version}."""
+    eng = get_engine()
+    out: dict[tuple[str, str], int] = {}
+    with eng.begin() as conn:
+        latest: dict[tuple[str, str], tuple[int, str]] = {}
+        for r in conn.execute(select(publications).order_by(publications.c.id)).mappings():
+            latest[(r["entity_name"], r["period"])] = (r["version"], r["content_hash"])
+        for key, (h, n) in slices.items():
+            version, prev = latest.get(key, (0, ""))
+            if h != prev:
+                version += 1
+                conn.execute(insert(publications).values(
+                    entity_name=key[0], period=key[1], version=version, content_hash=h,
+                    n_values=n, published_at=_now()))
+            out[key] = version
+    return out
+
+
+def list_publications() -> list[dict[str, Any]]:
+    with get_engine().connect() as conn:
+        return [dict(r) for r in conn.execute(
+            select(publications).order_by(publications.c.id)).mappings().all()]
+
+
 def file_hash_exists(file_hash: str) -> Optional[int]:
     eng = get_engine()
     with eng.connect() as conn:
@@ -689,11 +733,19 @@ def file_hash_exists(file_hash: str) -> Optional[int]:
 # --------------------------------------------------------------------------
 # Aggregations for the dashboard (only CONFIRMED + AUTO facts count as trusted)
 # --------------------------------------------------------------------------
+def approved_statuses() -> tuple[str, ...]:
+    """Statuses that count as published (Gold): reviewer-confirmed values, plus
+    auto-accepted ones unless PUBLISH_AUTO_ACCEPTED=false."""
+    return ("auto", "confirmed") if settings.publish_auto_accepted else ("confirmed",)
+
+
 def trusted_facts() -> list[dict[str, Any]]:
+    """Published (Gold) values — what dashboards, exports and the lake's Gold
+    layer are built from. Values waiting for review never appear here."""
     eng = get_engine()
     with eng.connect() as conn:
         rows = conn.execute(
-            select(facts).where(facts.c.status.in_(("auto", "confirmed")))
+            select(facts).where(facts.c.status.in_(approved_statuses()))
             .where(facts.c.value.is_not(None))).mappings().all()
         return [dict(r) for r in rows]
 

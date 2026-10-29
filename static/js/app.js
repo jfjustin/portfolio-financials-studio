@@ -26,6 +26,7 @@
     $("#ledger-filter").addEventListener("input", renderLedger);
     await refresh();
     loadTerms();
+    loadLake();
   }
 
   // "Clear data": empty the database after an explicit typed confirmation
@@ -457,6 +458,35 @@
     });
   }
 
+  // ---- data lake card ----
+  const LAKE_STAGES = [
+    ["02 Land", "land_document_registry", "documents registered"],
+    ["04 Bronze", "bronze_raw_records", "lines read, with evidence"],
+    ["04 Silver", "silver_financial_metric", "values, every review state"],
+    ["04 Gold", "gold_fact_financial_metric", "published values"],
+    ["Gold", "gold_publication", "published versions"],
+  ];
+  async function loadLake() {
+    const st = await api("/api/lake/status");
+    const card = $("#lake-card");
+    card.hidden = !st.enabled;
+    if (!st.enabled) return;
+    $("#lake-where").textContent = `— ${st.backend} · ${st.location}`;
+    $("#lake-stages").innerHTML = LAKE_STAGES.map(([stage, table, what]) => {
+      const t = (st.tables || {})[table];
+      return `<div class="lake-stage"><div class="small muted">${stage}</div>
+        <b>${t ? t.rows.toLocaleString() : "—"}</b> <span class="small muted">${what}</span></div>`;
+    }).join("");
+    $("#lake-sync-line").innerHTML = (st.last_sync ? `Last sync ${esc(st.last_sync.replace("T", " ").replace("+00:00", ""))} UTC` : "Not synced yet")
+      + (st.last_error ? ` · <span class="warn-line">⚠ ${esc(st.last_error)}</span>` : "");
+    $("#lake-sync").onclick = async () => {
+      toast("Writing Silver and Gold…");
+      const res = await fetch("/api/lake/sync", { method: "POST" });
+      toast(res.ok ? "Lake synced" : "Sync failed: " + (await res.text()));
+      loadLake();
+    };
+  }
+
   // ---- statement terms card (pre-loaded + taught wording) ----
   let ENTITIES = [];
   async function loadTerms() {
@@ -660,6 +690,7 @@
   function wireModal() {
     $("#modal-bg").onclick = () => showModal(false);
     $("#m-close").onclick = () => showModal(false);
+    $("#m-confirm-all").title = "Approve this file's values — published to Gold";
     $("#m-confirm-all").onclick = async () => {
       if (!CURRENT_SUB) return;
       await fetch(`/api/submissions/${CURRENT_SUB.submission.id}/confirm`, { method: "POST" });
