@@ -271,3 +271,54 @@ table.tbl-report { width: 100%; border-collapse: collapse; font-size: 13px; }
 /* data lake card */
 .lake-stages { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 8px; }
 .lake-stage { border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; background: var(--panel); }
+
+/* Direct Investment Financials: Actual + editable Budget rows per company */
+.dif-controls { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+.dif-controls select { margin-left: 4px; }
+.tbl-dif td, .tbl-dif td.lbl { white-space: nowrap; }
+.tbl-dif td.lbl.small { font-weight: 500; }
+.tbl-dif tr.dif-budget td { background: var(--zebra); border-bottom-width: 2px; }
+.tbl-dif input.dif-in { width: 84px; text-align: right; padding: 3px 6px; font: inherit;
+  border: 1px solid var(--line); border-radius: 6px; background: var(--panel); color: var(--ink); }
+.tbl-dif input.dif-in:focus { outline: 2px solid var(--brand); outline-offset: -1px; }
+.warn-text { color: var(--warn); font-weight: 500; }
+
+/* Investment Portfolio */
+.pf-sub { margin: 14px 0 6px; font-size: 13px; text-transform: uppercase; letter-spacing: .06em;
+  color: var(--muted); }
+.tbl-pf td { white-space: nowrap; }
+.tbl-pf a.pf-open { color: var(--brand); text-decoration: none; }
+.tbl-pf a.pf-open:hover { text-decoration: underline; }
+.modal.pf-modal { inset: 5vh max(3vw, calc(50vw - 460px)); }
+.pf-form { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 10px 14px; }
+.pf-form label { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--muted); }
+.pf-form label.wide { grid-column: 1 / -1; }
+.pf-form input, .pf-form select, .pf-form textarea, .pf-paste textarea {
+  font: inherit; font-size: 13px; color: var(--ink); background: var(--panel);
+  border: 1px solid var(--line); border-radius: 6px; padding: 6px 8px; }
+.pf-paste { margin-top: 12px; display: flex; flex-direction: column; gap: 6px; }
+.pf-paste-row { display: flex; gap: 12px; align-items: center; justify-content: flex-end; }
+sup.est { color: var(--warn); font-weight: 700; margin-left: 1px; cursor: help; }
+
+/* Needs attention + typing values in by hand */
+.attention { margin-top: 12px; display: flex; flex-direction: column; gap: 6px; }
+.att-head { font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: var(--warn); font-weight: 600; }
+.att-item { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; font-size: 12.5px;
+  padding: 6px 10px; border: 1px solid var(--line); border-left: 3px solid var(--warn); border-radius: 6px; }
+.att-item.review { border-left-color: var(--brand); }
+.att-item.unread, .att-item.mismatch { border-left-color: var(--err); }
+.att-item.estimate, .att-item.check { border-left-color: var(--muted); }
+.att-kind { font-size: 11px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); min-width: 70px; }
+.tbl-dif input.dif-act.missing { border: 1px dashed var(--warn); background: color-mix(in srgb, var(--warn) 8%, var(--panel)); }
+.tbl-dif input.dif-act.manual { border-color: color-mix(in srgb, var(--brand) 55%, var(--line)); }
+.tbl-dif a.dif-open { color: inherit; text-decoration: none; border-bottom: 1px dotted var(--muted); }
+button.dif-open { cursor: pointer; background: none; font: inherit; }
+sup.man { color: var(--brand); margin-left: 2px; cursor: help; }
+.manual-entry { margin-top: 12px; }
+.manual-entry summary { cursor: pointer; font-size: 13px; color: var(--brand); }
+.manual-form { display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: flex-end; margin-top: 10px; }
+.manual-form label { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--muted); }
+.manual-form label.wide { flex: 1 1 260px; }
+.manual-form input, .manual-form select { font: inherit; font-size: 13px; color: var(--ink); background: var(--panel);
+  border: 1px solid var(--line); border-radius: 6px; padding: 5px 8px; }
+.manual-form.inline { margin-top: 12px; }

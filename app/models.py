@@ -24,6 +24,7 @@ class RawItem(BaseModel):
     value_raw: str
     provenance: str = ""     # e.g. "p3 table2 r5c2" or "Sheet1!B7"
     section: str = ""        # nearest heading above the line ("Unrealised Capital Gains")
+    statement: str = ""      # balance_sheet | income_statement | cash_flow, when titled
 
 
 class FinancialFact(BaseModel):
@@ -100,6 +101,24 @@ _CCY_STATED = re.compile(
     r"|\bin\s+(usd|eur|gbp|chf|jpy|cny|rmb|hkd|sgd|cad|aud|sek|nok|dkk)\b", re.I)
 _CCY_CODE = re.compile(r"\b(usd|eur|gbp|chf|jpy|cny|rmb|hkd|sgd|cad|aud|sek|nok|dkk)\b", re.I)
 _CCY_SIGN = {"$": "USD", "€": "EUR", "£": "GBP", "¥": "CNY"}
+
+
+_SCALE_STATED = (
+    (1_000_000, re.compile(r"\bin\s+(?:\$\s*|usd\s*)?millions\b|\(\s*(?:\$|usd\s*)?(?:m|mm|millions)\s*\)"
+                           r"|\(\s*in\s+\$?\s*(?:m|mm)\s*\)|\$\s?mm?\b(?=\s*\)|\s*$)", re.I | re.M)),
+    (1_000, re.compile(r"\bin\s+(?:\$\s*|usd\s*)?thousands\b|\(\s*(?:\$|usd\s*)?thousands\s*\)"
+                       r"|\(\s*in\s+\$?\s*0{3}'?s?\s*\)|\bin\s+\$\s?0{3}'?s?\b|\$\s?0{3}'?s\b"
+                       r"|\(\s*\$?\s?0{3}'?s?\s*\)|\b0{3}'?s omitted\b", re.I)),
+)
+
+
+def detect_scale(text: str) -> int:
+    """1000 for a document stated "in $000" / "in thousands", 1,000,000 for
+    "in millions", else 1. Figures are then multiplied back to whole units."""
+    for mult, rx in _SCALE_STATED:
+        if rx.search(text or ""):
+            return mult
+    return 1
 
 
 def detect_currency(text: str) -> Optional[str]:

@@ -109,8 +109,10 @@ _DATE_RX = re.compile(
     r"\b(?P<iso>20\d{2})[-/.](?P<iso_m>\d{1,2})[-/.](?P<iso_d>\d{1,2})\b"
     r"|\b(?P<a>\d{1,2})[-/.](?P<b>\d{1,2})[-/.](?P<y>20\d{2})\b"
     r"|\b(?P<mon>[a-z]{3,9})\.?\s+(?P<md>\d{1,2}),?\s+(?P<my>20\d{2})\b"
-    # "31 March 2026", "31-Mar-26", "31 Mar. 2026"
-    r"|\b(?P<dd>\d{1,2})[\s\-]+(?P<mon2>[a-z]{3,9})\.?[\s\-]+(?P<yy>20\d{2}|\d{2})\b",
+    # "31 March 2026", "31-Mar-26", "31 Mar. 2026" — but not the "1-March 31" of
+    # "January 1-March 31, 2026", where the two digits are a day, not a year
+    r"|\b(?P<dd>\d{1,2})[\s\-]+(?P<mon2>[a-z]{3,9})\.?[\s\-]+"
+    r"(?P<yy>20\d{2}\b|\d{2}\b(?!,?\s*20\d{2}))",
     re.I)
 _QUARTER_RX = re.compile(r"\bq([1-4])[\s,\-]*(20\d{2})\b|\b(20\d{2})[\s,\-]*q([1-4])\b", re.I)
 _BOOKING_CTX = re.compile(r"(month|date posted|posting date|posted|prepared|printed)\s*:?\s*$", re.I)
@@ -278,3 +280,168 @@ def guess_entity_name(lines: list[str], filename: str = "") -> str:
     stem = re.sub(r"\b(20\d{2}|q[1-4]|fy|financials?|report|jv|fund)\b", "", stem, flags=re.I)
     stem = re.sub(r"\s+", " ", stem).strip()
     return stem.title() if stem else "UNKNOWN"
+
+
+# --------------------------------------------------------------------------
+# Financial statements: which statement a sheet/page is, and which figure
+# column covers the reporting period
+# --------------------------------------------------------------------------
+_STATEMENT_TITLES = (
+    ("cash_flow", re.compile(r"cash\s*flows?", re.I)),
+    ("balance_sheet", re.compile(r"balance\s*sheets?|financial\s+(?:position|condition)", re.I)),
+    ("income_statement", re.compile(
+        r"profit\s*(?:and|&)\s*loss|income\s+statements?|statements?\s+of\s+"
+        r"(?:consolidated\s+)?(?:comprehensive\s+)?(?:operations|income|loss)", re.I)),
+)
+_SHEET_ABBREV = (("cash_flow", re.compile(r"^\W*cf\W*$", re.I)),
+                 ("balance_sheet", re.compile(r"^\W*bs\W*$", re.I)),
+                 ("income_statement", re.compile(r"^\W*(?:p\s*&\s*l|pl|is)\W*$", re.I)))
+
+
+def statement_kind(title: str, *, sheet_name: bool = False) -> str:
+    """"balance_sheet" | "income_statement" | "cash_flow" for a statement title
+    ("Statement of Cash Flows", "1.1 Balance Sheet", a "P&L" sheet), else ""."""
+    t = title or ""
+    if sheet_name:
+        for kind, rx in _SHEET_ABBREV:
+            if rx.match(t.strip()):
+                return kind
+    best: Optional[tuple[int, str]] = None
+    for kind, rx in _STATEMENT_TITLES:
+        m = rx.search(t)
+        if m and (best is None or m.start() < best[0]):
+            best = (m.start(), kind)
+    return best[1] if best else ""
+
+
+_HEADERISH = re.compile(
+    r"\b(?:19|20)\d{2}\b|'\d{2}\b|\bq[1-4]\b|quarter|months?\b|\bytd\b|year|total|budget|actual|"
+    r"forecast|variance|period|ended|ending|as of|\b(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|"
+    r"nov|dec)[a-z]*\b", re.I)
+
+
+def header_row(cells: dict[int, object]) -> Optional[dict[int, str]]:
+    """{column: text} when a row of cells is a column-header row ("Jan 2026 |
+    Feb 2026 | Total", "Three Months Ended March 31, | 2026", "Q1'26 | Budget |
+    Actual"), else None. Bare years count as header text; any other figure
+    makes it a data row. A text-only row in the label column is a heading."""
+    texts: dict[int, str] = {}
+    years = 0
+    for i, v in cells.items():
+        if v in (None, ""):
+            continue
+        if hasattr(v, "isoformat"):                      # a date header cell
+            texts[i] = v.isoformat()[:10]
+        elif isinstance(v, (int, float)) and not isinstance(v, bool):
+            if float(v).is_integer() and 1900 <= v <= 2100:
+                texts[i] = str(int(v))
+                years += 1
+            else:
+                return None
+        else:
+            s = str(v).strip()
+            if re.fullmatch(r"[$€£(]*-?[\d,.]+[)%]*", s) and not re.fullmatch(r"(?:19|20)\d{2}", s):
+                return None                               # a figure: a data row
+            if re.fullmatch(r"(?:19|20)\d{2}", s):
+                years += 1
+            texts[i] = s
+    if not texts:
+        return None
+    first = min(texts)
+    words = {i: t for i, t in texts.items() if not re.fullmatch(r"(?:19|20)\d{2}", t)}
+    beyond = {i: t for i, t in words.items() if i > first}
+    if not beyond and first in words and (first == 0 or years):
+        return None              # a heading, or a label with year-like figures
+    if not any(_HEADERISH.search(t) for t in (beyond or texts).values()):
+        return None
+    return texts
+
+
+def compose_headers(rows: list[dict[int, str]]) -> dict[int, str]:
+    """Stack header rows into one header per column. A spanning header ("Q1'26"
+    over Budget | Actual, "Three Months Ended" over its year) carries right
+    until the next header cell in its row."""
+    if not rows:
+        return {}
+    last = max(max(r) for r in rows if r)
+    out: dict[int, list[str]] = {}
+    for r in rows:
+        cols = sorted(r)
+        for k, c in enumerate(cols):
+            end = cols[k + 1] if k + 1 < len(cols) else last + 1
+            for i in range(c, end):
+                out.setdefault(i, []).append(r[c])
+    return {i: " ".join(t for t in parts if t).strip() for i, parts in out.items()}
+
+
+_MONTH_RX = re.compile(r"\b(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?\b", re.I)
+_FULL_PERIOD = re.compile(r"\btotal\b|three\s+months|3\s+months|\bquarter|\bqtd\b|"
+                          r"\b(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?\s*"
+                          r"(?:\d{1,2},?\s*)?(?:-|–|to|through)\s*"
+                          r"(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)", re.I)
+_NOT_ACTUAL = re.compile(r"budget|forecast|\bplan\b|projection|variance|\bvar\b|%|"
+                         r"prior|\bpy\b|last\s+year|change", re.I)
+
+
+def column_fit(header: str, period: str, *, balance: bool) -> int:
+    """How well a figure column's header fits the reporting period (higher is
+    better; 0 = no opinion). Flows want the column covering the whole period
+    ("Total", "Three Months Ended March 31, 2026", "Q1'26 Actual"), never one
+    month of it or another year; balances want the period-end column
+    ("Mar 2026" of Jan | Feb | Mar). Budget, variance and prior-year columns
+    are never the actuals."""
+    h = (header or "").strip()
+    if not h or not period:
+        return 0
+    score = 0
+    if _NOT_ACTUAL.search(h):
+        score -= 12
+    years = set(re.findall(r"\b((?:19|20)\d{2})\b", h)) | {
+        "20" + y for y in re.findall(r"'(\d{2})\b", h)}
+    pyear = period[:4]
+    if years:
+        score += 3 if pyear in years else -5
+    q = re.search(r"-Q([1-4])$", period)
+    hq = re.findall(r"\bq([1-4])\b|q([1-4])'", h, re.I)
+    hq = {a or b for a, b in hq}
+    if q and hq:
+        score += 3 if q.group(1) in hq else -5
+    months = [m.lower()[:3] for m in _MONTH_RX.findall(h)]
+    end_month = None
+    if q:
+        end_month = ("mar", "jun", "sep", "dec")[int(q.group(1)) - 1]
+    elif re.fullmatch(r"20\d{2}-\d{2}(?:-\d{2})?", period):
+        end_month = ("jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct",
+                     "nov", "dec")[int(period[5:7]) - 1]
+    if balance:
+        if end_month and end_month in months:
+            score += 2
+    else:
+        if _FULL_PERIOD.search(h):
+            score += 2
+        elif q and len(months) == 1 and not re.search(r"ended|ending|through", h, re.I):
+            score -= 3                     # one month of the quarter
+    return score
+
+
+def months_in_period(period: str, start: Optional[str] = None,
+                     end: Optional[str] = None) -> Optional[int]:
+    """Calendar months a period covers: a quarter 3, a month 1, a year 12."""
+    if start and end:
+        try:
+            s, e = date.fromisoformat(start[:10]), date.fromisoformat(end[:10])
+            n = (e.year - s.year) * 12 + e.month - s.month + 1
+            if n >= 1:
+                return n
+        except ValueError:
+            pass
+    p = period or ""
+    if re.fullmatch(r"20\d{2}-Q[1-4]", p):
+        return 3
+    if re.fullmatch(r"20\d{2}-H[12]", p):
+        return 6
+    if re.fullmatch(r"20\d{2}-\d{2}", p):
+        return 1
+    if re.fullmatch(r"20\d{2}(?:-FY)?", p):
+        return 12
+    return None

@@ -119,6 +119,39 @@ fund_profiles = Table(
     Column("notes", Text),               # anything the model should know about the format
     Column("updated_by", String(128)),
     Column("updated_at", String(40)),
+    # master data for the Investment Portfolio report (json: type, vintage, fund
+    # size, region / sector, accounting details; for companies theme, round,
+    # status, exit) — see portfolio.py
+    Column("details", Text),
+)
+
+# Dated capital calls ("Invested" rows of the Investment Portfolio report):
+# entered or pasted by the team; quarters without one show the quarter's
+# funding from the roll-forward instead.
+capital_calls = Table(
+    "capital_calls", metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("entity_name", String(512), nullable=False, index=True),
+    Column("call_date", String(16), nullable=False),     # YYYY-MM-DD
+    Column("description", Text),                          # "Drawdown Notice #3", a round
+    Column("amount", String(64), nullable=False),         # Decimal as string, whole units
+    Column("total_raise", String(64)),                    # direct investments: the round's size
+    Column("pre_money", String(64)),                      # direct investments: pre-money valuation
+    Column("created_by", String(128)),
+    Column("created_at", String(40)),
+)
+
+# Budgets for the "Direct Investment Financials" report, entered by the team per
+# company, period ("2026-Q1", or "2026" for the full year) and figure. Like fund
+# parameters and taught wording, they are inputs, so "Clear data" keeps them.
+budgets = Table(
+    "budgets", metadata,
+    Column("entity_name", String(512), primary_key=True),
+    Column("period", String(64), primary_key=True),
+    Column("metric_key", String(128), primary_key=True),
+    Column("value", String(64), nullable=False),     # Decimal as string, whole currency units
+    Column("updated_by", String(128)),
+    Column("updated_at", String(40)),
 )
 
 audit = Table(
@@ -570,6 +603,206 @@ def clear_data(user: str = "local", keep_backups: int = 5) -> dict[str, Any]:
             "backup": backup.name if backup else None}
 
 
+# --------------------------------------------------------------------------
+# Values a person types in: a statement that's empty, unreadable or missing a
+# figure. They're kept apart from extracted values — their own submission per
+# entity, report type and period, flagged manual_entry — and audited.
+# --------------------------------------------------------------------------
+MANUAL = "manual"
+
+
+def manual_submission(entity: str, report_type: str, period: str,
+                      currency: str = "USD") -> int:
+    """The submission holding typed-in values for an entity, report type and
+    period (it has no source file); created on first use."""
+    key = ((submissions.c.extractor == MANUAL) & (submissions.c.entity_name == entity)
+           & (submissions.c.report_type == report_type) & (submissions.c.period == period))
+    with get_engine().begin() as conn:
+        sid = conn.execute(select(submissions.c.id).where(key)).scalar_one_or_none()
+        if sid is not None:
+            return int(sid)
+        res = conn.execute(insert(submissions).values(
+            filename=f"Entered manually — {entity} {period}",
+            file_hash=f"manual:{report_type}:{entity}:{period}", report_type=report_type,
+            report_type_confidence=1.0, entity_name=entity, period=period, currency=currency,
+            extractor=MANUAL, status="reviewed", warnings="[]", unmapped="[]",
+            uploaded_at=_now(), revision=1))
+        return int(res.inserted_primary_key[0])
+
+
+def unread_submissions() -> list[dict[str, Any]]:
+    """Files that were read but gave no figures at all — a scan with no OCR or
+    vision model, an unsupported layout. Their entity and period, so the reports
+    can flag them for a person."""
+    with get_engine().connect() as conn:
+        with_values = {r[0] for r in conn.execute(
+            select(facts.c.submission_id).where(facts.c.value.is_not(None))
+            .where(facts.c.status != "rejected").distinct())}
+        rows = conn.execute(select(submissions.c.id, submissions.c.filename,
+                                   submissions.c.entity_name, submissions.c.period,
+                                   submissions.c.report_type, submissions.c.extractor)).all()
+    return [dict(r._mapping) for r in rows
+            if r.id not in with_values and r.extractor != MANUAL
+            and r.entity_name and r.entity_name != "UNKNOWN"]
+
+
+def set_manual_value(sub_id: int, *, metric_key: str, metric_label: str, unit: str,
+                     value: Optional[Decimal], currency: str, entity_kind: str,
+                     user: str = "local", note: str = "") -> Optional[int]:
+    """Record a value a person typed in for a submission's entity and period —
+    confirmed (a person checked it), flagged manual_entry, audited. Typing it
+    again replaces it; None withdraws it."""
+    sub = get_submission(sub_id)
+    if sub is None:
+        raise KeyError(sub_id)
+    from .extractors.base import is_quarter_label, quarter_bounds
+    bounds = quarter_bounds(sub["period"]) if is_quarter_label(sub["period"]) else None
+    with get_engine().begin() as conn:
+        rows = conn.execute(select(facts).where(facts.c.submission_id == sub_id)
+                            .where(facts.c.metric_key == metric_key)
+                            .where(facts.c.status != "rejected")).mappings().all()
+        mine = [r for r in rows if "manual_entry" in json.loads(r["flags"] or "[]")]
+        prov = f"entered by {user}" + (f" — {note}" if note else "")
+        if value is None:
+            for r in mine:
+                conn.execute(update(facts).where(facts.c.id == r["id"])
+                             .values(status="rejected", updated_at=_now()))
+                conn.execute(insert(audit).values(
+                    ts=_now(), submission_id=sub_id, fact_id=r["id"], action="reject",
+                    field="status", old_value=r["status"], new_value="rejected", user=user,
+                    note="entered value withdrawn"))
+            return None
+        if mine:
+            r = mine[0]
+            conn.execute(update(facts).where(facts.c.id == r["id"]).values(
+                value=str(value), raw_value=str(value), status="confirmed", provenance=prov,
+                currency=currency, updated_at=_now()))
+            conn.execute(insert(audit).values(
+                ts=_now(), submission_id=sub_id, fact_id=r["id"], action="edit", field="value",
+                old_value=r["value"], new_value=str(value), user=user, note="entered by hand"))
+            return int(r["id"])
+        res = conn.execute(insert(facts).values(
+            submission_id=sub_id, entity_name=sub["entity_name"], entity_kind=entity_kind,
+            report_type=sub["report_type"], period=sub["period"], metric_key=metric_key,
+            metric_label=metric_label, value=str(value), unit=unit, currency=currency,
+            raw_label="Entered manually", raw_value=str(value), provenance=prov,
+            confidence=1.0, status="confirmed", flags=json.dumps(["manual_entry"]),
+            created_at=_now(), updated_at=_now(),
+            period_start=bounds[0].isoformat() if bounds else None,
+            period_end=bounds[1].isoformat() if bounds else None))
+        fact_id = int(res.inserted_primary_key[0])
+        conn.execute(insert(audit).values(
+            ts=_now(), submission_id=sub_id, fact_id=fact_id, action="manual_entry",
+            field=metric_key, new_value=str(value), user=user, note=note or None))
+        return fact_id
+
+
+def get_budgets() -> dict[tuple[str, str, str], Decimal]:
+    """{(entity, period, metric): budget}."""
+    with get_engine().connect() as conn:
+        return {(r["entity_name"], r["period"], r["metric_key"]): Decimal(r["value"])
+                for r in conn.execute(select(budgets)).mappings().all()}
+
+
+def set_budget(entity: str, period: str, metric_key: str, value: Optional[Decimal],
+               user: str = "local") -> None:
+    """Set (or, with value None, remove) one budget figure; audited."""
+    key = ((budgets.c.entity_name == entity) & (budgets.c.period == period)
+           & (budgets.c.metric_key == metric_key))
+    with get_engine().begin() as conn:
+        old = conn.execute(select(budgets.c.value).where(key)).scalar_one_or_none()
+        if value is None:
+            conn.execute(budgets.delete().where(key))
+        elif old is None:
+            conn.execute(insert(budgets).values(entity_name=entity, period=period,
+                                                metric_key=metric_key, value=str(value),
+                                                updated_by=user, updated_at=_now()))
+        else:
+            conn.execute(update(budgets).where(key).values(value=str(value), updated_by=user,
+                                                           updated_at=_now()))
+        if (old is None) != (value is None) or (old is not None and Decimal(old) != value):
+            conn.execute(insert(audit).values(
+                ts=_now(), action="budget", user=user, field=f"{entity} {period} {metric_key}",
+                old_value=old, new_value=None if value is None else str(value)))
+
+
+def get_details(entity: str) -> dict[str, Any]:
+    with get_engine().connect() as conn:
+        raw = conn.execute(select(fund_profiles.c.details)
+                           .where(fund_profiles.c.entity_name == entity)).scalar_one_or_none()
+    return json.loads(raw) if raw else {}
+
+
+def all_details() -> dict[str, dict[str, Any]]:
+    with get_engine().connect() as conn:
+        return {r.entity_name: json.loads(r.details) for r in conn.execute(
+            select(fund_profiles.c.entity_name, fund_profiles.c.details))
+            if r.details}
+
+
+def set_details(entity: str, values: dict[str, Any], user: str = "local") -> dict[str, Any]:
+    """Merge master-data fields for an entity (empty values remove a field); audited."""
+    old = get_details(entity)
+    new = {**old, **{k: v for k, v in values.items() if v not in (None, "")}}
+    for k, v in values.items():
+        if v in (None, ""):
+            new.pop(k, None)
+    with get_engine().begin() as conn:
+        exists = conn.execute(select(fund_profiles.c.entity_name)
+                              .where(fund_profiles.c.entity_name == entity)).first()
+        vals = dict(details=json.dumps(new, sort_keys=True), updated_by=user, updated_at=_now())
+        if exists:
+            conn.execute(update(fund_profiles).where(fund_profiles.c.entity_name == entity)
+                         .values(**vals))
+        else:
+            conn.execute(insert(fund_profiles).values(entity_name=entity, investor_aliases="",
+                                                      commitment="", notes="", **vals))
+        if new != old:
+            conn.execute(insert(audit).values(
+                ts=_now(), action="entity_details", user=user, field=entity,
+                old_value=json.dumps(old, sort_keys=True), new_value=vals["details"]))
+    return new
+
+
+def get_capital_calls(entity: Optional[str] = None) -> list[dict[str, Any]]:
+    stmt = select(capital_calls).order_by(capital_calls.c.entity_name, capital_calls.c.call_date,
+                                          capital_calls.c.id)
+    if entity is not None:
+        stmt = stmt.where(capital_calls.c.entity_name == entity)
+    with get_engine().connect() as conn:
+        return [dict(r) for r in conn.execute(stmt).mappings().all()]
+
+
+def add_capital_call(entity: str, call_date: str, amount: Decimal, description: str = "",
+                     total_raise: Optional[Decimal] = None, pre_money: Optional[Decimal] = None,
+                     user: str = "local") -> int:
+    with get_engine().begin() as conn:
+        res = conn.execute(insert(capital_calls).values(
+            entity_name=entity, call_date=call_date, amount=str(amount),
+            description=description.strip(),
+            total_raise=None if total_raise is None else str(total_raise),
+            pre_money=None if pre_money is None else str(pre_money),
+            created_by=user, created_at=_now()))
+        cid = res.inserted_primary_key[0]
+        conn.execute(insert(audit).values(
+            ts=_now(), action="capital_call", user=user, field=entity,
+            new_value=f"{call_date} {amount} {description}".strip()))
+    return cid
+
+
+def delete_capital_call(call_id: int, user: str = "local") -> bool:
+    with get_engine().begin() as conn:
+        row = conn.execute(select(capital_calls).where(capital_calls.c.id == call_id)
+                           ).mappings().first()
+        if not row:
+            return False
+        conn.execute(capital_calls.delete().where(capital_calls.c.id == call_id))
+        conn.execute(insert(audit).values(
+            ts=_now(), action="capital_call_delete", user=user, field=row["entity_name"],
+            old_value=f"{row['call_date']} {row['amount']} {row['description'] or ''}".strip()))
+    return True
+
+
 def mark_submission_reviewed(sub_id: int, user: str = "local") -> None:
     eng = get_engine()
     with eng.begin() as conn:
@@ -873,10 +1106,8 @@ def rebuild_investment_views() -> None:
     for f in facts_:
         key = (f["entity_name"], f["period"])
         groups.setdefault(key, {})[f["metric_key"]] = f["value"]
-    report_type_by_key: dict[tuple[str, str], str] = {}
     kind_by_entity: dict[str, str] = {}
     for f in facts_:
-        report_type_by_key[(f["entity_name"], f["period"])] = f["report_type"]
         kind_by_entity.setdefault(f["entity_name"], f["entity_kind"])
 
     # derivation flags + document-printed values, for the roll-forward badges
@@ -891,10 +1122,14 @@ def rebuild_investment_views() -> None:
                 "source": f.get("provenance")}
 
     from .extractors.base import is_quarter_label, previous_quarter
+    # a quarter's roll-forward row comes from roll-forward values only — a
+    # fund-level report filed for the same fund and quarter never displaces it
+    rf_groups: dict[tuple[str, str], dict[str, str]] = {}
+    for f in facts_:
+        if f["report_type"] == "investment_roll_forward":
+            rf_groups.setdefault((f["entity_name"], f["period"]), {})[f["metric_key"]] = f["value"]
     quarter_rows = []
-    for (entity, period), metrics in groups.items():
-        if report_type_by_key.get((entity, period)) != "investment_roll_forward":
-            continue
+    for (entity, period), metrics in rf_groups.items():
         row = {"entity_name": entity, "period_label": period,
                "period_order": _period_order(period), "accounting_method": None}
         for k in _QUARTER_KEYS:

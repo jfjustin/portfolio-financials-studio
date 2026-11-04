@@ -315,8 +315,8 @@ def backfill() -> dict[str, int]:
     have = {r["submission_id"] for r in read_table("land_document_registry")}
     landed = missing = 0
     for s in db.list_submissions():
-        if s["id"] in have:
-            continue
+        if s["id"] in have or s.get("extractor") == db.MANUAL:
+            continue    # typed-in values have no document to land; Silver/Gold carry them
         src = storage.load_source(s.get("source_key"), s["filename"], s["file_hash"])
         if src is None:
             missing += 1

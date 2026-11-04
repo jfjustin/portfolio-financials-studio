@@ -33,7 +33,7 @@ _AMOUNT = (r"\(?\s?-?\s?[\$€£]?\s?(?:\d{1,3}(?:[.,]\d{3})+|\d+)(?:[.,]\d+)?\s
 _CELL = rf"(?:{_AMOUNT}|-|–|—)"   # a figure, or a dash for an empty column
 # label, then one or more figure columns ("Total committed 90,000,000 2,500,000")
 _LINE_TAIL = re.compile(
-    rf"^(?P<label>.*?(?:[A-Za-z\)\$:%]|\bQ[1-4]|\b20\d{{2}}))\s+"
+    rf"^(?P<label>.*?(?:[A-Za-z\)\$:%]|\bQ[1-4]|\b20\d{{2}}|\b\d+-\d+))\s+"
     rf"(?P<values>{_CELL}(?:\s+{_CELL})*)\s*\*?$")
 _CELL_RX = re.compile(_CELL)
 _BARE_AMOUNT = re.compile(rf"^(?P<value>{_AMOUNT})\s*\*?$")
@@ -93,6 +93,12 @@ def parse_statement_lines(text: str, provenance: str) -> list[RawItem]:
         if m:
             label = m.group("label").rstrip(" $€£:").strip()
             cells = [c.strip() for c in _CELL_RX.findall(m.group("values")) if c.strip()]
+            # a bare 4-6 digit number before a formatted amount is part of the
+            # label — a year or an account number ("Lab Equipment 2026 -10,000.00",
+            # "Clearing Account (4410) -250.00") — not another figure column
+            while (len(cells) > 1 and re.fullmatch(r"\(?\d{4,6}\)?", cells[0])
+                   and re.search(r"[.,]\d", cells[-1])):
+                label = f"{label} {cells.pop(0)}"
             value = cells[-1] if cells else ""
             is_date_year = (len(cells) == 1 and re.fullmatch(r"20\d{2}", value)
                             and _ENDS_WITH_MONTH_DAY.search(label))
@@ -120,6 +126,16 @@ def parse_statement_lines(text: str, provenance: str) -> list[RawItem]:
 
 
 _AMOUNT_RX = re.compile(rf"^{_AMOUNT}$")
+
+
+def page_statement(text: str, previous: str = "") -> str:
+    """The statement a page (or block) shows, from its title lines; a page
+    without one continues the previous page's statement."""
+    from .base import statement_kind
+    head = "\n".join([ln for ln in (text or "").splitlines() if ln.strip()][:6])
+    if re.search(r"table of contents|\.{6,}\s*\d+\s*$", head, re.I | re.M):
+        return ""        # a contents page names every statement
+    return statement_kind(head) or previous
 
 
 def _statement_blocks(page) -> list[tuple[float, float]]:
@@ -192,6 +208,7 @@ def extract_pdf(path: Path) -> tuple[list[RawItem], str]:
     text_parts: list[str] = []
     total_chars = 0
 
+    kind = ""            # the statement the current page belongs to
     with pdfplumber.open(path) as pdf:
         n_pages = len(pdf.pages)
         for pno, page in enumerate(pdf.pages, start=1):
@@ -199,6 +216,8 @@ def extract_pdf(path: Path) -> tuple[list[RawItem], str]:
             total_chars += len(page_text.strip())
             if page_text:
                 text_parts.append(page_text)
+            page_start = len(raw_items)
+            kind = page_statement(page_text, kind)
 
             # --- tables ---
             try:
@@ -239,6 +258,7 @@ def extract_pdf(path: Path) -> tuple[list[RawItem], str]:
             else:
                 parts = [(f"p{pno}", page_text)]
             for prov, part in parts:
+                part_start = len(raw_items)
                 for ln in part.splitlines():
                     m = _LINE_KV.match(ln.strip())
                     if m:
@@ -247,6 +267,11 @@ def extract_pdf(path: Path) -> tuple[list[RawItem], str]:
                             value_raw=m.group("value").strip(),
                             provenance=f"{prov} text"))
                 raw_items.extend(parse_statement_lines(part, prov))
+                if blocks:   # side-by-side statements each carry their own title
+                    for it in raw_items[part_start:]:
+                        it.statement = page_statement(part, "")
+            for it in raw_items[page_start:]:
+                it.statement = it.statement or kind
 
     # scanned detection: essentially no text across the doc
     if total_chars < max(40, 15 * n_pages):

@@ -63,35 +63,88 @@
       </table></div>
     </section>
 
-    <!-- Direct Investments — portfolio company's own operating performance -->
-    <section class="report-card">
+    <!-- Direct Investment Financials — Lam's quarterly report (Budget | Actual) -->
+    <section class="report-card" id="dif-card">
       <div class="report-head">
-        <h3 class="report-title">Direct Investments — Operating Metrics</h3>
-        <span class="small muted">Portfolio company's own quarterly performance (not Lam's cost/FMV accounting)</span>
+        <h3 class="report-title">Direct Investment Financials</h3>
+        <div class="dif-controls">
+          <label class="small muted">Year <select id="dif-year" aria-label="Report year"></select></label>
+          <label class="small muted">Period <select id="dif-period" aria-label="Report period"></select></label>
+          <a class="btn sm primary" id="dif-export" href="/api/exports/direct-investment-financials.xlsx">Download xlsx</a>
+        </div>
       </div>
-      <div class="scroll"><table class="tbl-report">
-        <thead><tr><th class="lbl">Company</th><th>As of</th><th>Revenue</th>
-          <th>Operating Cash Flow</th><th>CapEx</th><th>Ending Cash</th>
-          <th>Operating Expense</th><th>Net Burn</th></tr></thead>
-        <tbody id="op-metrics-body"></tbody>
+      <p class="report-sub">Each portfolio company's own P&amp;L, balance sheet and cash-flow figures,
+        in $000 — approved values only. Burn and runway are computed: Gross Monthly Burn = Operating
+        Expense ÷ months · Net Monthly Burn = −(Operating Cash Flow + CapEx) ÷ months · Runway =
+        Ending Cash ÷ monthly burn. Type budgets (in $000) into the Budget rows.</p>
+      <div class="scroll"><table class="tbl-report tbl-dif">
+        <thead><tr><th class="lbl">Company</th><th class="lbl"></th><th>Revenue</th>
+          <th>Operating Cash Flow</th><th>CapEx</th><th>Ending Cash</th><th>Operating Expense</th>
+          <th>Gross Monthly Burn</th><th>Gross Runway</th><th>Net Monthly Burn</th>
+          <th>Net Runway</th></tr></thead>
+        <tbody id="dif-body"></tbody>
       </table></div>
+      <div id="dif-attention" class="attention"></div>
+      <details class="manual-entry">
+        <summary>Enter a figure by hand — a statement that's empty, unreadable or missing it</summary>
+        <form id="dif-manual" class="manual-form">
+          <label>Company<input name="entity" list="dif-companies" required placeholder="Company X"></label>
+          <datalist id="dif-companies"></datalist>
+          <label>Quarter<select name="period" id="dif-manual-q"></select></label>
+          <label>Figure<select name="metric">
+            <option value="revenue">Revenue</option><option value="operating_cash_flow">Operating Cash Flow</option>
+            <option value="capex">CapEx</option><option value="ending_cash">Ending Cash</option>
+            <option value="operating_expense">Operating Expense</option></select></label>
+          <label>Value ($000)<input name="value" required inputmode="decimal" placeholder="e.g. (1,209)"></label>
+          <label class="wide">Where it came from<input name="note" placeholder="e.g. CFO email of 4 May, page 3 of the scan"></label>
+          <button class="btn sm primary" type="submit">Save figure</button>
+        </form>
+        <p class="small muted">Saved as entered by you — confirmed, marked ✎, and in the audit trail.
+          Typing a figure in a highlighted Actual cell does the same.</p>
+      </details>
     </section>
 
-    <!-- Fund Investments — Lam report format -->
-    <section class="report-card">
+    <!-- Investment Portfolio — Lam's quarterly report (funds + direct investments) -->
+    <section class="report-card" id="pf-card">
       <div class="report-head">
-        <h3 class="report-title">Fund Investments</h3>
-        <span class="small muted">Cumulative funding &amp; distributions · QoQ change</span>
+        <h3 class="report-title">Investment Portfolio</h3>
+        <div class="dif-controls">
+          <label class="small muted">As of <select id="pf-asof" aria-label="Report quarter"></select></label>
+          <a class="btn sm primary" id="pf-export" href="/api/exports/investment-portfolio.xlsx">Download xlsx</a>
+        </div>
       </div>
-      <p class="asof-note">"Since" marks the earliest confirmed period on file for that fund
-        (not a legal vintage date).</p>
-      <div class="scroll"><table class="tbl-report">
-        <thead><tr><th class="lbl">Fund</th><th>Since</th><th>Commit</th>
-          <th>Cumulative Funding</th><th>Cumulative Distribution</th>
-          <th>Lam Investment Balance</th><th>QoQ Change</th>
-          <th>Total % Gain/(Loss)</th></tr></thead>
-        <tbody id="fund-inv-body"></tbody>
+      <p class="report-sub">In $M, approved values only. Investment Balance is the roll-forward's ending
+        balance; Drawn, Distribution and Future Draw come from the statements (else the quarters on
+        file); Latest Stats from the fund's schedule of investments. Click a name to enter its details —
+        type, vintage, fund size, region / sector, accounting data and dated calls.</p>
+      <h4 class="pf-sub">Fund investments</h4>
+      <div class="scroll"><table class="tbl-report tbl-pf">
+        <thead><tr><th class="lbl">Fund</th><th class="lbl">Type</th><th class="lbl">Region / Sector</th>
+          <th>Vintage</th><th>Fund Size</th><th>Commitment</th><th>Drawn to Date</th>
+          <th>Future Draw</th><th>Distribution</th><th>Drawn / Commit</th><th>Investment Balance</th>
+          <th>Latest Stats</th></tr></thead>
+        <tbody id="pf-funds"></tbody>
       </table></div>
+      <h4 class="pf-sub">Direct investments</h4>
+      <div class="scroll"><table class="tbl-report tbl-pf">
+        <thead><tr><th class="lbl">Company</th><th class="lbl">Theme</th><th class="lbl">Round</th>
+          <th>Most Recent Investment</th><th>Total Invested</th><th>Projected</th>
+          <th>Total Value</th><th class="lbl">Status</th></tr></thead>
+        <tbody id="pf-companies"></tbody>
+      </table></div>
+      <div class="perf-strip">
+        <div class="perf-tile"><div class="pv" id="pf-inflow">—</div><div class="pl">Cash inflow</div></div>
+        <div class="perf-tile"><div class="pv" id="pf-outflow">—</div><div class="pl">Actual cash outflow</div></div>
+        <div class="perf-tile"><div class="pv" id="pf-committed">—</div><div class="pl">Committed investments</div></div>
+        <div class="perf-tile"><div class="pv" id="pf-net">—</div><div class="pl">Total net cash flow</div></div>
+      </div>
+      <div id="pf-attention" class="attention"></div>
+      <form id="pf-add" class="manual-form inline">
+        <label>Add a fund or direct investment no file covers yet<input name="name" required placeholder="Fund 12 / Company Q"></label>
+        <label>Kind<select name="kind"><option value="fund">Fund</option>
+          <option value="direct_investment">Direct investment</option></select></label>
+        <button class="btn sm" type="submit">Add</button>
+      </form>
     </section>
 
     <!-- Portfolio value over time (the grand-ledger trend) -->
@@ -221,6 +274,38 @@
     </section>
   </div>
 
+  <!-- Investment Portfolio: an entity's details and dated calls -->
+  <div class="modal-bg" id="pf-modal-bg"></div>
+  <div class="modal pf-modal" id="pf-modal" role="dialog" aria-modal="true" aria-labelledby="pf-m-title">
+    <div class="mhead">
+      <b id="pf-m-title">Details</b>
+      <span class="small muted" id="pf-m-kind"></span>
+      <span class="spacer"></span>
+      <button class="btn primary sm" id="pf-m-save">Save details</button>
+      <button class="btn sm" id="pf-m-close">Close</button>
+    </div>
+    <div class="mbody">
+      <form id="pf-m-form" class="pf-form"></form>
+      <hr class="hr">
+      <h2 style="margin:0 0 6px">Invested</h2>
+      <p class="small muted" style="margin:0 0 8px">Dated capital calls / investments. A quarter without
+        one shows that quarter's funding from the roll-forward.</p>
+      <table class="tbl-report"><thead><tr><th class="lbl">Date</th><th class="lbl">Description</th>
+        <th>Amount</th><th class="lbl">Source</th><th></th></tr></thead>
+        <tbody id="pf-m-calls"></tbody></table>
+      <div class="pf-paste">
+        <label class="small muted" for="pf-m-lines">Paste rows — date, description, amount (tab- or
+          semicolon-separated, e.g. copied from Excel)</label>
+        <textarea id="pf-m-lines" rows="4" placeholder="3/15/2019&#9;Drawdown Notice #1&#9;0.500"></textarea>
+        <div class="pf-paste-row">
+          <label class="small muted">Amounts in <select id="pf-m-scale"><option value="1000000">$M</option>
+            <option value="1">USD</option></select></label>
+          <button class="btn sm" id="pf-m-add">Add rows</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <!-- Review modal -->
   <div class="modal-bg" id="modal-bg"></div>
   <div class="modal" id="modal">
@@ -267,6 +352,12 @@
           <th>Status</th><th>Actions</th></tr></thead>
         <tbody id="facts-body"></tbody>
       </table>
+      <form id="m-add-value" class="manual-form inline">
+        <label>Add a value this file doesn't show (or shows unreadably)<select name="metric" id="m-add-metric"></select></label>
+        <label>Value<input name="value" required placeholder="as printed, e.g. (1,250,000)"></label>
+        <button class="btn sm" type="submit">Add value</button>
+        <span class="small muted">Saved as entered by you — confirmed, marked manual entry, audited.</span>
+      </form>
       <div id="m-unmapped" style="margin-top:14px"></div>
       <hr class="hr">
       <h2 style="margin:0 0 8px">Audit trail</h2>

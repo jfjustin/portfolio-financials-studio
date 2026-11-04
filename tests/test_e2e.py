@@ -9,6 +9,7 @@ import json
 import os
 import sys
 import tempfile
+from decimal import Decimal
 from pathlib import Path
 
 os.environ.setdefault("LLM_PROVIDER", "none")
@@ -91,6 +92,10 @@ def main() -> int:
     currency_controls()
     lake_flow(samples)
     browser_caching()
+    deliverable_helpers()
+    direct_investment_financials(samples)
+    investment_portfolio(samples)
+    manual_entry(samples)
     clear_data(samples)
 
     print()
@@ -499,7 +504,11 @@ def fund_level_pro_rata(samples: Path) -> None:
         # 2. commitment set, file re-read: our quarter, pro-rata, checked against our row
         client.post("/api/funds/Fund 79/profile", json={"commitment": "2,000,000"})
         res = client.post(f"/api/submissions/{sid}/reread")
-        by = {f["metric_key"]: f for f in db.get_facts(sid) if f["status"] != "rejected"}
+        # our roll-forward values; the fund as a whole (its size, its schedule of
+        # investments) is recorded alongside, flagged fund_wide
+        by = {f["metric_key"]: f for f in db.get_facts(sid)
+              if f["status"] != "rejected" and "fund_wide" not in f["flags"]}
+        fund_wide = {f["metric_key"]: f for f in db.get_facts(sid) if "fund_wide" in f["flags"]}
         v = lambda k: Decimal(by[k]["value"]) if k in by and by[k]["value"] is not None else None
         check(res.status_code == 200 and db.get_submission(sid)["report_type"]
               == "investment_roll_forward", "re-read with the commitment → our roll-forward")
@@ -516,12 +525,17 @@ def fund_level_pro_rata(samples: Path) -> None:
               "the share and its basis are stated for the reviewer")
         check(any("taken as outflows" in w for w in warns),
               "expenses printed as positive amounts get the sign that reconciles the fund")
+        check("fund_size" in fund_wide and Decimal(fund_wide["fund_size"]["value"]) == 100_000_000
+              and fund_wide["fund_size"]["status"] == "needs_review",
+              "the fund's total commitments are kept as its fund size, for review")
 
         # 3. our own statement for the quarter arrives: it replaces the pro-rata values
         r2 = process_path(statement, allow_duplicate=True)
         left = [f for f in db.get_facts(sid) if f["status"] != "rejected"]
-        check(r2["report_type"] == "investment_roll_forward" and not left,
-              "the investor's own statement supersedes the pro-rata values")
+        check(r2["report_type"] == "investment_roll_forward"
+              and all("fund_wide" in f["flags"] for f in left) and left,
+              "the investor's own statement supersedes the pro-rata values "
+              "(the fund-wide size stays)")
     finally:
         settings.llm_provider, registry.get_provider, capital_account.get_provider = saved
 
@@ -672,6 +686,325 @@ def browser_caching() -> None:
           "versioned assets are cached long-term")
     check(client.get("/static/js/app.js").headers.get("cache-control") == "no-cache",
           "unversioned asset URLs are revalidated")
+
+
+def _approve(client, sid: int) -> None:
+    """A reviewer confirms every value of a submission."""
+    for f in db.get_facts(sid):
+        if f["status"] == "needs_review" and f["value"] is not None:
+            client.post(f"/api/facts/{f['id']}", json={"status": "confirmed"})
+    client.post(f"/api/submissions/{sid}/confirm")
+
+
+def deliverable_helpers() -> None:
+    """Statement dates, figure columns and stated units, read the way the
+    deliverables need them."""
+    from datetime import date
+
+    from app.extractors.base import column_fit, detect_statement_dates
+    from app.extractors.registry import assemble
+    from app.models import detect_scale
+
+    d = detect_statement_dates("Profit and Loss\nJanuary 1-March 31, 2026", "statements.xlsx")
+    check(d.statement_end == date(2026, 3, 31) and d.quarter == "2026-Q1",
+          '"January 1-March 31, 2026" ends March 31, 2026 (not "1-March 31" read as 2031)')
+    q = "2026-Q1"
+    check(column_fit("Total", q, balance=False) > column_fit("Mar 2026", q, balance=False)
+          and column_fit("Three Months Ended March 31, 2026", q, balance=False)
+          > column_fit("Five Months Ended May 31, 2025", q, balance=False)
+          and column_fit("Q1'26 Actual", q, balance=False) > column_fit("Q1'26 Budget", q, balance=False)
+          and column_fit("Mar 2026", q, balance=True) > column_fit("Jan 2026", q, balance=True),
+          "the period's column: a quarter's Total, never one month, another year or a budget; "
+          "balances at the quarter's end")
+    check(detect_scale("Company A(in $000)") == 1000 and detect_scale("(in thousands)") == 1000
+          and detect_scale("figures in $ millions") == 1_000_000
+          and detect_scale("Total for Income 12,345.67") == 1,
+          '"in $000" / "in thousands" / "in millions" are recognised; plain figures are not scaled')
+    r = assemble([], "Lam's pro-rata share of equity income; net change in fair value; holding",
+                 "JV Equity Income Loss Fund 83 - 03-31-2026 results.xlsx", "x", "excel",
+                 allow_llm=False)
+    check(r.detected_report_type not in ("direct_investment", "company_financials"),
+          "a file named for a fund is never filed as a direct investment")
+
+
+def direct_investment_financials(samples: Path) -> None:
+    """Lam's "Direct Investment Financials": a portfolio company's own P&L,
+    balance sheet and cash flow -> the five figures, burn and runway, budgets,
+    and the workbook in Lam's layout."""
+    import io
+
+    import openpyxl
+    from fastapi.testclient import TestClient
+
+    from app.main import app
+
+    client = TestClient(app)
+    files = {k: samples / n for k, n in (
+        ("qb", "Company 90A_Financials_Q1_2026.xlsx"),
+        ("audited", "Company 90B_Consolidated_Financial_Statements_Mar26.xlsx"),
+        ("cf_pdf", "Company 90C_Q1_2026_Quarterly_CF.pdf"),
+        ("report", "Direct Investment Financials Q1 2026 - Company 90D.csv"))}
+    if not all(f.exists() for f in files.values()):
+        import subprocess
+        subprocess.run([sys.executable, str(samples / "make_samples.py")], check=True)
+    res = {k: process_path(f, allow_duplicate=True) for k, f in files.items()}
+
+    def vals(key):
+        return {f["metric_key"]: f for f in db.get_facts(res[key]["submission_id"])}
+
+    def v(by, k):
+        return Decimal(by[k]["value"]) if k in by and by[k]["value"] is not None else None
+
+    qb = vals("qb")
+    check(res["qb"]["report_type"] == "company_financials" and res["qb"]["entity_name"]
+          == "Company 90A" and res["qb"]["period"] == "2026-Q1",
+          "a company's own statements → Direct Investment Financials, Company 90A, 2026-Q1")
+    check(v(qb, "revenue") == 75000 and v(qb, "operating_expense") == 1050000,
+          "P&L: Total for Income / Total for Expenses from the quarter's Total column")
+    check(v(qb, "operating_cash_flow") == -960000 and v(qb, "capex") == -30000
+          and "Security Deposit" not in qb["capex"]["raw_label"],
+          "cash flow: operating cash flow; CapEx = fixed-asset purchases, not the security deposit")
+    check(v(qb, "ending_cash") == 2400000 and "Mar 2026" in qb["ending_cash"]["provenance"]
+          and "agrees with the cash-flow statement" in qb["ending_cash"]["provenance"],
+          "balance sheet: Total for Bank Accounts at the quarter end, agreeing with the cash flow")
+    check(qb["revenue"]["raw_label"] == "Total for Income"
+          and not any("Deferred Revenue" in f["raw_label"] or "Department of Revenue" in f["raw_label"]
+                      for f in qb.values()),
+          "liability lines that merely say 'Revenue' are not revenue")
+    au = vals("audited")
+    check(v(au, "operating_cash_flow") == -1000000 and v(au, "capex") == -60000
+          and v(au, "ending_cash") == 5000000 and v(au, "revenue") == 400000
+          and v(au, "operating_expense") == 1200000,
+          "multi-period statements: the 2026 quarter's column, not the prior year to its right")
+    cf = vals("cf_pdf")
+    check(v(cf, "capex") == Decimal("-31912.30") and "adds up to the investing total"
+          in cf["capex"]["provenance"] and v(cf, "operating_cash_flow") == Decimal("-500250.00"),
+          "PDF lines with numbers in their labels ('Lab Equipment 2026', '12-20') stay labels")
+    check(any("Not in this file: Revenue, Operating Expense" in w for w in res["cf_pdf"]["warnings"]),
+          "a cash-flow-only file says which figures it doesn't carry")
+    rp = vals("report")
+    check(v(rp, "revenue") == 120000 and "scaled_x1000" in rp["revenue"]["flags"]
+          and v(rp, "operating_cash_flow") == -900000,
+          "a finished report in $000 reads back in whole dollars (flagged), actuals not budgets")
+
+    pre = {c["company"]: c["columns"]["2026-Q1"]
+           for c in client.get("/api/direct-investments?year=2026").json()["companies"]}
+    check(any(i["kind"] == "review" and i["submission_id"] == res["report"]["submission_id"]
+              for i in pre["Company 90D"]["issues"]),
+          "figures waiting for review are flagged, with the file to open")
+    for key in files:
+        _approve(client, res[key]["submission_id"])
+    rep = client.get("/api/direct-investments?year=2026").json()
+    by_co = {c["company"]: c for c in rep["companies"]}
+    a = by_co["Company 90A"]["columns"]["2026-Q1"]["actual"]
+    check(round(a["gross_monthly_burn"]) == 350000 and a["gross_runway"] == 7
+          and round(a["net_monthly_burn"]) == 330000 and a["net_runway"] == 7,
+          "burn and runway by Lam's definitions (opex ÷ 3; −(OCF + CapEx) ÷ 3; cash ÷ burn)")
+    check(by_co["Company 90D"]["columns"]["2026-Q1"]["checks"] == [],
+          "a finished report's own burn and runway agree with the computation")
+    year = by_co["Company 90A"]["columns"]["2026"]["actual"]
+    check(Decimal(str(year["revenue"])) == 75000 and year["gross_runway"] == 7,
+          "the year column carries the year so far")
+    ok = client.post("/api/budgets", json={"entity": "Company 90A", "period": "2026-Q1",
+                                           "metric": "operating_expense", "value": "900",
+                                           "scale": 1000})
+    bad = client.post("/api/budgets", json={"entity": "Company 90A", "period": "Q1",
+                                            "metric": "operating_expense", "value": "1"})
+    b = client.get("/api/direct-investments?year=2026").json()
+    b = {c["company"]: c for c in b["companies"]}["Company 90A"]["columns"]["2026-Q1"]["budget"]
+    check(ok.status_code == 200 and bad.status_code == 400
+          and round(b["gross_monthly_burn"]) == 300000,
+          "a budget is entered (in $000), validated, and burns like the actuals")
+    x = client.get("/api/exports/direct-investment-financials.xlsx?year=2026&quarter=1")
+    wb = openpyxl.load_workbook(io.BytesIO(x.content))
+    ws = wb["Company 90A"]
+    check(x.status_code == 200 and 'Direct Investment Financials Q1 2026.xlsx'
+          in x.headers["content-disposition"]
+          and ws["A1"].value == "Company 90A(in $000)" and ws["B1"].value == "Q1'26"
+          and ws["J1"].value == "2026" and ws["B2"].value == "Budget" and ws["C2"].value == "Actual"
+          and [ws.cell(r, 1).value for r in range(3, 12)] == [
+              "Revenue", "Operating Cash Flow", "CapEx", "Ending Cash", "Operating Expense",
+              "Gross Monthly Burn", "Gross Runway", "Net Monthly Burn", "Net Runway"],
+          "the workbook is Lam's layout: Company(in $000), Q1'26…2026 × Budget | Actual")
+    check(ws["C3"].value == 75 and ws["C4"].value == -960 and ws["C9"].value == 7
+          and ws["C9"].number_format == '0" Months"' and ws["B7"].value == 900
+          and "$" in ws["C3"].number_format,
+          "figures in $000 with Lam's formats; runway in months; the budget beside the actual")
+    src = [r for r in wb["Sources"].iter_rows(values_only=True) if r and r[0] == "Company 90A"]
+    check(any(r[5] == files["qb"].name and r[6] == "Total for Income" for r in src),
+          "a Sources sheet names the file and line behind every actual")
+
+
+def investment_portfolio(samples: Path) -> None:
+    """Lam's "Investment Portfolio": approved figures + entered master data ->
+    per-fund sheets in Lam's layout and the linked Summary-Cash Flows sheet."""
+    import io
+
+    import openpyxl
+    from fastapi.testclient import TestClient
+
+    from app.main import app
+
+    client = TestClient(app)
+    for name in ("Fund 82_Q1 2026 PCAP_Sample Holdings LP.pdf",
+                 "Fund 82_Q1 2026 Financial Statements.pdf"):
+        r = process_path(samples / name, allow_duplicate=True)
+        _approve(client, r["submission_id"])
+    det = client.post("/api/portfolio/Fund 82/details", json={
+        "display_name": "Example Growth Fund I", "region_sector": "US/Software",
+        "fund_size": "150m", "vintage": "2019", "stats_count": "14", "gl_account": "<gl>",
+        "initial_investment_date": "4/14/2019"})
+    calls = client.post("/api/portfolio/Fund 82/calls", json={
+        "lines": "4/14/2019\tDrawdown Notice #1\t0.500\n2/10/2026; Drawdown Notice #9; 0.500",
+        "scale": 1000000})
+    bad = client.post("/api/portfolio/Fund 82/details", json={"vintage": "soon"})
+    client.post("/api/portfolio/Company 90A/details", json={
+        "theme": "Robotics", "current_round": "Series A", "total_invested": "3m",
+        "projected_investment": "1m", "operating_status": "Active"})
+    client.post("/api/portfolio/Company 90B/details", json={
+        "current_round": "M&A", "security": "Series B", "total_invested": "2.4m",
+        "operating_status": "Inactive", "exit_date": "6/15/2026", "exit_value": "7.5m",
+        "exit_proceeds": "6.9m", "exit_escrow": "0.6m"})
+    check(det.status_code == 200 and calls.json().get("added") == 2 and bad.status_code == 400,
+          "fund details and pasted dated calls are saved, bad input refused")
+
+    rep = client.get("/api/portfolio?as_of=2026-Q1").json()
+    f = {x["entity"]: x for x in rep["funds"]}["Fund 82"]
+    D = lambda x: Decimal(str(x)) if x is not None else None
+    check(f["investment_name"] == "Example Growth Fund I" and f["investment_type"] == "LP"
+          and f["vintage"] == 2019 and D(f["fund_size"]) == 150_000_000
+          and f["region_sector"] == "US/Software",
+          "master data: name, type, vintage, fund size, region / sector")
+    check(D(f["commitment"]) == 5_000_000 and D(f["drawn_to_date"]) == 4_000_000
+          and D(f["distribution_to_date"]) == 1_000_000 and D(f["future_draw"]) == 1_000_000
+          and D(f["investment_balance"]) == 4_200_000 and not f["estimated"],
+          "from the statement: commitment, drawn and distributed since inception, remaining "
+          "commitment; balance from the roll-forward")
+    st = f["stats"]
+    check(st["count"] is not None and int(D(st["count"])) == 14 and D(st["cost"]) == 40_000_000
+          and D(st["value"]) == 55_000_000 and abs(st["gain_pct"] - 37.5) < 1e-9,
+          "Latest Stats: the schedule's grand total (cost, value, gain %) + the entered count")
+    inv = f["invested"]
+    check(len(inv) == 2 and inv[0]["date"] == "2019-04-14" and D(inv[0]["amount"]) == 500_000
+          and all(r["source"] == "entered" for r in inv),
+          "Invested: dated calls; a quarter with an entered call isn't repeated from the "
+          "roll-forward")
+    t = rep["totals"]
+    check(D(t["net_cash_flow"]) == D(t["cash_inflow"]) + D(t["cash_outflow"]) + D(t["committed"])
+          and D(t["cash_inflow"]) == D(t["fund_distributions"]) + D(t["exit_proceeds"])
+          and D(t["exit_proceeds"]) == 6_900_000,
+          "cash flows: inflow = distributions + exit proceeds; net = inflow + outflow + committed")
+
+    x = client.get("/api/exports/investment-portfolio.xlsx?as_of=2026-Q1")
+    wb = openpyxl.load_workbook(io.BytesIO(x.content))
+    ws = wb["Fund 82"]
+    check(x.status_code == 200 and "Investment Portfolio Mar'26.xlsx" in x.headers["content-disposition"]
+          and ws["B2"].value == "Example Growth Fund I" and ws["B3"].value == "LP"
+          and ws["B5"].value == 2019 and ws["B6"].value == 150 and ws["B7"].value == 5
+          and ws["B9"].value == 1 and ws["B10"].value == "US/Software"
+          and ws["B11"].value == 4.2 and ws["B13"].value == 4 and ws["F13"].value == -1,
+          "fund sheet: Lam's cells (B2 name … B13 drawn, F13 distribution) in $M")
+    check(ws["A15"].value == "Latest Stats" and ws["C15"].value == 14 and ws["D15"].value == 40
+          and ws["E15"].value == 55 and abs(ws["F15"].value - 0.375) < 1e-9
+          and ws["A17"].value == "Invested" and ws["C17"].value == "Drawdown Notice #1",
+          "fund sheet: Latest Stats row and the Invested history")
+    s = wb["Summary-Cash Flows"]
+    row = next(r for r in range(1, s.max_row + 1) if s.cell(r, 1).value == "Fund 82")
+    check(s["C3"].value == "$B$2" and s["F3"].value == "$B$13"
+          and s.cell(row, 3).value == "='Fund 82'!$B$2" and s.cell(row, 6).value == "='Fund 82'!$B$13"
+          and s.cell(row, 7).value == "='Fund 82'!$B$9" and s.cell(row, 9).value == "=-'Fund 82'!$F$13",
+          "summary: every fund figure is a reference into its sheet, as in Lam's workbook")
+    labels = {s.cell(r, 3).value: r for r in range(1, s.max_row + 1) if s.cell(r, 3).value}
+    check(all(k in labels for k in ("Total Fund Investments", "Total Exited Investments",
+                                    "Total Direct Investments", "Cash inflow",
+                                    "Actual cash outflow", "Committed investments",
+                                    "Total net cash flow"))
+          and str(s.cell(labels["Total net cash flow"], 6).value).startswith("=SUM("),
+          "summary: fund, exited and direct sections with Lam's cash-flow totals")
+    ex = next(r for r in range(1, s.max_row + 1) if s.cell(r, 1).value == "Company 90B"
+              and s.cell(r, 4).value == "='Company 90B'!$B$9")
+    check(s.cell(ex, 9).value == 6.9, "exited investments carry their proceeds")
+
+
+def manual_entry(samples: Path) -> None:
+    """A statement that's empty, unreadable or missing a figure: the gap is
+    flagged, and a person types the figure in from the dashboard (or settles a
+    mismatch). Typed figures are confirmed, marked as entered, and audited."""
+    from fastapi.testclient import TestClient
+
+    from app.main import app
+
+    client = TestClient(app)
+
+    def col(company):
+        rep = client.get("/api/direct-investments?year=2026").json()["companies"]
+        return {c["company"]: c for c in rep}[company]["columns"]["2026-Q1"]
+
+    def manual(**kw):
+        return client.post("/api/manual-values", json={
+            "report_type": "company_financials", "period": "2026-Q1", "scale": 1000, **kw})
+
+    miss = [i for i in col("Company 90C")["issues"] if i["kind"] == "missing"]
+    check(miss and set(miss[0]["metrics"]) == {"revenue", "operating_expense"},
+          "figures that no approved file shows are flagged as missing")
+    r = manual(entity="Company 90C", metric="revenue", value="45", note="per the company's CFO")
+    k = col("Company 90C")
+    typed = [f for f in db.get_facts(r.json().get("submission_id")) if f["metric_key"] == "revenue"]
+    check(r.status_code == 200 and Decimal(str(k["actual"]["revenue"])) == 45000
+          and k["sources"]["revenue"]["manual"]
+          and not any("revenue" in (i.get("metrics") or []) for i in k["issues"])
+          and typed and typed[0]["status"] == "confirmed" and "manual_entry" in typed[0]["flags"]
+          and any(a["action"] == "manual_entry" for a in db.get_audit(limit=20)),
+          "a figure typed in by hand fills the gap — confirmed, marked as entered, audited")
+    manual(entity="Company 90C", metric="revenue", value="")
+    check(col("Company 90C")["actual"].get("revenue") is None,
+          "an entered figure can be withdrawn (and the gap is flagged again)")
+    manual(entity="Company 90A", metric="revenue", value="80")
+    clash = [i for i in col("Company 90A")["issues"] if i["kind"] == "mismatch"]
+    check(clash and "75,000.00" in clash[0]["message"] and "80,000.00" in clash[0]["message"],
+          "a typed figure that disagrees with an approved file is flagged as a mismatch")
+    manual(entity="Company 90A", metric="revenue", value="")
+    sub = next(s for s in db.list_submissions() if s["filename"].startswith("Company 90C_"))
+    added = client.post(f"/api/submissions/{sub['id']}/facts",
+                        json={"metric": "operating_expense", "value": "1,100,000"})
+    check(added.status_code == 200
+          and Decimal(str(col("Company 90C")["actual"]["operating_expense"])) == 1100000,
+          "while reviewing a file, a value it doesn't show can be added")
+    bad = [manual(entity="Company 90C", metric="nope", value="1").status_code,
+           manual(entity="Company 90C", metric="revenue", value="1", period="Q1").status_code,
+           manual(entity="Company 90C", metric="revenue", value="lots").status_code]
+    check(bad == [400, 400, 400], "typed input is validated (figure, period, number)")
+    manual(entity="Company 90E", metric="ending_cash", value="2,000", note="scan unreadable")
+    e = col("Company 90E")
+    check(Decimal(str(e["actual"]["ending_cash"])) == 2000000
+          and any(i["kind"] == "missing" for i in e["issues"]),
+          "a company whose files couldn't be read can be entered by hand, gaps flagged")
+    scan = samples / "Company 90G_Q1_2026_Financial_Statements.pdf"
+    if not scan.exists():
+        import subprocess
+        subprocess.run([sys.executable, str(samples / "make_samples.py")], check=True)
+    r = process_path(scan, allow_duplicate=True)
+    g = col("Company 90G")
+    check(any("scanned" in w for w in r["warnings"])
+          and any(i["kind"] == "unread" and i["submission_id"] == r["submission_id"]
+                  for i in g["issues"])
+          and any(i["kind"] == "missing" and len(i["metrics"]) == 5 for i in g["issues"]),
+          "a file nothing could be read from is flagged — its company appears, every figure open "
+          "to be typed in")
+    client.post("/api/portfolio/Fund 84/details", json={"kind": "fund"})
+    funds = {f["entity"]: f for f in client.get("/api/portfolio?as_of=2026-Q1").json()["funds"]}
+    check(any(i["kind"] == "missing" and "investment_balance" in i["fields"]
+              for i in funds["Fund 84"]["issues"]),
+          "a fund with no statements on file is flagged as missing its figures")
+    client.post("/api/portfolio/Fund 84/details", json={"investment_balance": "2.5m"})
+    client.post("/api/portfolio/Fund 82/details", json={"drawn_to_date": "4.5m"})
+    funds = {f["entity"]: f for f in client.get("/api/portfolio?as_of=2026-Q1").json()["funds"]}
+    check(Decimal(str(funds["Fund 84"]["investment_balance"])) == 2500000
+          and funds["Fund 84"]["sources"]["investment_balance"] == "entered"
+          and any(i["kind"] == "mismatch" and "4,000,000.00" in i["message"]
+                  for i in funds["Fund 82"]["issues"]),
+          "fund figures can be entered by hand; one that disagrees with a statement is flagged")
+    client.post("/api/portfolio/Fund 82/details", json={"drawn_to_date": ""})
 
 
 def clear_data(samples: Path) -> None:

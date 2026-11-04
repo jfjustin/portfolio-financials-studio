@@ -12,6 +12,7 @@ import hashlib
 import re
 import io
 import secrets
+from decimal import Decimal
 from pathlib import Path
 from typing import Optional
 
@@ -22,7 +23,8 @@ from fastapi.staticfiles import StaticFiles
 from starlette.concurrency import run_in_threadpool
 from fastapi.templating import Jinja2Templates
 
-from . import auth, carry_forward, db, fabric_export, lake, performance, terms
+from . import (auth, carry_forward, db, direct_investments, fabric_export, lake, performance,
+               portfolio, terms)
 from .config import settings
 from .llm import get_provider
 from .pipeline import process_upload
@@ -235,6 +237,247 @@ def performance_summary():
         "funds": performance.fund_summary(),
         "portfolio": performance.portfolio_performance(),
     }
+
+
+@app.get("/api/direct-investments")
+def direct_investment_report(year: Optional[int] = None):
+    """Lam's "Direct Investment Financials": Budget | Actual per company and quarter."""
+    return direct_investments.report(year)
+
+
+@app.post("/api/budgets")
+async def set_budget(request: Request):
+    """Enter (or clear, with an empty value) one budget figure for a company."""
+    body = await request.json()
+    entity = str(body.get("entity") or "").strip()
+    period = str(body.get("period") or "").strip()
+    metric = str(body.get("metric") or "").strip()
+    if not entity:
+        raise HTTPException(400, "entity is required")
+    if not re.fullmatch(r"20\d{2}(?:-Q[1-4])?", period):
+        raise HTTPException(400, "period must be a quarter (2026-Q1) or a year (2026)")
+    if metric not in direct_investments.BASE:
+        raise HTTPException(400, f"metric must be one of {', '.join(direct_investments.BASE)}")
+    raw = str(body.get("value") if body.get("value") is not None else "").strip()
+    value = None
+    if raw:
+        from .models import parse_number
+        value = parse_number(raw)[0]
+        if value is None:
+            raise HTTPException(400, f"can't read a number from '{raw}'")
+        value *= Decimal(str(body.get("scale") or 1))
+    db.set_budget(entity, period, metric, value, user=auth.current_user(request) or "local")
+    return {"ok": True, "entity": entity, "period": period, "metric": metric,
+            "value": None if value is None else str(value)}
+
+
+def _typed_value(raw, scale, spec) -> Optional[Decimal]:
+    """A number a person typed ("1,250", "(45)", "2.4m"); money may be typed in
+    $000 / $M (scale). Empty means "no value"."""
+    from .models import parse_number
+    text = str(raw if raw is not None else "").strip()
+    if not text:
+        return None
+    value = parse_number(text)[0]
+    if value is None:
+        raise HTTPException(400, f"can't read a number from '{text}'")
+    if spec.unit.value == "currency":
+        value *= Decimal(str(scale or 1))
+    return value
+
+
+@app.post("/api/manual-values")
+async def enter_manual_value(request: Request):
+    """Type in a figure that no statement on file shows — the file was empty,
+    unreadable, or simply doesn't carry it. Kept as its own "Entered manually"
+    submission for the entity and period, confirmed by the person who typed it,
+    flagged manual_entry and audited. An empty value withdraws it."""
+    body = await request.json()
+    entity = str(body.get("entity") or "").strip()
+    rt = REPORT_TYPES.get(str(body.get("report_type") or ""))
+    period = str(body.get("period") or "").strip()
+    if not entity or rt is None:
+        raise HTTPException(400, "entity and a known report_type are required")
+    spec = rt.metric_by_key(str(body.get("metric") or ""))
+    if spec is None:
+        raise HTTPException(400, f"metric must be one of {', '.join(m.key for m in rt.metrics)}")
+    if not re.fullmatch(r"20\d{2}-Q[1-4]|20\d{2}-\d{2}-\d{2}", period):
+        raise HTTPException(400, "period must be a quarter (2026-Q1) or a date (2026-03-31)")
+    value = _typed_value(body.get("value"), body.get("scale"), spec)
+    currency = str(body.get("currency") or "USD").upper()[:3]
+    user = auth.current_user(request) or "local"
+    sid = db.manual_submission(entity, rt.key, period, currency)
+    fid = db.set_manual_value(sid, metric_key=spec.key, metric_label=spec.label,
+                              unit=spec.unit.value, value=value, currency=currency,
+                              entity_kind=rt.entity_kind, user=user,
+                              note=str(body.get("note") or "").strip()[:500])
+    if rt.key == carry_forward.RF:
+        carry_forward.rederive_following(entity, period)
+    return {"submission_id": sid, "fact_id": fid,
+            "value": None if value is None else str(value)}
+
+
+@app.post("/api/submissions/{sub_id}/facts")
+async def add_value_to_submission(sub_id: int, request: Request):
+    """While reviewing a file: add a value it doesn't show (or shows unreadably),
+    for the file's entity and period. Confirmed, flagged manual_entry, audited."""
+    sub = db.get_submission(sub_id)
+    if sub is None:
+        raise HTTPException(404, "submission not found")
+    body = await request.json()
+    rt = REPORT_TYPES.get(sub["report_type"])
+    spec = rt.metric_by_key(str(body.get("metric") or "")) if rt else None
+    if spec is None:
+        raise HTTPException(400, "metric must be one of this report type's metrics")
+    value = _typed_value(body.get("value"), body.get("scale"), spec)
+    if value is None:
+        raise HTTPException(400, "a value is required")
+    fid = db.set_manual_value(
+        sub_id, metric_key=spec.key, metric_label=spec.label, unit=spec.unit.value, value=value,
+        currency=str(body.get("currency") or sub.get("currency") or "USD").upper()[:3],
+        entity_kind=rt.entity_kind, user=auth.current_user(request) or "local",
+        note=f"added while reviewing {sub['filename']}")
+    if rt.key == carry_forward.RF:
+        carry_forward.rederive_following(sub["entity_name"], sub["period"])
+    return {"fact_id": fid, "value": str(value)}
+
+
+@app.get("/api/exports/direct-investment-financials.xlsx")
+def export_direct_investments(year: Optional[int] = None, quarter: Optional[int] = None):
+    """The "Direct Investment Financials Qn YYYY" workbook in Lam's layout."""
+    if quarter is not None and quarter not in (1, 2, 3, 4):
+        raise HTTPException(400, "quarter must be 1-4")
+    data, name = direct_investments.workbook(year, quarter)
+    return StreamingResponse(
+        io.BytesIO(data),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="{name}"'})
+
+
+@app.get("/api/portfolio")
+def portfolio_report(as_of: Optional[str] = None):
+    """Lam's "Investment Portfolio": funds and direct investments as of a quarter."""
+    if as_of and not re.fullmatch(r"20\d{2}-Q[1-4]", as_of):
+        raise HTTPException(400, "as_of must be a quarter, e.g. 2026-Q2")
+    return portfolio.report(as_of)
+
+
+def _parse_date(raw: str) -> Optional[str]:
+    """"3/15/2019", "2019-03-15", "15 Mar 2019" -> "2019-03-15"."""
+    from .extractors.base import normalize_period
+    raw = (raw or "").strip()
+    m = re.fullmatch(r"(\d{1,2})/(\d{1,2})/(\d{2}|\d{4})", raw)
+    if m:
+        y = int(m.group(3)) + (2000 if len(m.group(3)) == 2 else 0)
+        try:
+            from datetime import date
+            return date(y, int(m.group(1)), int(m.group(2))).isoformat()
+        except ValueError:
+            return None
+    p = normalize_period(raw)
+    return p if p and re.fullmatch(r"\d{4}-\d{2}-\d{2}", p) else None
+
+
+@app.post("/api/portfolio/{entity}/details")
+async def set_portfolio_details(entity: str, request: Request):
+    """Master data for a fund or direct investment (type, vintage, fund size,
+    region / sector, accounting details, theme, round, status, exit...)."""
+    body = await request.json()
+    user = auth.current_user(request) or "local"
+    fields = {k: t for k, _l, t in portfolio.FUND_FIELDS + portfolio.COMPANY_FIELDS}
+    values: dict = {}
+    for key, raw in body.items():
+        if key == "kind":
+            if raw not in ("fund", "direct_investment"):
+                raise HTTPException(400, "kind must be fund or direct_investment")
+            values["kind"] = raw
+            continue
+        if key == "commitment":
+            continue
+        if key not in fields:
+            raise HTTPException(400, f"unknown field '{key}'")
+        text = str(raw if raw is not None else "").strip()
+        kind = fields[key]
+        if not text:
+            values[key] = None
+        elif kind in ("money", "int", "percent", "year"):
+            from .models import parse_number
+            v = parse_number(text)[0]
+            if v is None:
+                raise HTTPException(400, f"{key}: can't read a number from '{text}'")
+            values[key] = str(int(v)) if kind in ("int", "year") else str(v)
+        elif kind == "date":
+            iso = _parse_date(text)
+            if iso is None:
+                raise HTTPException(400, f"{key}: can't read a date from '{text}'")
+            values[key] = iso
+        elif kind.startswith("choice:"):
+            if text not in kind[7:].split(","):
+                raise HTTPException(400, f"{key} must be one of {kind[7:]}")
+            values[key] = text
+        else:
+            values[key] = text[:2000]
+    details = db.set_details(entity, values, user=user)
+    if "commitment" in body:
+        commitment = str(body.get("commitment") or "").strip()
+        from .models import parse_number
+        if commitment and parse_number(commitment)[0] is None:
+            raise HTTPException(400, f"can't read a number from '{commitment}'")
+        prof = terms.fund_profile(entity)
+        terms.set_fund_profile(entity, investor_aliases=prof.get("investor_aliases") or "",
+                               notes=prof.get("notes") or "", commitment=commitment, user=user)
+    return {"entity": entity, "details": details}
+
+
+@app.post("/api/portfolio/{entity}/calls")
+async def add_portfolio_calls(entity: str, request: Request):
+    """Add dated capital calls / investments: one {date, description, amount}, or
+    pasted lines "date <tab> description <tab> amount" (scale 1000000 for $M)."""
+    from .models import parse_number
+    body = await request.json()
+    user = auth.current_user(request) or "local"
+    scale = Decimal(str(body.get("scale") or 1))
+    lines = ([str(body["lines"])] if body.get("lines") else [])
+    rows = []
+    if lines:
+        for ln in lines[0].splitlines():
+            if not ln.strip():
+                continue
+            cells = [c.strip() for c in re.split(r"\t|\s*;\s*|\s{2,}", ln.strip()) if c.strip()]
+            date_iso = _parse_date(cells[0]) if cells else None
+            amount = parse_number(cells[-1])[0] if len(cells) >= 2 else None
+            if date_iso is None or amount is None:
+                raise HTTPException(400, f"can't read 'date, description, amount' from: {ln!r}")
+            rows.append((date_iso, " ".join(cells[1:-1]).strip(" -") , amount))
+    else:
+        date_iso = _parse_date(str(body.get("date") or ""))
+        amount = parse_number(str(body.get("amount") or ""))[0]
+        if date_iso is None or amount is None:
+            raise HTTPException(400, "date and amount are required")
+        rows.append((date_iso, str(body.get("description") or ""), amount))
+    ids = [db.add_capital_call(entity, d, abs(a) * scale, desc, user=user) for d, desc, a in rows]
+    return {"added": len(ids), "ids": ids}
+
+
+@app.delete("/api/portfolio/calls/{call_id}")
+def delete_portfolio_call(call_id: int, request: Request):
+    if not db.delete_capital_call(call_id, user=auth.current_user(request) or "local"):
+        raise HTTPException(404, "call not found")
+    return {"ok": True}
+
+
+@app.get("/api/exports/investment-portfolio.xlsx")
+def export_portfolio(as_of: Optional[str] = None):
+    """The "Investment Portfolio <Mon'YY>" workbook in Lam's layout."""
+    if as_of and not re.fullmatch(r"20\d{2}-Q[1-4]", as_of):
+        raise HTTPException(400, "as_of must be a quarter, e.g. 2026-Q2")
+    data, name = portfolio.workbook(as_of)
+    from urllib.parse import quote
+    return StreamingResponse(
+        io.BytesIO(data),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition":
+                 f"attachment; filename=\"{name}\"; filename*=UTF-8''{quote(name)}"})
 
 
 @app.get("/api/ledger")

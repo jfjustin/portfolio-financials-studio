@@ -165,11 +165,20 @@ Return ONE quarter of OUR investor's capital-account roll-forward as a JSON obje
      end). If several rows match our commitment and show identical figures, use any of
      them and say so in notes. If ours can't be identified, return null.
 
+6. For the fund as a whole (any document kind), also return when the document shows it:
+   "fund_size": the fund's total commitments of all partners, as printed, or null;
+   "portfolio": from the fund's schedule of investments / portfolio summary,
+     {{"as_of": "YYYY-MM-DD", "n_investments": <number of portfolio companies held, each
+     company counted once>, "total_cost": "<grand-total cost as printed>",
+     "total_fair_value": "<grand-total fair value as printed>"}} — use the grand total
+     ("Total Portfolio Investments", "Total investments"), never a sector or country
+     subtotal; null when there is no schedule.
+
 JSON shape:
 {{"document_kind": "...", "investor_column": "...", "period_column": "...",
   "period_end": "...", "period_start": null, "currency": "...", "number_format": "...",
   "fields": {{"funding": {{"components": [{{"section": "...", "label": "...", "value": "..."}}]}}}},
-  "fund_fields": {{}}, "investor_row": null,
+  "fund_fields": {{}}, "investor_row": null, "fund_size": null, "portfolio": null,
   "notes": "..."}}"""
     known = context_text(context)
     if known:
@@ -246,7 +255,13 @@ def read_capital_account(page_texts: list[tuple[int, str]],
     investor_row = ({k: _s(row.get(k)) for k in
                      ("row_label", "commitment", "paid_in", "distributions", "capital_account")}
                     if isinstance(row, dict) else None)
+    pf = data.get("portfolio")
+    portfolio = ({k: _s(pf.get(k)) for k in
+                  ("as_of", "n_investments", "total_cost", "total_fair_value")}
+                 if isinstance(pf, dict) else None)
     return {
+        "fund_size": _s(data.get("fund_size")),
+        "portfolio": portfolio,
         "fund_fields": fund_fields,
         "investor_row": investor_row,
         "document_kind": str(data.get("document_kind") or "other"),
