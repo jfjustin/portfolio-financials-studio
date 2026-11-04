@@ -94,6 +94,23 @@ class ReportType:
         return [(c, by_cat[c]) for c in CATEGORY_ORDER if c in by_cat]
 
 
+# The fund's schedule of investments, summarised ("Latest Stats" in the
+# Investment Portfolio report): read from fund reports by the model step, or
+# from a "Total investments" line with cost and fair value.
+_PORTFOLIO_STATS = (
+    MetricSpec("portfolio_investments", "Portfolio Investments (count)", Unit.COUNT,
+               ("number of portfolio companies", "number of investments"),
+               category=MetricCategory.OTHER),
+    MetricSpec("portfolio_cost", "Portfolio Investments at Cost", Unit.CURRENCY,
+               ("total investments, at cost", "investments, at cost", "investments at cost",
+                "total cost of investments"), category=MetricCategory.OTHER),
+    MetricSpec("portfolio_fair_value", "Portfolio Investments at Fair Value", Unit.CURRENCY,
+               ("total investments, at fair value", "investments, at fair value",
+                "investments at fair value", "total fair value of investments"),
+               category=MetricCategory.OTHER),
+)
+
+
 # --------------------------------------------------------------------------
 # 1) FUND FINANCIALS
 # --------------------------------------------------------------------------
@@ -144,6 +161,12 @@ FUND_FINANCIALS = ReportType(
         MetricSpec("total_expenses", "Total Expenses", Unit.CURRENCY,
                    ("total expenses", "total operating expenses"),
                    category=MetricCategory.INCOME),
+        # the fund as a whole, for the "Investment Portfolio" report: its size and
+        # its schedule of investments ("Latest Stats")
+        MetricSpec("fund_size", "Fund Size (total commitments)", Unit.CURRENCY,
+                   ("total commitments", "aggregate commitments", "fund size",
+                    "total capital commitments of all partners"), category=MetricCategory.OTHER),
+        *_PORTFOLIO_STATS,
     ),
 )
 
@@ -267,6 +290,57 @@ DIRECT_INVESTMENT = ReportType(
 
 
 # --------------------------------------------------------------------------
+# 4b) DIRECT INVESTMENT FINANCIALS — a portfolio company's OWN statements
+#     (profit and loss, balance sheet, statement of cash flows), read into the
+#     five figures of Lam Capital's quarterly "Direct Investment Financials"
+#     report. Burn and runway are computed from them (performance.py), never
+#     read. Lines are matched by app/extractors/company.py on whole-line wording
+#     within the right statement; the synonyms below document that wording.
+# --------------------------------------------------------------------------
+COMPANY_FINANCIALS = ReportType(
+    key="company_financials",
+    label="Direct Investment Financials",
+    entity_kind="direct_investment",
+    hints=("direct investment financials", "profit and loss", "statement of cash flows",
+           "statements of cash flows", "total for income", "total for expenses",
+           "total for bank accounts", "net operating income", "gross profit", "gross margin",
+           "cost of revenue", "cost of goods sold", "accumulated deficit",
+           "stockholders' deficit", "stockholders' equity", "monthly burn", "runway"),
+    metrics=(
+        MetricSpec("revenue", "Revenue", Unit.CURRENCY,
+                   ("total for income", "total income", "total revenue", "revenue",
+                    "revenues", "net revenue", "net sales"), category=MetricCategory.INCOME),
+        MetricSpec("operating_expense", "Operating Expense", Unit.CURRENCY,
+                   ("total for expenses", "total expenses", "total operating expenses",
+                    "operating expenses"), category=MetricCategory.INCOME),
+        MetricSpec("operating_cash_flow", "Operating Cash Flow", Unit.CURRENCY,
+                   ("net cash provided by operating activities",
+                    "net cash used in operating activities", "operating cash flow"),
+                   category=MetricCategory.DISTRIBUTION),
+        MetricSpec("capex", "CapEx", Unit.CURRENCY,
+                   ("capital expenditures", "purchases of property and equipment",
+                    "fixed assets", "capex"), category=MetricCategory.DISTRIBUTION),
+        MetricSpec("ending_cash", "Ending Cash", Unit.CURRENCY,
+                   ("total for bank accounts", "cash and cash equivalents",
+                    "cash at end of period", "ending cash"), category=MetricCategory.ASSET),
+        MetricSpec("net_income", "Net Income / (Loss)", Unit.CURRENCY,
+                   ("net income", "net loss", "net income (loss)"),
+                   category=MetricCategory.INCOME),
+        # printed on a finished "Direct Investment Financials" sheet; checked
+        # against the computed values, never used instead of them
+        MetricSpec("gross_monthly_burn", "Gross Monthly Burn (as reported)", Unit.CURRENCY,
+                   ("gross monthly burn",), category=MetricCategory.RATIO),
+        MetricSpec("gross_runway_months", "Gross Runway, months (as reported)", Unit.COUNT,
+                   ("gross runway",), category=MetricCategory.RATIO),
+        MetricSpec("net_monthly_burn", "Net Monthly Burn (as reported)", Unit.CURRENCY,
+                   ("net monthly burn",), category=MetricCategory.RATIO),
+        MetricSpec("net_runway_months", "Net Runway, months (as reported)", Unit.COUNT,
+                   ("net runway",), category=MetricCategory.RATIO),
+    ),
+)
+
+
+# --------------------------------------------------------------------------
 # 5) INVESTMENT ROLL-FORWARD (capital-account / "Summary for BSR" quarterly roll)
 #    beginning balance -> activity lines -> ending balance. This is the shape of
 #    partner-capital-account statements and internal investment roll-forwards
@@ -377,6 +451,12 @@ INVESTMENT_ROLL_FORWARD = ReportType(
         MetricSpec("cumulative_contributions", "Contributions (since inception)",
                    Unit.CURRENCY, ("contribution", "paid-in capital", "capital called"),
                    category=MetricCategory.DISTRIBUTION, since_inception=True),
+        # the fund as a whole (from the same report), for the Investment Portfolio
+        # report; "total capital commitment" on our statement is OUR commitment,
+        # so fund size has no wording here — the model step reads it
+        MetricSpec("fund_size", "Fund Size (total commitments)", Unit.CURRENCY, (),
+                   category=MetricCategory.OTHER),
+        *_PORTFOLIO_STATS,
     ),
 )
 
@@ -384,12 +464,21 @@ INVESTMENT_ROLL_FORWARD = ReportType(
 REPORT_TYPES: dict[str, ReportType] = {
     rt.key: rt
     for rt in (FUND_FINANCIALS, JOINT_VENTURE, JV_EQUITY_INCOME, DIRECT_INVESTMENT,
-               INVESTMENT_ROLL_FORWARD)
+               COMPANY_FINANCIALS, INVESTMENT_ROLL_FORWARD)
 }
 
 
 def all_report_types() -> list[ReportType]:
     return list(REPORT_TYPES.values())
+
+
+def report_type_scores(text_blob: str, filename: str = "") -> dict[str, float]:
+    """Hint score per report type. Each hint is weighted by its specificity
+    (word count): distinctive multi-word phrases like "equity in earnings"
+    outweigh generic single words like "ownership"."""
+    hay = f"{filename}\n{text_blob}".lower()
+    return {rt.key: sum(len(h.split()) for h in rt.hints if h in hay)
+            for rt in REPORT_TYPES.values()}
 
 
 def guess_report_type(text_blob: str, filename: str = "") -> tuple[str, float]:
@@ -398,12 +487,7 @@ def guess_report_type(text_blob: str, filename: str = "") -> tuple[str, float]:
     Returns (report_type_key, confidence 0..1). Confidence is deliberately
     conservative; a low score routes the file to the human to confirm the type.
     """
-    hay = f"{filename}\n{text_blob}".lower()
-    # Weight each hint by specificity (word count): distinctive multi-word phrases
-    # like "equity in earnings" outweigh generic single words like "ownership".
-    scores: dict[str, float] = {}
-    for rt in REPORT_TYPES.values():
-        scores[rt.key] = sum(len(h.split()) for h in rt.hints if h in hay)
+    scores = report_type_scores(text_blob, filename)
     if not scores or max(scores.values()) == 0:
         return ("fund_financials", 0.0)  # default; 0.0 confidence -> human confirms
     best = max(scores, key=scores.get)

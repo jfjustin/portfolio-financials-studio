@@ -26,5 +26,10 @@ azure-identity>=1.17   # needed only for Azure keyless auth (Entra ID)
 # --- optional: Azure Blob storage for source documents ---
 # azure-storage-blob>=12.19      # needed only for STORAGE_BACKEND=azure
 
+# --- data lake: Delta tables on local disk, ADLS Gen2 or OneLake (LAKE_BACKEND) ---
+deltalake>=0.25
+pyarrow>=15
+azure-storage-file-datalake>=12.16   # files on ADLS Gen2 / OneLake
+
 # --- optional: sample data generation ---
 fpdf2>=2.7             # only used by samples/make_samples.py

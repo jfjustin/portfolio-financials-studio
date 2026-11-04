@@ -80,6 +80,25 @@ class Settings(BaseSettings):
     # --- Object storage for uploaded source documents -----------------------
     #   local  -> keep copies under data/uploads (default)
     #   azure  -> Azure Blob Storage container (confidential docs in the tenant)
+    # --- Data lake: the medallion flow Land -> Bronze -> Silver -> Gold ---------
+    # (docs/ARCHITECTURE.md). The lake is the system of record; the app's
+    # database is its working copy.
+    #   none    no lake (the app works as before)
+    #   local   Delta tables + files under DATA_DIR/lake (development, tests)
+    #   adls    Azure Data Lake Storage Gen2 (OneLake-compatible stand-in)
+    #   onelake Microsoft Fabric OneLake
+    lake_backend: str = "none"
+    lake_account_url: str = ""   # https://<acct>.dfs.core.windows.net | https://onelake.dfs.fabric.microsoft.com
+    lake_filesystem: str = ""    # ADLS filesystem (container) | Fabric workspace name or id
+    lake_root: str = ""          # path prefix inside it | OneLake: "<lakehouse>.Lakehouse"
+    # What reaches Gold (and the dashboards and exports built on it): values a
+    # reviewer approved plus values the app auto-accepted (high confidence,
+    # passed every check). False = reviewer-approved values only.
+    publish_auto_accepted: bool = True
+    # write Silver/Gold in the background a moment after each change (off in tests,
+    # which call lake.sync() directly)
+    lake_auto_sync: bool = True
+
     storage_backend: str = "local"               # local | azure
     azure_storage_account_url: str = ""          # https://<acct>.blob.core.windows.net
     azure_storage_container: str = "fund-documents"

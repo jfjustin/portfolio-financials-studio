@@ -101,11 +101,20 @@ Every change writes an **audit-trail** entry (old → new, when) shown at the bo
 The header also shows the submission's **period and fiscal-year badge** (e.g.
 `2026-Q1` and `FY2026 Q2`) — see §4b.
 
-### ③ Confirm
-- **Confirm all & lock in** promotes the submission's `auto` values to `confirmed`
-  and marks it reviewed.
-- For `needs_review` rows, accept them individually (confirm) or fix the value
-  first. **Only confirmed/auto rows enter the ledger and charts.**
+### ③ Approve (publish to Gold)
+- **Confirm all & lock in** approves the values the app accepted automatically
+  and marks the file reviewed.
+- Rows that need review are approved one by one (✓), after fixing the value if
+  needed.
+- **What's published:** the ledger, charts, exports and the lake's Gold layer
+  hold values you approved plus values the app **auto-accepted** (high
+  confidence, passed every check). Values waiting for review are never
+  published. For strict approval-only publishing, an administrator sets
+  `PUBLISH_AUTO_ACCEPTED=false`. Auto-accepted values then wait for *Confirm all
+  & lock in*.
+- With a lake configured, published values reach Gold a moment later, with a
+  new reporting version for that fund and quarter. The *Data lake* card shows
+  what each layer holds. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 ### ④ Read the results
 Scroll the dashboard top-to-bottom:
@@ -114,8 +123,11 @@ Scroll the dashboard top-to-bottom:
   all funds (see §4c).
 - **Direct Investments** — one row per company: cost, FMV, book value,
   unrealized gain/(loss), MOIC, ownership.
-- **Fund Investments** — one row per fund: cumulative funding/distributions,
-  current balance, quarter-over-quarter change, total % gain/(loss).
+- **Direct Investment Financials** — each portfolio company's quarter, Actual and
+  Budget, in $000, with burn and runway (see §4d).
+- **Investment Portfolio** — each fund's commitment, drawn, future draw,
+  distributions, balance and Latest Stats, the direct investments, and the
+  cash-flow totals, in $M (see §4d).
 - **Portfolio value over time** — the headline trend (see §4).
 - **Investment portfolio** — one row per entity (balance, equity income, ownership…).
 - **Quarterly roll-forward** — Beginning → … → Ending per entity/period; click an
@@ -128,6 +140,8 @@ Scroll the dashboard top-to-bottom:
   (period, entity, report, metric, value, currency, source).
 - **For BI tools (Fabric / Power BI)** — use the versioned export tables instead
   of the ad-hoc CSVs; see §5b below.
+- **Download xlsx** on the *Direct Investment Financials* and *Investment Portfolio*
+  cards — Lam's two quarterly workbooks, in Lam's layout (§4d).
 
 ### ⑤b Feeding a BI tool (Fabric, Power BI, Excel)
 
@@ -245,6 +259,65 @@ period-end dates as a proxy, not exact call/distribution dates).
 
 ---
 
+## 4d. The two quarterly deliverables
+
+**Direct Investment Financials** (e.g. "Direct Investment Financials Q1 2026")
+1. Upload each portfolio company's statements — P&L, balance sheet, cash flow; one
+   file or several, Excel, PDF, CSV or scans. Name them "Company X …" (or "Note X …").
+2. Review and approve the five figures. The review screen shows the line each came
+   from ("Total for Income", "Net cash provided by operating activities", the
+   fixed-asset lines summed for CapEx, "Total for Bank Accounts") and the column
+   ("Total", "Mar 2026", "Three Months Ended March 31, 2026").
+3. The card computes burn and runway (Gross Monthly Burn = Operating Expense ÷ 3;
+   Net Monthly Burn = −(Operating Cash Flow + CapEx) ÷ 3; Runway = Ending Cash ÷
+   burn). Type budgets (in $000) into the Budget rows.
+4. **Download xlsx** → one sheet per company, plus a Sources sheet. A figure still
+   waiting for review is left blank and highlighted.
+
+Example (made-up): revenue $90K, operating expense $1,200K, operating cash flow
+($1,050K), CapEx ($30K), ending cash $3,600K → gross burn $400K/month (9 months),
+net burn $360K/month (10 months).
+
+**Investment Portfolio** (e.g. "Investment Portfolio Jun'26")
+1. Keep uploading each fund's capital statements and reports as usual. The balance
+   comes from the roll-forward; drawn / distributed / remaining commitment from the
+   statements' since-inception lines; Latest Stats (# of investments, cost, value) from
+   the fund's schedule of investments — all reviewed like any other value.
+2. Click a fund's name on the card once to enter what documents don't carry: display
+   name, type, vintage, fund size, region / sector, GL account, company code, %
+   ownership, terms. Paste its dated capital calls straight from Excel (date, notice,
+   amount). A quarter with no entered call shows the roll-forward's funding.
+3. A figure marked **\*** is an estimate from only the quarters on file — it's
+   replaced once a statement with the since-inception figure is approved.
+4. For direct investments, enter theme, round, total invested, projected investment,
+   status and, once exited, the exit date, value and proceeds.
+5. Pick the quarter and **Download xlsx**: per-fund and per-company sheets plus the
+   Summary-Cash Flows sheet that references them, as in Lam's workbook.
+
+**When a statement is empty, unreadable or missing a figure**
+Nothing is guessed. Each card lists what needs a person under **Needs attention**:
+- **missing** — no approved file shows the figure. On *Direct Investment
+  Financials* the cell becomes a dashed box: check the source, type the figure
+  ($000), press Enter. For a company whose files couldn't be read at all, use
+  **Enter a figure by hand** below the table (and say where it came from). On
+  *Investment Portfolio*, **Enter** opens the fund's details, which have fields for
+  Investment Balance, Drawn, Distribution and Future Draw; **Add a fund or direct
+  investment** covers an entity no file names yet.
+- **to review** — a file was read but its figures aren't approved yet. **Open file**
+  goes straight to it: confirm, correct or reject each value. While reviewing, **Add a
+  value this file doesn't show** records a figure the file lacks or prints unreadably.
+- **mismatch** — two approved figures disagree (a typed figure and a statement, the
+  balance sheet's cash and the cash flow's), or a fund figure typed in differs from
+  the statement. Check which is right; reject or clear the other.
+- **estimate** — built from only the quarters on file; a statement with the
+  since-inception figure replaces it.
+
+A figure typed in is saved as entered by you — confirmed, marked ✎ (and "Entered
+manually" in the export's Sources sheet), with an audit-trail entry. Clear the box to
+withdraw it.
+
+---
+
 ## 5. The grand ledger
 
 This is the consolidation of **everything** — all companies, all formats, all
@@ -269,6 +342,7 @@ row traces back (via `source`) to the file and cell/line it came from.
 | **Joint Venture** | ownership %, JV assets/liabilities/equity, revenue, net income, carrying value |
 | **JV Equity Income / (Loss)** | ownership %, JV net income, our equity income (auto-recomputed) |
 | **Direct Investment** | cost, fair value, unrealized/realized, ownership, MOIC, IRR |
+| **Direct Investment Financials** | a company's own revenue, operating expense, operating cash flow, CapEx, ending cash |
 | **Investment Roll-Forward** | Beginning → Funding → Equity inc/(loss) → Return of capital → Dividends → MTM → Other → Change → Ending |
 
 Add metrics/synonyms in `app/report_types.py` — the whole pipeline adapts.

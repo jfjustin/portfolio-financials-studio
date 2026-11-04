@@ -23,6 +23,17 @@ audit-trailed extraction pipeline, and the domain model of an
 investment-intelligence app (entity classification, capital-account
 roll-forwards, workbook field mapping).
 
+## Architecture
+
+**The lake is the system of record. Fabric is the analytics backbone. Azure AI
+does the reading.** The app lands every original, keeps every extraction (Bronze)
+and every standardized value (Silver). It publishes **approved and
+auto-accepted values to Gold** (never values waiting for review), the
+dimensional tables Power BI and Fabric build on. See
+[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md). Settings: `LAKE_BACKEND`
+(`none` | `local` | `adls` | `onelake`), `LAKE_ACCOUNT_URL`, `LAKE_FILESYSTEM`,
+`LAKE_ROOT`, `PUBLISH_AUTO_ACCEPTED`.
+
 ## See it in action
 
 Two recordings of the complete workflow — upload → extraction → sectioned
@@ -72,8 +83,9 @@ curl    http://127.0.0.1:8713/api/fabric/schema                          # contr
 - **Direct Investments** — one row per company: investment cost, estimated FMV,
   book value, unrealized gain/(loss), MOIC, ownership — mirroring Lam Capital's
   own "Portfolio Value" report format.
-- **Fund Investments** — one row per fund: cumulative funding/distributions,
-  current balance, quarter-over-quarter change, and total % gain/(loss).
+- **Direct Investment Financials** and **Investment Portfolio** — Lam Capital's
+  two quarterly deliverables, each with a **Download xlsx** in Lam's own layout
+  (see [Lam's quarterly deliverables](#lams-quarterly-deliverables)).
 - **Portfolio value over time** — a line chart of total investment balance per
   period (plus a thin line per entity); each period shows both its calendar
   label and fiscal-year label (e.g. "2026-Q1" / "FY2026 Q2").
@@ -93,6 +105,63 @@ curl    http://127.0.0.1:8713/api/fabric/schema                          # contr
 
 Only `auto` + human-`confirmed` values appear in these views — unreviewed or
 unreconciled figures stay out until a person accepts them.
+
+## Lam's quarterly deliverables
+
+Both are built from **approved values only** and say where every figure came from.
+
+**Direct Investment Financials Qn YYYY** (`app/direct_investments.py`). Per portfolio
+company, Budget | Actual for Q1'26 … Q4'26 and the year, in $000:
+
+| Row | Actual comes from |
+|---|---|
+| Revenue | P&L "Total for Income" / "Total revenue" / "Revenue" |
+| Operating Cash Flow | CF "Net cash provided by (used in) operating activities" |
+| CapEx | CF fixed-asset purchases under investing activities (not deposits or securities) |
+| Ending Cash | BS "Total for Bank Accounts" / "Cash and cash equivalents" (checked against the CF's closing cash) |
+| Operating Expense | P&L "Total for Expenses" / "Total operating expenses" |
+| Gross Monthly Burn | Operating Expense ÷ months in the period |
+| Gross Runway | Ending Cash ÷ gross monthly burn, whole months |
+| Net Monthly Burn | −(Operating Cash Flow + CapEx) ÷ months in the period |
+| Net Runway | Ending Cash ÷ net monthly burn, whole months (n/a when cash-flow positive) |
+
+A file named "Company X" / "Note X" (or reading as a company's own P&L, balance sheet
+or cash flow) is filed as **Direct Investment Financials**. `app/extractors/company.py`
+matches each figure on its whole wording inside the right statement — "Deferred
+Revenue" is never revenue — and takes the column covering the quarter (the "Total"
+of Jan | Feb | Mar, the "Three Months Ended" 2026 column rather than a prior year to
+its right, never a budget column). Scanned statements are read by the vision model
+(or Tesseract), and figures stated "in $000" are recorded in whole dollars. Budgets
+are typed into the dashboard (`POST /api/budgets`).
+`GET /api/exports/direct-investment-financials.xlsx?year=2026&quarter=1` gives one
+sheet per company ("Company Y(in $000)", Lam's rows and formats) and a **Sources** sheet
+naming the file and line behind every actual.
+
+**Investment Portfolio Mon'YY** (`app/portfolio.py`). One sheet per fund in Lam's
+layout — Investment Name (B2), Type (B3), Round (B4), Vintage (B5), Fund Size (B6),
+Commitment (B7), Future Draw (B9), Region / Sector (B10), Investment Balance (B11),
+Drawn to Date (B13), Distribution to Date (F13), the **Latest Stats** row (date, #
+of investments, cost, value, gain %) and the dated **Invested** history — plus the
+accounting team's Equity Investments Summary beside it; one sheet per direct
+investment; and a **Summary-Cash Flows** sheet whose cells reference those sheets
+exactly as Lam's workbook does (`='Fund 1'!$B$13`, …) with the cash-flow totals
+(cash inflow = distributions + exit proceeds; actual outflow = drawn + invested;
+committed = future draw). Investment Balance is the roll-forward's ending balance;
+drawn, distributed and remaining commitment come from the statements' since-inception
+lines (else the quarters on file, marked as an estimate); Latest Stats from the fund's
+schedule of investments (model step, or its "Total Portfolio Investments" line);
+master data (type, vintage, fund size, region / sector, GL account, company code…)
+and dated calls are entered once per fund (`POST /api/portfolio/{entity}/details`,
+`…/calls`). `GET /api/exports/investment-portfolio.xlsx?as_of=2026-Q2` →
+"Investment Portfolio Jun'26.xlsx".
+
+**Gaps are flagged, never guessed.** Both reports list, per company / fund, what
+needs a person: figures in no approved file (*missing*), figures read but not yet
+approved (*to review*, with the file), approved figures that disagree (*mismatch*),
+and estimates. A person types a missing figure in from the dashboard
+(`POST /api/manual-values`, or `POST /api/submissions/{id}/facts` while reviewing a
+file); it's kept in its own "Entered manually" submission, confirmed, flagged
+`manual_entry` and audited, and an empty value withdraws it.
 
 ### Metric sections (asset / income / distribution / ratio)
 
@@ -295,6 +364,8 @@ See **[GUIDE.md](GUIDE.md)** for the full step-by-step with Azure OpenAI + auth.
 - **Joint Venture** — ownership %, JV assets/liabilities/equity, revenue, net income, carrying value
 - **JV Equity Income / (Loss)** — equity-method share of JV earnings (auto-recomputed & checked)
 - **Direct Investment** — cost, fair value, unrealized/realized, ownership, MOIC, IRR
+- **Direct Investment Financials** — a portfolio company's own P&L / balance sheet /
+  cash flow: revenue, operating expense, operating cash flow, CapEx, ending cash
 - **Investment Roll-Forward** — capital-account statements (Beginning → Funding →
   Equity Income/(Loss) → Return of Capital → … → Ending), reconciled end-to-end
 
@@ -353,22 +424,50 @@ samples/              demo report generator
 - In `azure`/`openai` modes, only the extracted text slice needed for a fallback
   is sent to the configured endpoint, and only for non-standard layouts.
 
+## Risks — data handling against Lam's Responsible AI protocol
+
+The project's protocol says Lam and portfolio-company financials stay in the designated
+shared project folder (never personal or public cloud accounts) and are used only with
+Lam-approved AI tools. Four points currently conflict with it:
+
+1. **A personal (student) Azure subscription.** The live app, its database, the data lake
+   and Azure OpenAI run in a personal subscription, so uploaded statements and extracted
+   figures are stored and processed outside Lam's tenant. *Mitigation:* deploy to a
+   Lam-owned subscription (the app deploys unchanged — see Deploy to Azure), or run
+   locally in deterministic mode until that's approved.
+2. **A public GitHub repository.** Code, tests and samples carry no Lam data (samples are
+   made-up companies), but the demo GIFs and one earlier commit show real figures.
+   *Mitigation:* make the repository private, remove the GIFs and rewrite that history.
+3. **Local copies on a personal machine.** Real statements, the app's `data/` folder and
+   exported workbooks sit outside the shared project folder. *Mitigation:* keep them only
+   in the designated folder; use **Clear data** and delete local copies at project end, as
+   the protocol's data-retention rule requires.
+4. **AI tools not yet approved by Lam.** The model step can send document pages to Azure
+   OpenAI (vision for scans), and development used an AI coding assistant on real files.
+   *Mitigation:* get Lam's written approval for the model deployment (Azure OpenAI doesn't
+   train on inputs), or keep `LLM_PROVIDER=none`. Every model reading is flagged and
+   reviewed by a person before it is published.
+
 ## Known limitations / roadmap
 
 - **One value per metric per statement.** When several source lines collapse into
   one canonical metric (e.g. multiple expense lines → "Other"), only one is kept
   and the roll-forward reconciliation surfaces the gap for review. Line-level
   aggregation is a planned enhancement.
-- **OCR for scanned PDFs** — currently detected and flagged, not processed. Add a
-  local OCR step (Tesseract/PaddleOCR) in `extractors/pdf_native.py`.
+- **Scanned PDFs need a vision model or Tesseract.** With neither configured,
+  scanned pages are listed for the reviewer instead of read.
 - **Per-metric time series** — the trend view currently charts total balance;
   charting an arbitrary metric (NAV, equity income) over time is a planned toggle.
-- **Fund "Since" is not a true vintage.** The Fund Investments table shows the
-  earliest *confirmed* period on file, not the fund's legal vintage year — that
-  field isn't currently extracted from any source document.
-- **"# Invested" / per-holding schedules are not computed.** The Fund
-  Investments table doesn't yet show the number of underlying portfolio
-  companies within a fund (would need a schedule-of-investments extractor).
+- **Vintage, fund size, region / sector and accounting details are entered,
+  not extracted.** They're master data on each fund's details (Investment
+  Portfolio card); fund size and the schedule of investments' totals and count
+  are read from fund reports by the model step and reviewed.
+- **Schedules of investments are read as totals.** Latest Stats takes the
+  grand total (cost, fair value) and the number of portfolio companies; the
+  individual holdings aren't stored line by line.
+- **Direct-investment holdings data is entered.** Theme, round, total invested,
+  projected investment, status and exit figures for the Investment Portfolio
+  come from each company's details — company statements don't carry them.
 - **IRR is a reasonable estimate, not GP-grade.** `app/performance.py:xirr()`
   computes a money-weighted return from each period's net cash flows using the
   period's calendar end-date as a proxy timestamp — it will differ from a GP's

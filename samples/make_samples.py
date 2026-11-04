@@ -5,6 +5,7 @@ Creates (in samples/):
   - jv_holdings.xlsx               (joint-venture financials)
   - direct_investment.xlsx         (cost / fair value / MOIC that reconcile)
   - jv_equity_income.pdf           (NATIVE pdf; equity income = ownership × JV NI)
+  - Company 90A–90D statements, Fund 82 reports (Lam's two deliverables; made-up)
 
 Run:  python samples/make_samples.py
 """
@@ -329,6 +330,215 @@ def fund_level_report_pdf():
     ])
 
 
+def lake_flow_pdf():
+    """Fund 80, Q1 2026 (made-up): a file no other check uploads, for the lake flow."""
+    _lp_statement_pdf("Fund 80_Q1 2026 Statement_Sample Holdings LP.pdf",
+                      "Limited Partner Fund Statement - Q1, 2026", [
+        ("Total committed", "40,000,000", "1,000,000"),
+        ("Called in Q1, 2026", "800,000", "20,000"),
+        ("Unrealised Capital Gains",),
+        ("Capital Loss Q1, 2026", "(400,000)", "(10,000)"),
+        ("Capital Accounts at Q1", "40,400,000", "1,010,000"),
+    ])
+
+
+# --------------------------------------------------------------------------
+# Lam's deliverables (made-up companies and figures)
+# --------------------------------------------------------------------------
+def company_quickbooks_xlsx():
+    """Company 90A, Q1 2026: a QuickBooks export — monthly columns plus Total on the
+    P&L and cash flow, month-end columns on the balance sheet, and liability lines
+    that merely contain the word "Revenue"."""
+    wb = openpyxl.Workbook()
+    months = ["Jan 2026", "Feb 2026", "Mar 2026"]
+    pl = wb.active
+    pl.title = "P&L"
+    for row in (["Profit and Loss"], ["Sample Robotics Inc."], ["January 1-March 31, 2026"], [],
+                [None, *months, "Total"], ["Income"], ["4000 Revenue"],
+                ["4010 Product Revenue", 20000, 25000, 30000, 75000],
+                ["Total for 4000 Revenue", 20000, 25000, 30000, 75000],
+                ["Total for Income", 20000, 25000, 30000, 75000], ["Expenses"],
+                ["6100 Payroll", 300000, 300000, 300000, 900000],
+                ["6500 Rent Expense", 50000, 50000, 50000, 150000],
+                ["Total for Expenses", 350000, 350000, 350000, 1050000],
+                ["Net Operating Income", -330000, -325000, -320000, -975000], ["Other Expenses"],
+                ["8300 Interest Expense", 1000, 1000, 1000, 3000],
+                ["Net Income", -331000, -326000, -321000, -978000]):
+        pl.append(row)
+    bs = wb.create_sheet("BS")
+    for row in (["Balance Sheet"], ["Sample Robotics Inc."], ["As of Mar 31, 2026"], [],
+                [None, *months], ["Assets"], ["Bank Accounts"],
+                ["1000 Operating Account", 3000000, 2700000, 2400000],
+                ["Total for Bank Accounts", 3000000, 2700000, 2400000],
+                ["Total for Current Assets", 3100000, 2800000, 2500000], ["Liabilities"],
+                ["2260 Deferred Revenue", 80000, 85000, 90000],
+                ["Sample State Department of Revenue Payable", 500, 600, 700],
+                ["Total for Liabilities", 400000, 410000, 420000]):
+        bs.append(row)
+    cf = wb.create_sheet("CF")
+    for row in (["Statement of Cash Flows"], ["Sample Robotics Inc."], ["January 1-March 31, 2026"],
+                [], ["Full name", *months, "Total"], ["OPERATING ACTIVITIES"],
+                ["Net Income", -331000, -326000, -321000, -978000],
+                ["Adjustments to reconcile Net Income to Net Cash provided by operations"],
+                ["2240 Accrued Expenses", 6000, 6000, 6000, 18000],
+                ["Net cash provided by operating activities", -325000, -320000, -315000, -960000],
+                ["INVESTING ACTIVITIES"],
+                ["16100 Fixed Assets:Computer Equipment", -5000, -10000, -15000, -30000],
+                ["1802 Other Assets:Security Deposit", 0, -20000, 0, -20000],
+                ["Net cash provided by investing activities", -5000, -30000, -15000, -50000],
+                ["FINANCING ACTIVITIES"],
+                ["Net cash provided by financing activities", 0, 0, 0, 0],
+                ["NET CASH INCREASE FOR PERIOD", -330000, -350000, -330000, -1010000],
+                ["Cash at the beginning of the period", 3410000, 3080000, 2730000, 3410000],
+                ["Cash at the end of the period", 3080000, 2730000, 2400000, 2400000]):
+        cf.append(row)
+    out = OUT / "Company 90A_Financials_Q1_2026.xlsx"
+    wb.save(out)
+    print("wrote", out.name)
+
+
+def company_audited_xlsx():
+    """Company 90B, Q1 2026: audited-style statements whose cash-flow sheet also
+    carries a prior year and the prior year's quarter — to its right."""
+    wb = openpyxl.Workbook()
+    bs = wb.active
+    bs.title = "1.1 Balance Sheet"
+    for row in (["Sample Devices, Inc."], ["Consolidated Balance Sheets"], [], [],
+                [None, None, None, "March,"], [None, None, None, 2026], ["Assets"],
+                ["Current assets"], ["Cash and cash equivalents", None, "$", 5000000],
+                ["Total current assets", None, None, 5300000],
+                ["Property and equipment, net", None, None, 250000],
+                ["Total assets", None, None, 5550000]):
+        bs.append(row)
+    so = wb.create_sheet("1.2 Statement of Operations")
+    for row in (["Sample Devices, Inc."], ["Consolidated Statements of Operations"],
+                ["Three Months ended March 31, 2026"], [],
+                [None, None, "Three Months ended March 31,"], [None, None, 2026],
+                [], ["Revenue", "$", 400000], ["Cost of revenue", None, 150000],
+                ["Gross margin", None, 250000], ["Operating expenses:"],
+                ["Research and development", None, 900000],
+                ["General and administrative", None, 300000],
+                ["Total operating expenses", None, 1200000], ["Net loss", "$", -950000]):
+        so.append(row)
+    cf = wb.create_sheet("1.3 Cash flow statement")
+    for row in (["Sample Devices, Inc."], ["Consolidated Statements of Cash Flows"],
+                ["Three Months ended March 31, 2026"], [],
+                [None, None, None, "Year Ended December 31,", None, "Three Months Ended March 31,",
+                 None, "Three Months Ended March 31,"],
+                [None, None, None, "2025", None, "2026", None, "2025"],
+                ["Operating Activities"],
+                ["Net loss", None, "$", -4000000, "$", -950000, "$", -800000],
+                ["Net cash used in operating activities", None, None, -3500000, None, -1000000,
+                 None, -700000],
+                ["Investing Activities"],
+                ["Purchases of property and equipment", None, None, -100000, None, -60000,
+                 None, -20000],
+                ["Net cash used in investing activities", None, None, -100000, None, -60000,
+                 None, -20000],
+                ["Cash, cash equivalents and restricted cash, end of period", None, None, 6000000,
+                 None, 5000000, None, 7000000]):
+        cf.append(row)
+    out = OUT / "Company 90B_Consolidated_Financial_Statements_Mar26.xlsx"
+    wb.save(out)
+    print("wrote", out.name)
+
+
+def company_cash_flow_pdf():
+    """Company 90C, Q1 2026: a cash-flow-only PDF printed QuickBooks-style — a
+    single space before each figure, numbers inside some labels."""
+    from fpdf import FPDF
+    pdf = FPDF()
+    pdf.add_page()
+    pdf.set_font("helvetica", "B", 13)
+    pdf.cell(0, 8, "Statement of Cash Flows", ln=True)
+    pdf.set_font("helvetica", "", 10)
+    for line in ("January-March, 2026", "Full name Total", "OPERATING ACTIVITIES",
+                 "Net Income -500,000.00",
+                 "Adjustments to reconcile Net Income to Net Cash provided by operations:",
+                 "Clearing Account (4410) -250.00",
+                 "Total for Adjustments to reconcile Net Income to Net Cash provided by operations: -$250.00",
+                 "Net cash provided by operating activities -$500,250.00", "INVESTING ACTIVITIES",
+                 "Computer Hardware -412.30",
+                 "Fixed Asset - Leasehold Improvements 12-20 -21,500.00",
+                 "Fixed Asset - Lab Equipment 2026 -10,000.00",
+                 "Net cash provided by investing activities -$31,912.30", "FINANCING ACTIVITIES",
+                 "Net cash provided by financing activities $0.00",
+                 "NET CASH INCREASE FOR PERIOD -$532,162.30",
+                 "Cash at beginning of period $3,000,000.00",
+                 "CASH AT END OF PERIOD $2,467,837.70"):
+        pdf.cell(0, 6, line, ln=True)
+    out = OUT / "Company 90C_Q1_2026_Quarterly_CF.pdf"
+    pdf.output(str(out))
+    print("wrote", out.name)
+
+
+def company_scanned_pdf():
+    """Company 90G, Q1 2026: a "scanned" statement — drawn shapes, no text layer —
+    that nothing can read without a vision model or OCR."""
+    from fpdf import FPDF
+    pdf = FPDF()
+    pdf.add_page()
+    for i in range(12):
+        pdf.rect(20, 30 + i * 12, 120 + (i % 3) * 20, 6, style="F")
+    out = OUT / "Company 90G_Q1_2026_Financial_Statements.pdf"
+    pdf.output(str(out))
+    print("wrote", out.name)
+
+
+def direct_investment_financials_csv():
+    """Company 90D: a finished "Direct Investment Financials" sheet, in $000, with
+    a budget in the Q1 Budget column."""
+    rows = ["Company 90D(in $000),Q1'26,,Q2'26,,Q3'26,,Q4'26,,2026,,",
+            ",Budget,Actual,Budget,Actual,Budget,Actual,Budget,Actual,Budget,Actual,",
+            "Revenue,$150 ,$120 ,,,,,,,,,",
+            'Operating Cash Flow,,"($900)",,,,,,,,,',
+            "CapEx,,($15),,,,,,,,,",
+            'Ending Cash,,"$4,200 ",,,,,,,,,',
+            'Operating Expense,,"$1,050 ",,,,,,,,,',
+            "Gross Monthly Burn,,$350 ,,,,,,,,,",
+            "Gross Runway,,12 Months,,,,,,,,,",
+            "Net Monthly Burn,,$305 ,,,,,,,,,",
+            "Net Runway,,14 Months,,,,,,,,,"]
+    out = OUT / "Direct Investment Financials Q1 2026 - Company 90D.csv"
+    out.write_text("\n".join(rows) + "\n", encoding="utf-8")
+    print("wrote", out.name)
+
+
+def portfolio_fund_pdfs():
+    """Fund 82, Q1 2026: our capital statement with since-inception lines, and the
+    fund's financial statements with its schedule of portfolio investments."""
+    _pcap_pdf("Fund 82_Q1 2026 PCAP_Sample Holdings LP.pdf", "March 31, 2026", [
+        ("Beginning capital account balance as of January 1, 2026", "$ 3,600,000"),
+        ("Capital contributions", "500,000"),
+        ("Capital distributions", "(200,000)"),
+        ("Net change in unrealized appreciation", "300,000"),
+        ("Ending capital account balance as of March 31, 2026", "$ 4,200,000"),
+        ("Total capital commitment", "5,000,000"),
+        ("Capital contributions since inception", "4,000,000"),
+        ("Distributions since inception", "(1,000,000)"),
+        ("Remaining commitment", "1,000,000"),
+    ])
+    from fpdf import FPDF
+    pdf = FPDF()
+    pdf.add_page()
+    pdf.set_font("helvetica", "B", 13)
+    pdf.cell(0, 8, "Example Growth Fund I, L.P.", ln=True, align="C")
+    pdf.set_font("helvetica", "", 10)
+    for line in ("Statement of Assets and Liabilities", "March 31, 2026",
+                 "Investments, at fair value 55,000,000", "Cash 3,000,000",
+                 "Total assets 58,000,000", "Total liabilities 500,000",
+                 "Net assets 57,500,000", "", "Schedule of Portfolio Investments",
+                 "March 31, 2026", "Percent of Partners' Capital Cost Fair Value Unrealized",
+                 "Total Example One, Inc. 10.4 5,000,000 6,000,000 1,000,000",
+                 "Total Example Two, Inc. 85.2 35,000,000 49,000,000 14,000,000",
+                 "Total Non-Marketable Investments 95.6 40,000,000 55,000,000 15,000,000",
+                 "Total Portfolio Investments 95.6 $ 40,000,000 $ 55,000,000 $ 15,000,000"):
+        pdf.cell(0, 6, line, ln=True)
+    out = OUT / "Fund 82_Q1 2026 Financial Statements.pdf"
+    pdf.output(str(out))
+    print("wrote", out.name)
+
+
 if __name__ == "__main__":
     fund_financials()
     jv_holdings()
@@ -338,4 +548,11 @@ if __name__ == "__main__":
     lp_statement_two_column_pdf()
     format_memory_pdfs()
     fund_level_report_pdf()
+    lake_flow_pdf()
+    company_quickbooks_xlsx()
+    company_audited_xlsx()
+    company_cash_flow_pdf()
+    company_scanned_pdf()
+    direct_investment_financials_csv()
+    portfolio_fund_pdfs()
     print("\nSample files ready in", OUT)
