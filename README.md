@@ -424,6 +424,30 @@ samples/              demo report generator
 - In `azure`/`openai` modes, only the extracted text slice needed for a fallback
   is sent to the configured endpoint, and only for non-standard layouts.
 
+## Risks — data handling against Lam's Responsible AI protocol
+
+The project's protocol says Lam and portfolio-company financials stay in the designated
+shared project folder (never personal or public cloud accounts) and are used only with
+Lam-approved AI tools. Four points currently conflict with it:
+
+1. **A personal (student) Azure subscription.** The live app, its database, the data lake
+   and Azure OpenAI run in a personal subscription, so uploaded statements and extracted
+   figures are stored and processed outside Lam's tenant. *Mitigation:* deploy to a
+   Lam-owned subscription (the app deploys unchanged — see Deploy to Azure), or run
+   locally in deterministic mode until that's approved.
+2. **A public GitHub repository.** Code, tests and samples carry no Lam data (samples are
+   made-up companies), but the demo GIFs and one earlier commit show real figures.
+   *Mitigation:* make the repository private, remove the GIFs and rewrite that history.
+3. **Local copies on a personal machine.** Real statements, the app's `data/` folder and
+   exported workbooks sit outside the shared project folder. *Mitigation:* keep them only
+   in the designated folder; use **Clear data** and delete local copies at project end, as
+   the protocol's data-retention rule requires.
+4. **AI tools not yet approved by Lam.** The model step can send document pages to Azure
+   OpenAI (vision for scans), and development used an AI coding assistant on real files.
+   *Mitigation:* get Lam's written approval for the model deployment (Azure OpenAI doesn't
+   train on inputs), or keep `LLM_PROVIDER=none`. Every model reading is flagged and
+   reviewed by a person before it is published.
+
 ## Known limitations / roadmap
 
 - **One value per metric per statement.** When several source lines collapse into

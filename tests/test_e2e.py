@@ -991,6 +991,20 @@ def manual_entry(samples: Path) -> None:
           and any(i["kind"] == "missing" and len(i["metrics"]) == 5 for i in g["issues"]),
           "a file nothing could be read from is flagged — its company appears, every figure open "
           "to be typed in")
+    import shutil
+    pcap = Path(tempfile.mkdtemp()) / "Fund 86_Q1 2026 PCAP_Sample Holdings LP.pdf"
+    shutil.copy(samples / "Fund 82_Q1 2026 PCAP_Sample Holdings LP.pdf", pcap)
+    settings.publish_auto_accepted = False       # strict: only reviewer-confirmed values publish
+    try:
+        r = process_path(pcap, allow_duplicate=True)
+        funds = {f["entity"]: f for f in client.get("/api/portfolio?as_of=2026-Q1").json()["funds"]}
+        f86 = funds.get("Fund 86")
+        check(f86 is not None and f86["investment_balance"] is None
+              and any(i["kind"] == "review" and i["submission_id"] == r["submission_id"]
+                      for i in f86["issues"]),
+              "a fund whose values all wait for review is still listed, flagged, nothing published")
+    finally:
+        settings.publish_auto_accepted = True
     client.post("/api/portfolio/Fund 84/details", json={"kind": "fund"})
     funds = {f["entity"]: f for f in client.get("/api/portfolio?as_of=2026-Q1").json()["funds"]}
     check(any(i["kind"] == "missing" and "investment_balance" in i["fields"]

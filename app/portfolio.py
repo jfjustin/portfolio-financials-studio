@@ -164,11 +164,12 @@ def report(as_of: Optional[str] = None) -> dict[str, Any]:
     calls = db.get_capital_calls()
     names = _filenames()
     waiting: dict[str, list[dict]] = {}
-    for f in db.get_facts(status="needs_review"):
-        if f["metric_key"] in _PENDING_FEEDS and f["value"] is not None \
-                and _order(f["period"] or "") <= until:
+    waiting_kind: dict[str, str] = {}
+    for f in db.unapproved_facts():
+        if _order(f["period"] or "") <= until and f["entity_kind"] in ("fund", "direct_investment"):
+            waiting_kind.setdefault(f["entity_name"], f["entity_kind"])
             waiting.setdefault(f["entity_name"], []).append(
-                {"field": _PENDING_FEEDS[f["metric_key"]], "metric": f["metric_label"],
+                {"field": _PENDING_FEEDS.get(f["metric_key"]), "metric": f["metric_label"],
                  "submission_id": f["submission_id"], "file": names.get(f["submission_id"], "")})
     facts = _latest({"commitment", "remaining_commitment", "cumulative_contributions",
                      "cumulative_distributions", "fund_size", "portfolio_investments",
@@ -181,6 +182,8 @@ def report(as_of: Optional[str] = None) -> dict[str, Any]:
     kinds = {e["entity_name"]: e["entity_type"] for e in inv["entities"]}
     for (entity, _m), f in facts.items():
         kinds.setdefault(entity, f["kind"])
+    for entity, kind in waiting_kind.items():
+        kinds.setdefault(entity, kind)      # values on file, none approved yet: still listed
     for entity, det in details.items():
         if det.get("kind"):
             kinds[entity] = det["kind"]
@@ -202,6 +205,14 @@ def report(as_of: Optional[str] = None) -> dict[str, Any]:
                           [c for c in calls if c["entity_name"] == name], until)
                  for name in sorted((k for k, v in kinds.items() if v == "direct_investment"),
                                     key=_natural)]
+    for co in companies:
+        files: dict[int, list[str]] = {}
+        for w in waiting.get(co["entity"], []):
+            if w["metric"] not in files.setdefault(w["submission_id"], []):
+                files[w["submission_id"]].append(w["metric"])
+        co["issues"] += [{"kind": "review", "submission_id": sid,
+                          "message": ", ".join(m) + ": read from a file, waiting for review"}
+                         for sid, m in files.items()]
     for row in funds + companies:
         row["issues"] = [{"kind": "unread", "submission_id": sub["id"],
                           "message": f"No figures could be read from {sub['filename']} — open "

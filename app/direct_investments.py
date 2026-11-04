@@ -112,7 +112,7 @@ def _actuals() -> tuple[dict[tuple[str, str], dict[str, dict]], dict, dict]:
         if others and metric in BASE:
             conflicts.setdefault((company, q), {})[metric] = others
     pending: dict[tuple[str, str], dict[str, int]] = {}
-    for f in db.get_facts(status="needs_review"):
+    for f in db.unapproved_facts():
         q = _quarter_of(f["period"] or "")
         if q and f["entity_kind"] == "direct_investment" and f["metric_key"] in BASE:
             pending.setdefault((f["entity_name"], q), {})[f["metric_key"]] = f["submission_id"]

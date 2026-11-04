@@ -630,6 +630,14 @@ def manual_submission(entity: str, report_type: str, period: str,
         return int(res.inserted_primary_key[0])
 
 
+def unapproved_facts() -> list[dict[str, Any]]:
+    """Values read but not yet approved: waiting for review — and, when only
+    reviewer-confirmed values publish, auto-accepted ones too."""
+    approved = approved_statuses()
+    return [f for f in get_facts()
+            if f["value"] is not None and f["status"] not in approved and f["status"] != "rejected"]
+
+
 def unread_submissions() -> list[dict[str, Any]]:
     """Files that were read but gave no figures at all — a scan with no OCR or
     vision model, an unsupported layout. Their entity and period, so the reports
