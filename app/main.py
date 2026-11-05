@@ -378,6 +378,15 @@ def _parse_date(raw: str) -> Optional[str]:
     return p if p and re.fullmatch(r"\d{4}-\d{2}-\d{2}", p) else None
 
 
+@app.get("/api/portfolio/summary")
+def portfolio_summary(as_of: Optional[str] = None):
+    """Cost, value, book value, impairment, proceeds, gains, TVPI, DPI and AUM —
+    direct investments by status, funds, and all investments by group."""
+    if as_of and not re.fullmatch(r"20\d{2}-Q[1-4]", as_of):
+        raise HTTPException(400, "as_of must be a quarter, e.g. 2026-Q2")
+    return portfolio.summary(as_of)
+
+
 @app.post("/api/portfolio/{entity}/details")
 async def set_portfolio_details(entity: str, request: Request):
     """Master data for a fund or direct investment (type, vintage, fund size,
@@ -403,7 +412,7 @@ async def set_portfolio_details(entity: str, request: Request):
         kind = fields[key]
         if not text:
             values[key] = None
-        elif kind in ("money", "int", "percent", "year"):
+        elif kind in ("money", "int", "percent", "year", "rate"):
             from .models import parse_number
             v = parse_number(text)[0]
             if v is None:

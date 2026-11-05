@@ -123,6 +123,8 @@ Scroll the dashboard top-to-bottom:
   all funds (see §4c).
 - **Direct Investments** — one row per company: cost, FMV, book value,
   unrealized gain/(loss), MOIC, ownership.
+- **Portfolio Summary** — direct investments by status, funds, and all investments by
+  portfolio group, with gains, TVPI, DPI and AUM (see §4d).
 - **Direct Investment Financials** — each portfolio company's quarter, Actual and
   Budget, in $000, with burn and runway (see §4d).
 - **Investment Portfolio** — each fund's commitment, drawn, future draw,
@@ -293,6 +295,20 @@ net burn $360K/month (10 months).
    status and, once exited, the exit date, value and proceeds.
 5. Pick the quarter and **Download xlsx**: per-fund and per-company sheets plus the
    Summary-Cash Flows sheet that references them, as in Lam's workbook.
+
+**Portfolio Summary** (same quarter as the Investment Portfolio card; also the workbook's
+*Dashboard* sheet)
+- Direct investments are *current*, *impaired* (an impairment is entered) or *exited* (an exit
+  date is entered). Held: unrealized = value − cost, AUM = value. Exited: realized = proceeds −
+  cost, unrealized = value − proceeds.
+- Funds: value = NAV + distributions, realized = distributions, unrealized = NAV − paid-in,
+  book value and AUM = NAV.
+- Every row: total gain = realized + unrealized, gain % = total gain ÷ cost, TVPI = value ÷
+  cost, DPI = proceeds ÷ cost.
+- In each company's details, enter its **impairment**, **book value** (default: cost − impairment)
+  and **portfolio group** (default: Life Sciences when its theme says so, else Core). A fund that
+  reports in another currency needs its **USD rate** in its details; until then it's listed under
+  the table and left out of the totals.
 
 **When a statement is empty, unreadable or missing a figure**
 Nothing is guessed. Each card lists what needs a person under **Needs attention**:

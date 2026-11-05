@@ -323,3 +323,8 @@ sup.man { color: var(--brand); margin-left: 2px; cursor: help; }
 .manual-form input, .manual-form select { font: inherit; font-size: 13px; color: var(--ink); background: var(--panel);
   border: 1px solid var(--line); border-radius: 6px; padding: 5px 8px; }
 .manual-form.inline { margin-top: 12px; }
+
+/* Portfolio Summary */
+.tbl-ps td, .tbl-ps th { white-space: nowrap; }
+.tbl-ps tr.ps-total td { font-weight: 700; border-top: 2px solid var(--ink); }
+.ps-notes { margin-top: 10px; line-height: 1.6; }

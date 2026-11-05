@@ -96,6 +96,7 @@ def main() -> int:
     direct_investment_financials(samples)
     investment_portfolio(samples)
     manual_entry(samples)
+    portfolio_summary()
     clear_data(samples)
 
     print()
@@ -1055,6 +1056,78 @@ def manual_entry(samples: Path) -> None:
     check(listed["Fund 89"]["removable"] and gone.status_code == 200 and "Fund 89" not in after
           and not listed["Fund 82"]["removable"],
           "a hand-added fund with nothing on file can be removed; one with files can't")
+
+
+def portfolio_summary() -> None:
+    """The team's dashboard table: direct investments by status, funds, and all
+    investments by group — gains, TVPI, DPI and AUM computed one way throughout."""
+    import io
+
+    import openpyxl
+    from fastapi.testclient import TestClient
+
+    from app.main import app
+
+    client = TestClient(app)
+    P = "/api/portfolio/"
+    client.post(P + "Company 91A/details", json={"kind": "direct_investment", "total_invested": "2m",
+                                                 "total_value": "3.5m", "portfolio_group": "Life Sciences"})
+    client.post(P + "Company 91B/details", json={"kind": "direct_investment", "total_invested": "3m",
+                                                 "total_value": "1m", "impairment": "2.5m"})
+    client.post(P + "Company 91C/details", json={"kind": "direct_investment", "total_invested": "1m",
+                                                 "exit_date": "5/1/2026", "exit_value": "3m",
+                                                 "exit_proceeds": "2.4m"})
+    client.post(P + "Fund 92/details", json={"kind": "fund", "investment_balance": "5m",
+                                             "drawn_to_date": "4m", "distribution_to_date": "1m"})
+    for metric, value in (("ending_balance", "1,000,000"), ("cumulative_contributions", "900,000")):
+        client.post("/api/manual-values", json={
+            "entity": "Fund 93", "report_type": "investment_roll_forward", "period": "2026-Q1",
+            "metric": metric, "value": value, "currency": "EUR"})
+    S = client.get("/api/portfolio/summary").json()
+    line = {ln["entity"]: ln for ln in S["lines"]}
+    near = lambda a, b: a is not None and abs(float(a) - float(b)) < 0.01
+    a, b, c, f = line["Company 91A"], line["Company 91B"], line["Company 91C"], line["Fund 92"]
+    check(a["status"] == "current" and near(a["unrealized"], 1_500_000) and near(a["aum"], 3_500_000)
+          and near(a["book"], 2_000_000) and a["group"] == "Life Sciences",
+          "a held company: unrealized = value − cost, book value = cost, AUM = value")
+    check(b["status"] == "impaired" and near(b["impairment"], -2_500_000) and near(b["book"], 500_000)
+          and near(b["unrealized"], -2_000_000),
+          "an impaired company: impairment shown as a write-down, book value = cost − impairment")
+    check(c["status"] == "exited" and near(c["realized"], 1_400_000) and near(c["unrealized"], 600_000)
+          and near(c["aum"], 0) and near(c["proceeds"], 2_400_000),
+          "an exit: realized = proceeds − cost, unrealized = value − proceeds, no AUM")
+    check(near(f["value"], 6_000_000) and near(f["realized"], 1_000_000)
+          and near(f["unrealized"], 1_000_000) and near(f["aum"], 5_000_000) and near(f["book"], 5_000_000),
+          "a fund: value = NAV + distributions, unrealized = NAV − paid-in, AUM = NAV")
+    check("Fund 93" not in line and any(n["entity"] == "Fund 93" and "EUR" in n["message"]
+                                        for n in S["notes"]),
+          "a fund reporting in EUR stays out of the USD totals until it has a USD rate")
+    client.post(P + "Fund 93/details", json={"usd_rate": "1.1"})
+    S = client.get("/api/portfolio/summary").json()
+    line = {ln["entity"]: ln for ln in S["lines"]}
+    check("Fund 93" in line and near(line["Fund 93"]["aum"], 1_100_000)
+          and near(line["Fund 93"]["paid_in"], 990_000),
+          "with its USD rate, the EUR fund is converted and included")
+    rows = {r["label"]: r for r in S["rows"]}
+    tot = {r["label"]: r for r in S["totals"]}
+    direct = rows["Total Direct Investments"]
+    parts = [rows[k] for k in ("Current Direct Investments", "Impaired Direct Investments",
+                               "Exited Direct Investments")]
+    allin = tot["Total Investments"]
+    check(near(direct["paid_in"], sum(float(r["paid_in"]) for r in parts))
+          and direct["count"] == sum(r["count"] for r in parts)
+          and near(allin["value"], float(direct["value"]) + float(rows["Fund Investments"]["value"]))
+          and near(allin["aum"], float(direct["aum"]) + float(rows["Fund Investments"]["aum"]))
+          and abs(allin["tvpi"] - float(allin["value"]) / float(allin["paid_in"])) < 1e-9
+          and abs(allin["dpi"] - float(allin["proceeds"]) / float(allin["paid_in"])) < 1e-9
+          and near(allin["total_gain"], float(allin["realized"]) + float(allin["unrealized"]))
+          and "Life Sciences Investments" in tot and "Core Investments" in tot,
+          "totals add up: direct = current + impaired + exited; all = direct + funds; by group")
+    wb = openpyxl.load_workbook(io.BytesIO(client.get("/api/exports/investment-portfolio.xlsx").content))
+    dash = wb["Dashboard"] if "Dashboard" in wb.sheetnames else None
+    check(dash is not None and any(dash.cell(r, 1).value == "Total Investments"
+                                   for r in range(1, dash.max_row + 1)),
+          "the Investment Portfolio workbook carries the summary as a Dashboard sheet")
 
 
 def clear_data(samples: Path) -> None:

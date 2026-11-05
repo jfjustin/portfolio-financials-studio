@@ -339,9 +339,38 @@
     $("#pf-committed").textContent = tot(t.committed);
     $("#pf-net").textContent = tot(t.net_cash_flow);
     $$(".pf-open").forEach(a => a.addEventListener("click", e => { e.preventDefault(); openPortfolioEntity(a.dataset.entity); }));
+    loadSummary(PF.as_of);
     renderAttention("#pf-attention", PF.funds.concat(PF.companies).flatMap(r =>
       (r.issues || []).map(i => Object.assign({ who: r.investment_name, entity: r.entity }, i))),
       i => openPortfolioEntity(i.entity));
+  }
+
+  // ---------------- Portfolio Summary (direct by status, funds, all by group) ----------------
+  const psMoney = v => v == null ? '<span class="muted">—</span>'
+    : (Number(v) < 0 ? "-" : "") + "$" + Math.abs(Number(v) / 1e6).toFixed(1) + "M";
+  function psCell(k, v) {
+    if (v == null) return '<span class="muted">—</span>';
+    if (k === "count") return String(v);
+    if (k === "gain_pct") return `<span class="${v < 0 ? "is-neg" : "is-pos"}">${v.toFixed(1)}%</span>`;
+    if (k === "tvpi" || k === "dpi") return v.toFixed(2) + "x";
+    return psMoney(v);
+  }
+  async function loadSummary(asOf) {
+    const S = await api("/api/portfolio/summary" + (asOf ? "?as_of=" + asOf : ""));
+    $("#ps-asof").textContent = "As of " + S.as_of_label;
+    const first = S.columns.filter(c => c.key !== "dpi" && c.key !== "aum");
+    const render = (head, body, rows, cols) => {
+      $(head).innerHTML = '<th class="lbl"></th>' + cols.map(c => `<th>${esc(c.label)}</th>`).join("");
+      $(body).innerHTML = rows.map(r => `<tr class="${r.kind === "total" ? "ps-total" : ""}">` +
+        `<td class="lbl">${esc(r.label)}</td>` +
+        cols.map(c => `<td class="num ${c.key !== "gain_pct" && Number(r[c.key]) < 0 ? "is-neg" : ""}">${psCell(c.key, r[c.key])}</td>`).join("") +
+        "</tr>").join("");
+    };
+    render("#ps-head", "#ps-body", S.rows, first);
+    render("#ps-head2", "#ps-body2", S.totals, S.columns);
+    $("#ps-notes").innerHTML = S.notes.length
+      ? "Not in the totals or valued differently: " + S.notes.map(n => `<b>${esc(n.name)}</b> — ${esc(n.message)}`).join(" · ")
+      : "";
   }
 
   function openPortfolioEntity(entity) {

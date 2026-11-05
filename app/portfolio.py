@@ -66,6 +66,8 @@ FUND_FIELDS = (
     ("drawn_to_date", "Drawn to Date — if no statement shows it", "money"),
     ("distribution_to_date", "Distribution to Date — if no statement shows it", "money"),
     ("future_draw", "Future Draw — if no statement shows it", "money"),
+    ("portfolio_group", "Portfolio group (e.g. Core, Life Sciences)", "text"),
+    ("usd_rate", "USD per unit of its currency (non-USD funds)", "rate"),
 )
 _FUND_FIGURES = (("commitment", "Commitment"), ("investment_balance", "Investment Balance"),
                  ("drawn_to_date", "Drawn to Date"), ("distribution_to_date", "Distribution to Date"),
@@ -87,11 +89,15 @@ COMPANY_FIELDS = (
     ("total_invested", "Total Investment to Date", "money"),
     ("projected_investment", "Projected Future Investments", "money"),
     ("total_value", "Total Value", "money"),
+    ("impairment", "Impairment to date (write-down)", "money"),
+    ("book_value", "Book Value (carrying value)", "money"),
     ("operating_status", "Operating Status", "choice:Active,Inactive"),
     ("exit_date", "Date of Exit", "date"),
     ("exit_value", "Exit — Total Value", "money"),
     ("exit_proceeds", "Exit — Total Received Proceeds", "money"),
     ("exit_escrow", "Exit — Total Proceeds on Escrow", "money"),
+    ("portfolio_group", "Portfolio group (e.g. Core, Life Sciences)", "text"),
+    ("usd_rate", "USD per unit of its currency (if not USD)", "rate"),
 )
 _MONEY = {k for k, _l, t in FUND_FIELDS + COMPANY_FIELDS if t == "money"}
 
@@ -228,6 +234,14 @@ def report(as_of: Optional[str] = None) -> dict[str, Any]:
         co["issues"] += [{"kind": "review", "submission_id": sid,
                           "message": ", ".join(m) + ": read from a file, waiting for review"}
                          for sid, m in files.items()]
+    currency_by: dict[str, str] = {}
+    for f in sorted(db.trusted_facts(), key=lambda f: f["id"]):
+        if f.get("currency") and f["unit"] == "currency":
+            currency_by[f["entity_name"]] = f["currency"]
+    for row in funds:
+        row["currency"] = currency_by.get(row["entity"], "USD")
+    for row in companies:
+        row["currency"] = "USD"        # holding records are kept in USD
     for row in funds + companies:
         row["issues"] = [{"kind": "unread", "submission_id": sub["id"],
                           "message": f"No figures could be read from {sub['filename']} — open "
@@ -585,6 +599,143 @@ def _totals(funds: list[dict], companies: list[dict]) -> dict[str, Any]:
 
 
 # --------------------------------------------------------------------------
+# Portfolio summary — the team's "dashboard" table: direct investments by
+# status, funds, and every investment together, by portfolio group
+# --------------------------------------------------------------------------
+SUMMARY_COLUMNS = (("count", "#"), ("paid_in", "Investment Cost / Paid-in"),
+                   ("value", "Total Value"), ("book", "Book Value"), ("impairment", "Impairment"),
+                   ("proceeds", "Proceeds & Distributions"), ("realized", "Realized Gain/(Loss)"),
+                   ("unrealized", "Unrealized Gain/(Loss)"), ("total_gain", "Total Gain/(Loss)"),
+                   ("gain_pct", "Gain/(Loss) %"), ("tvpi", "TVPI"), ("dpi", "DPI"), ("aum", "AUM"))
+_SUM_KEYS = ("paid_in", "value", "book", "impairment", "proceeds", "realized", "unrealized", "aum")
+_LIFE_SCIENCES = re.compile(r"life\s*sci|genomic|biotech|pharma|health|medic", re.I)
+
+
+def _group(row: dict) -> str:
+    det = row.get("details") or {}
+    if det.get("portfolio_group"):
+        return det["portfolio_group"].strip()
+    text = " ".join(str(x or "") for x in (row.get("theme"), row.get("region_sector")))
+    return "Life Sciences" if _LIFE_SCIENCES.search(text) else "Core"
+
+
+def _usd(row: dict) -> tuple[Optional[Decimal], str]:
+    """The factor that turns the entity's amounts into USD, or (None, reason)."""
+    cur = (row.get("currency") or "USD").upper()
+    rate = _d((row.get("details") or {}).get("usd_rate"))
+    if cur == "USD":
+        return rate or Decimal(1), ""
+    if rate is None:
+        return None, (f"reports in {cur} — enter its USD rate in its details to include it")
+    return rate, ""
+
+
+def _company_line(co: dict) -> tuple[Optional[dict], str]:
+    det = co["details"] or {}
+    cost = co["total_invested"]
+    if cost is None:
+        return None, "no Total Investment to Date on file — enter it in its details"
+    impairment = -abs(_d(det.get("impairment")) or Decimal(0))
+    book_entered = _d(det.get("book_value"))
+    note = ""
+    if co["exited"]:
+        status = "exited"
+        proceeds = co["exit"]["proceeds"] or Decimal(0)
+        value = co["exit"]["value"] if co["exit"]["value"] is not None else (
+            proceeds + (co["exit"]["escrow"] or Decimal(0)))
+        book = book_entered if book_entered is not None else Decimal(0)
+        realized, unrealized, aum = proceeds - cost, value - proceeds, Decimal(0)
+    else:
+        status = "impaired" if impairment < 0 else "current"
+        proceeds = Decimal(0)
+        book = book_entered if book_entered is not None else cost + impairment
+        value = co["total_value"]
+        if value is None:
+            value, note = book, "no fair value on file — valued at book"
+        realized, unrealized, aum = Decimal(0), value - cost, value
+    return {"entity": co["entity"], "name": co["investment_name"], "kind": "direct",
+            "status": status, "group": _group(co), "paid_in": cost, "value": value, "book": book,
+            "impairment": impairment, "proceeds": proceeds, "realized": realized,
+            "unrealized": unrealized, "aum": aum, "estimated": False}, note
+
+
+def _fund_line(f: dict) -> tuple[Optional[dict], str]:
+    paid_in, nav = f["drawn_to_date"], f["investment_balance"]
+    if paid_in is None or nav is None:
+        return None, "no drawn-to-date or investment balance on file"
+    dist = f["distribution_to_date"] or Decimal(0)
+    est = bool(set(f.get("estimated") or []) & {"drawn_to_date", "distribution_to_date"})
+    return {"entity": f["entity"], "name": f["investment_name"], "kind": "fund", "status": "fund",
+            "group": _group(f), "paid_in": paid_in, "value": nav + dist, "book": nav,
+            "impairment": Decimal(0), "proceeds": dist, "realized": dist,
+            "unrealized": nav - paid_in, "aum": nav, "estimated": est}, (
+        "drawn / distributed are estimates from the quarters on file" if est else "")
+
+
+def _aggregate(label: str, lines: list[dict], kind: str) -> dict:
+    out: dict[str, Any] = {"label": label, "kind": kind, "count": len(lines)}
+    for k in _SUM_KEYS:
+        out[k] = sum((ln[k] for ln in lines), Decimal(0))
+    out["total_gain"] = out["realized"] + out["unrealized"]
+    paid = out["paid_in"]
+    out["gain_pct"] = float(out["total_gain"] / paid * 100) if paid else None
+    out["tvpi"] = float(out["value"] / paid) if paid else None
+    out["dpi"] = float(out["proceeds"] / paid) if paid else None
+    return out
+
+
+def summary(as_of: Optional[str] = None) -> dict[str, Any]:
+    """Every investment's cost, value, book value, impairment, proceeds and
+    gains — direct investments by status (current / impaired / exited), funds,
+    and all of them together by portfolio group — with TVPI, DPI and AUM.
+
+      direct, held      unrealized = value − cost; AUM = value
+      direct, exited    realized = proceeds − cost; unrealized = value − proceeds
+      fund              value = NAV + distributions; realized = distributions;
+                        unrealized = NAV − paid-in; book value and AUM = NAV
+      every row         total gain = realized + unrealized; gain % = total ÷ cost;
+                        TVPI = value ÷ cost; DPI = proceeds ÷ cost
+    Amounts are in USD: an entity reporting in another currency needs its USD
+    rate, and is left out (with a note) until it has one."""
+    rep = report(as_of)
+    lines: list[dict] = []
+    notes: list[dict] = []
+    for row, maker in ([(c, _company_line) for c in rep["companies"]]
+                       + [(f, _fund_line) for f in rep["funds"]]):
+        line, note = maker(row)
+        if line is None:
+            notes.append({"entity": row["entity"], "name": row["investment_name"],
+                          "message": f"left out: {note}"})
+            continue
+        factor, why = _usd(row)
+        if factor is None:
+            notes.append({"entity": row["entity"], "name": row["investment_name"],
+                          "message": f"left out: {why}"})
+            continue
+        for k in _SUM_KEYS:
+            line[k] = line[k] * factor
+        line["currency"] = row.get("currency") or "USD"
+        lines.append(line)
+        if note:
+            notes.append({"entity": row["entity"], "name": row["investment_name"], "message": note})
+    direct = [ln for ln in lines if ln["kind"] == "direct"]
+    funds = [ln for ln in lines if ln["kind"] == "fund"]
+    rows = [_aggregate(label, [ln for ln in direct if ln["status"] == st], "status")
+            for st, label in (("current", "Current Direct Investments"),
+                              ("impaired", "Impaired Direct Investments"),
+                              ("exited", "Exited Direct Investments"))]
+    rows.append(_aggregate("Total Direct Investments", direct, "total"))
+    rows.append(_aggregate("Fund Investments", funds, "fund"))
+    groups = sorted({ln["group"] for ln in lines}, key=lambda g: (g != "Core", g))
+    totals = [_aggregate("Total Investments", lines, "total")] + [
+        _aggregate(f"{g} Investments", [ln for ln in lines if ln["group"] == g], "group")
+        for g in groups]
+    return {"as_of": rep["as_of"], "as_of_label": rep["as_of_label"], "quarters": rep["quarters"],
+            "columns": [{"key": k, "label": l} for k, l in SUMMARY_COLUMNS],
+            "rows": rows, "totals": totals, "lines": lines, "notes": notes}
+
+
+# --------------------------------------------------------------------------
 # Workbook export — Lam's layout
 # --------------------------------------------------------------------------
 _M = Decimal(1_000_000)
@@ -637,8 +788,8 @@ def workbook(as_of: Optional[str] = None) -> tuple[bytes, str]:
     bal_fill = PatternFill("solid", fgColor="BDD7EE")
     box = Border(*(Side(style="thin"),) * 4)
     wb = Workbook()
-    summary = wb.active
-    summary.title = "Summary-Cash Flows"
+    cash_flows = wb.active
+    cash_flows.title = "Summary-Cash Flows"
     names = _sheet_names(rep["funds"] + rep["companies"])
 
     # ---- one sheet per fund ----
@@ -770,7 +921,8 @@ def workbook(as_of: Optional[str] = None) -> tuple[bytes, str]:
         for c in "BCDEF":
             ws.column_dimensions[c].width = 18
 
-    _summary(summary, rep, names)
+    _summary(cash_flows, rep, names)
+    _dashboard(wb, summary(rep["as_of"]))
     wb.calculation.fullCalcOnLoad = True          # Excel computes the summary's references
     buf = io.BytesIO()
     wb.save(buf)
@@ -779,6 +931,51 @@ def workbook(as_of: Optional[str] = None) -> tuple[bytes, str]:
 
 def _f(v: Optional[Decimal]) -> Optional[float]:
     return None if v is None else float(v)
+
+
+def _dashboard(wb, summ: dict) -> None:
+    """The portfolio summary as a sheet: direct investments by status and funds,
+    then all investments by portfolio group (in $M, USD)."""
+    from openpyxl.styles import Font
+    ws = wb.create_sheet("Dashboard", 1)
+    bold = Font(bold=True)
+    money, pct, ratio = '"$"#,##0.0"M";-"$"#,##0.0"M"', "0.0%", '0.00"x"'
+    ws.cell(1, 1, f"Portfolio Summary — as of {summ['as_of_label']} (USD)").font = Font(bold=True, size=12)
+    cols = [c for c in summ["columns"]]
+
+    def table(r: int, rows: list[dict], keys: list[str]) -> int:
+        ws.cell(r, 1, "")
+        for j, k in enumerate(keys, start=2):
+            ws.cell(r, j, next(c["label"] for c in cols if c["key"] == k)).font = bold
+        for row in rows:
+            r += 1
+            ws.cell(r, 1, row["label"]).font = bold if row["kind"] == "total" else Font()
+            for j, k in enumerate(keys, start=2):
+                v = row.get(k)
+                c = ws.cell(r, j)
+                if v is None:
+                    continue
+                if k == "count":
+                    c.value = int(v)
+                elif k == "gain_pct":
+                    c.value, c.number_format = v / 100, pct
+                elif k in ("tvpi", "dpi"):
+                    c.value, c.number_format = v, ratio
+                else:
+                    c.value, c.number_format = float(v) / 1e6, money
+                if row["kind"] == "total":
+                    c.font = bold
+        return r
+
+    first = [k for k, _l in SUMMARY_COLUMNS if k not in ("dpi", "aum")]
+    r = table(3, summ["rows"], first)
+    r = table(r + 2, summ["totals"], [k for k, _l in SUMMARY_COLUMNS])
+    for n in summ["notes"]:
+        r += 1
+        ws.cell(r + 1, 1, f"{n['name']}: {n['message']}")
+    ws.column_dimensions["A"].width = 32
+    for col in "BCDEFGHIJKLMN":
+        ws.column_dimensions[col].width = 16
 
 
 def _invested_rows(ws, rows: list[dict], start: int, fill) -> None:
