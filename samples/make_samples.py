@@ -5,7 +5,7 @@ Creates (in samples/):
   - jv_holdings.xlsx               (joint-venture financials)
   - direct_investment.xlsx         (cost / fair value / MOIC that reconcile)
   - jv_equity_income.pdf           (NATIVE pdf; equity income = ownership × JV NI)
-  - Company 90A–90D statements, Fund 82 reports (Lam's two deliverables; made-up)
+  - Company 90A–90D statements, Fund 82 reports (the two quarterly deliverables; made-up)
 
 Run:  python samples/make_samples.py
 """
@@ -343,7 +343,7 @@ def lake_flow_pdf():
 
 
 # --------------------------------------------------------------------------
-# Lam's deliverables (made-up companies and figures)
+# The two quarterly deliverables (made-up companies and figures)
 # --------------------------------------------------------------------------
 def company_quickbooks_xlsx():
     """Company 90A, Q1 2026: a QuickBooks export — monthly columns plus Total on the

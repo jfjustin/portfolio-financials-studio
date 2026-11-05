@@ -34,17 +34,6 @@ dimensional tables Power BI and Fabric build on. See
 (`none` | `local` | `adls` | `onelake`), `LAKE_ACCOUNT_URL`, `LAKE_FILESYSTEM`,
 `LAKE_ROOT`, `PUBLISH_AUTO_ACCEPTED`.
 
-## See it in action
-
-Two recordings of the complete workflow — upload → extraction → sectioned
-review → edit a value → human confirm → portfolio sections → export — on the
-same tool, two model configurations:
-
-| Deterministic (no model) | Azure OpenAI (customer's own deployment) |
-|---|---|
-| ![Deterministic workflow](docs/demo/deterministic_demo.gif) | ![Azure OpenAI workflow](docs/demo/azure_demo.gif) |
-| Zero credentials, nothing leaves the machine. | A required field is genuinely missing — the model suggests three values (flagged, capped at 50% confidence), a human overwrites one, and TVPI/DPI/NAV go from "—" to real numbers once confirmed. |
-
 **📖 New here? Read the [User Guidebook (GUIDE.md)](GUIDE.md)** for a
 screen-by-screen walkthrough.
 **🔌 Integrating BI?** See the
@@ -77,15 +66,15 @@ curl    http://127.0.0.1:8713/api/fabric/schema                          # contr
 
 ## Dashboard & the grand ledger
 
-- **Lam Capital Overall Performance** — TVPI, DPI, and a money-weighted IRR
+- **Overall Performance** — TVPI, DPI, and a money-weighted IRR
   aggregated across all fund investments, computed from confirmed funding,
   distributions, and NAV (`app/performance.py`).
 - **Direct Investments** — one row per company: investment cost, estimated FMV,
-  book value, unrealized gain/(loss), MOIC, ownership — mirroring Lam Capital's
+  book value, unrealized gain/(loss), MOIC, ownership — mirroring the firm's
   own "Portfolio Value" report format.
-- **Direct Investment Financials** and **Investment Portfolio** — Lam Capital's
-  two quarterly deliverables, each with a **Download xlsx** in Lam's own layout
-  (see [Lam's quarterly deliverables](#lams-quarterly-deliverables)).
+- **Direct Investment Financials** and **Investment Portfolio** — the two
+  quarterly deliverables, each with a **Download xlsx** in the firm's own workbook
+  layout (see [Quarterly deliverables](#quarterly-deliverables)).
 - **Portfolio value over time** — a line chart of total investment balance per
   period (plus a thin line per entity); each period shows both its calendar
   label and fiscal-year label (e.g. "2026-Q1" / "FY2026 Q2").
@@ -106,7 +95,7 @@ curl    http://127.0.0.1:8713/api/fabric/schema                          # contr
 Only `auto` + human-`confirmed` values appear in these views — unreviewed or
 unreconciled figures stay out until a person accepts them.
 
-## Lam's quarterly deliverables
+## Quarterly deliverables
 
 Both are built from **approved values only** and say where every figure came from.
 
@@ -134,17 +123,17 @@ its right, never a budget column). Scanned statements are read by the vision mod
 (or Tesseract), and figures stated "in $000" are recorded in whole dollars. Budgets
 are typed into the dashboard (`POST /api/budgets`).
 `GET /api/exports/direct-investment-financials.xlsx?year=2026&quarter=1` gives one
-sheet per company ("Company Y(in $000)", Lam's rows and formats) and a **Sources** sheet
+sheet per company ("Company Y(in $000)", the template's rows and formats) and a **Sources** sheet
 naming the file and line behind every actual.
 
-**Investment Portfolio Mon'YY** (`app/portfolio.py`). One sheet per fund in Lam's
+**Investment Portfolio Mon'YY** (`app/portfolio.py`). One sheet per fund in the template's
 layout — Investment Name (B2), Type (B3), Round (B4), Vintage (B5), Fund Size (B6),
 Commitment (B7), Future Draw (B9), Region / Sector (B10), Investment Balance (B11),
 Drawn to Date (B13), Distribution to Date (F13), the **Latest Stats** row (date, #
 of investments, cost, value, gain %) and the dated **Invested** history — plus the
 accounting team's Equity Investments Summary beside it; one sheet per direct
 investment; and a **Summary-Cash Flows** sheet whose cells reference those sheets
-exactly as Lam's workbook does (`='Fund 1'!$B$13`, …) with the cash-flow totals
+exactly as the template workbook does (`='Fund 1'!$B$13`, …) with the cash-flow totals
 (cash inflow = distributions + exit proceeds; actual outflow = drawn + invested;
 committed = future draw). Investment Balance is the roll-forward's ending balance;
 drawn, distributed and remaining commitment come from the statements' since-inception
@@ -423,30 +412,6 @@ samples/              demo report generator
 - Server binds to `127.0.0.1` only. No telemetry, no external fonts/CDNs/scripts.
 - In `azure`/`openai` modes, only the extracted text slice needed for a fallback
   is sent to the configured endpoint, and only for non-standard layouts.
-
-## Risks — data handling against Lam's Responsible AI protocol
-
-The project's protocol says Lam and portfolio-company financials stay in the designated
-shared project folder (never personal or public cloud accounts) and are used only with
-Lam-approved AI tools. Four points currently conflict with it:
-
-1. **A personal (student) Azure subscription.** The live app, its database, the data lake
-   and Azure OpenAI run in a personal subscription, so uploaded statements and extracted
-   figures are stored and processed outside Lam's tenant. *Mitigation:* deploy to a
-   Lam-owned subscription (the app deploys unchanged — see Deploy to Azure), or run
-   locally in deterministic mode until that's approved.
-2. **A public GitHub repository.** Code, tests and samples carry no Lam data (samples are
-   made-up companies), but the demo GIFs and one earlier commit show real figures.
-   *Mitigation:* make the repository private, remove the GIFs and rewrite that history.
-3. **Local copies on a personal machine.** Real statements, the app's `data/` folder and
-   exported workbooks sit outside the shared project folder. *Mitigation:* keep them only
-   in the designated folder; use **Clear data** and delete local copies at project end, as
-   the protocol's data-retention rule requires.
-4. **AI tools not yet approved by Lam.** The model step can send document pages to Azure
-   OpenAI (vision for scans), and development used an AI coding assistant on real files.
-   *Mitigation:* get Lam's written approval for the model deployment (Azure OpenAI doesn't
-   train on inputs), or keep `LLM_PROVIDER=none`. Every model reading is flagged and
-   reviewed by a person before it is published.
 
 ## Known limitations / roadmap
 
