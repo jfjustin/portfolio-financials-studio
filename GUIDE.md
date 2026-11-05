@@ -311,6 +311,16 @@ Nothing is guessed. Each card lists what needs a person under **Needs attention*
   the statement. Check which is right; reject or clear the other.
 - **estimate** — built from only the quarters on file; a statement with the
   since-inception figure replaces it.
+- **needs commitment** — the fund's only file is a whole-fund report, with no row for
+  Lam. Enter Lam's commitment in the fund's details; the report is re-read and Lam's
+  share worked out from it (for review).
+- **unread** — nothing could be read from a file (e.g. a scan with no vision model).
+
+Files uploaded before an update are read the way the app read then. **Re-read** (on
+an attention item, or **Re-read file** in a file's review screen) reads a stored file
+again with today's reading: values you confirmed or rejected stay as they are, and
+anything newly found is added for review. A fund or company you added by hand, with
+nothing on file, can be taken off the report with **Remove from report** in its details.
 
 A figure typed in is saved as entered by you — confirmed, marked ✎ (and "Entered
 manually" in the export's Sources sheet), with an audit-trail entry. Clear the box to

@@ -1020,6 +1020,42 @@ def manual_entry(samples: Path) -> None:
           "fund figures can be entered by hand; one that disagrees with a statement is flagged")
     client.post("/api/portfolio/Fund 82/details", json={"drawn_to_date": ""})
 
+    # a quarter whose approved balances don't add up is flagged
+    for metric, value in (("beginning_balance", "100,000"), ("funding", "0"),
+                          ("ending_balance", "90,000")):
+        client.post("/api/manual-values", json={
+            "entity": "Fund 88", "report_type": "investment_roll_forward", "period": "2026-Q1",
+            "metric": metric, "value": value})
+    funds = {f["entity"]: f for f in client.get("/api/portfolio?as_of=2026-Q1").json()["funds"]}
+    check(any(i["kind"] == "mismatch" and "doesn't add up" in i["message"]
+              for i in funds["Fund 88"]["issues"]),
+          "a quarter whose beginning + activity ≠ ending is flagged")
+
+    # a fund with only a whole-fund report: ask for Lam's commitment, re-read the report
+    report = Path(tempfile.mkdtemp()) / "Fund 87_Q1 2026_Quarterly report.pdf"
+    shutil.copy(samples / "Fund 79_Q1 2026_Quarterly report.pdf", report)
+    r = process_path(report, allow_duplicate=True)
+    funds = {f["entity"]: f for f in client.get("/api/portfolio?as_of=2026-Q1").json()["funds"]}
+    f87 = funds["Fund 87"]
+    check(r["report_type"] == "fund_financials" and f87["fund_level_ids"] == [r["submission_id"]]
+          and any(i["kind"] == "commitment" and i["reread_ids"] == [r["submission_id"]]
+                  for i in f87["issues"])
+          and any(i["kind"] == "missing" and [x["id"] for x in i.get("files", [])]
+                  == [r["submission_id"]] for i in f87["issues"]),
+          "a whole-fund report asks for Lam's commitment; missing figures offer a re-read of the file")
+    rr = client.post(f"/api/submissions/{r['submission_id']}/reread")
+    check(rr.status_code == 200 and db.get_submission(r["submission_id"])["revision"] == 2,
+          "a file on record can be re-read with today's reading")
+
+    # a hand-added entry with nothing on file can be taken off the report
+    client.post("/api/portfolio/Fund 89/details", json={"kind": "fund"})
+    listed = {f["entity"]: f for f in client.get("/api/portfolio?as_of=2026-Q1").json()["funds"]}
+    gone = client.post("/api/portfolio/Fund 89/details", json={"kind": ""})
+    after = {f["entity"] for f in client.get("/api/portfolio?as_of=2026-Q1").json()["funds"]}
+    check(listed["Fund 89"]["removable"] and gone.status_code == 200 and "Fund 89" not in after
+          and not listed["Fund 82"]["removable"],
+          "a hand-added fund with nothing on file can be removed; one with files can't")
+
 
 def clear_data(samples: Path) -> None:
     """The header's "Clear data" button: empties the data, keeps the audit trail."""

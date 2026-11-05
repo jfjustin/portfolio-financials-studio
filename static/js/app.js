@@ -231,7 +231,19 @@
 
   // "Needs attention": what a person has to check, enter or settle
   const KIND = { missing: "missing", review: "to review", mismatch: "mismatch", check: "check",
-                 estimate: "estimate", unread: "unread" };
+                 estimate: "estimate", unread: "unread", commitment: "needs commitment" };
+
+  // read a stored file again with today's reading (reviewed values stay)
+  async function rereadFiles(ids) {
+    for (const id of ids) {
+      toast("Re-reading the file — this can take a minute or two…");
+      const res = await fetch(`/api/submissions/${id}/reread`, { method: "POST" });
+      if (!res.ok) { toast("Re-read failed: " + (await res.text()).slice(0, 160)); return false; }
+    }
+    toast(ids.length > 1 ? `Re-read ${ids.length} files — check their new values` : "Re-read — check the new values");
+    await refresh();
+    return true;
+  }
   function renderAttention(sel, items, onEnter) {
     const box = $(sel);
     if (!items.length) { box.innerHTML = ""; return; }
@@ -239,11 +251,16 @@
       `<div class="att-item ${esc(i.kind)}"><span class="att-kind">${esc(KIND[i.kind] || i.kind)}</span>` +
       `<span><b>${esc(i.who)}</b> — ${esc(i.message)}</span>` +
       (i.submission_id ? ` <button class="btn sm att-open" data-sub="${i.submission_id}">Open file</button>` : "") +
+      (i.files || []).slice(0, 4).map(f =>
+        ` <button class="btn sm att-reread" data-sub="${f.id}" title="${esc(f.file)}">Re-read ${esc(shortName(f.file))}</button>`).join("") +
       (onEnter && i.kind !== "review" ? ` <button class="btn sm att-enter" data-n="${n}">Enter</button>` : "") +
       `</div>`).join("");
     $$(".att-open", box).forEach(b => b.onclick = () => openSub(+b.dataset.sub));
+    $$(".att-reread", box).forEach(b => b.onclick = async () => {
+      b.disabled = true; await rereadFiles([+b.dataset.sub]); });
     $$(".att-enter", box).forEach(b => b.onclick = () => onEnter(items[+b.dataset.n]));
   }
+  const shortName = f => (f || "").length > 28 ? f.slice(0, 26) + "…" : f;
 
   async function saveBudget(e) {
     const i = e.target;
@@ -353,6 +370,7 @@
       return `<label>${esc(f.label)}<input name="${f.key}" value="${esc(val(f))}" placeholder="${esc(ph)}"></label>`;
     }).join("");
     renderCalls(row);
+    $("#pf-m-remove").hidden = !row.removable;
     $("#pf-modal").classList.add("show");
     $("#pf-modal-bg").classList.add("show");
   }
@@ -425,7 +443,24 @@
         method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
       if (!res.ok) { toast("Not saved: " + (await res.json()).detail); return; }
       toast("Details saved (audit recorded)");
+      const lamShare = (PF_ENTITY.fund_level_ids || []);
+      if (body.commitment && lamShare.length) {
+        // the fund's report covers the whole fund: with Lam's commitment known,
+        // read it again so Lam's share is worked out
+        $("#pf-modal").classList.remove("show"); $("#pf-modal-bg").classList.remove("show");
+        await rereadFiles(lamShare);
+        return;
+      }
       await reopenPortfolio();
+    };
+    $("#pf-m-remove").onclick = async () => {
+      if (!window.confirm(`Take "${PF_ENTITY.investment_name}" off the report? Nothing on file uses it.`)) return;
+      const res = await fetch(`/api/portfolio/${encodeURIComponent(PF_ENTITY.entity)}/details`, {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ kind: "" }) });
+      if (!res.ok) { toast("Not removed: " + (await res.json()).detail); return; }
+      $("#pf-modal").classList.remove("show"); $("#pf-modal-bg").classList.remove("show");
+      toast("Removed from the report");
+      await loadPortfolio(PF.as_of);
     };
     $("#pf-m-add").onclick = async () => {
       const lines = $("#pf-m-lines").value;
@@ -995,6 +1030,18 @@
   function wireModal() {
     $("#modal-bg").onclick = () => showModal(false);
     $("#m-close").onclick = () => showModal(false);
+    $("#m-reread").onclick = async () => {
+      if (!CURRENT_SUB) return;
+      const id = CURRENT_SUB.submission.id;
+      $("#m-reread").disabled = true;
+      toast("Re-reading the file — this can take a minute or two…");
+      const res = await fetch(`/api/submissions/${id}/reread`, { method: "POST" });
+      $("#m-reread").disabled = false;
+      if (!res.ok) { toast("Re-read failed: " + (await res.text()).slice(0, 160)); return; }
+      const r = await res.json();
+      toast(`Re-read: ${r.added} new value(s) to review, ${r.kept} reviewed value(s) kept`);
+      await openSub(id);
+    };
     $("#m-confirm-all").title = "Approve this file's values — published to Gold";
     $("#m-confirm-all").onclick = async () => {
       if (!CURRENT_SUB) return;

@@ -197,12 +197,27 @@ def report(as_of: Optional[str] = None) -> dict[str, Any]:
                 and _order(sub["period"] or "") <= until:
             kinds.setdefault(sub["entity_name"], rt.entity_kind)
             unread.setdefault(sub["entity_name"], []).append(sub)
+    files_by: dict[str, list[dict]] = {}
+    for sub in db.list_submissions():
+        if sub.get("extractor") != db.MANUAL and _order(sub.get("period") or "") <= until:
+            files_by.setdefault(sub["entity_name"], []).append(
+                {"id": sub["id"], "file": sub["filename"], "report_type": sub["report_type"]})
+    own_statement = {f["entity_name"] for f in db.get_facts()
+                     if f["report_type"] == RF and f["status"] != "rejected"}
+    rf_trusted: dict[tuple[str, str], dict[str, dict]] = {}
+    for f in db.trusted_facts():
+        if f["report_type"] == RF:
+            rf_trusted.setdefault((f["entity_name"], f["period"]), {})[f["metric_key"]] = f
     funds = [_fund(name, quarters_by.get(name, []), details.get(name, {}),
                    profiles.get(name, {}), facts, [c for c in calls if c["entity_name"] == name],
-                   until, waiting.get(name, []))
+                   until, waiting.get(name, []),
+                   {"files": files_by.get(name, []), "own_statement": name in own_statement,
+                    "unread": {sub["id"] for sub in unread.get(name, [])},
+                    "rf_trusted": rf_trusted, "names": names})
              for name in sorted((k for k, v in kinds.items() if v == "fund"), key=_natural)]
     companies = [_company(name, details.get(name, {}), facts,
-                          [c for c in calls if c["entity_name"] == name], until)
+                          [c for c in calls if c["entity_name"] == name], until,
+                          files_by.get(name, []))
                  for name in sorted((k for k, v in kinds.items() if v == "direct_investment"),
                                     key=_natural)]
     for co in companies:
@@ -238,7 +253,14 @@ def _month_label(quarter: str) -> str:
 
 
 def _fund(name: str, quarters: list[dict], det: dict, prof: dict, facts: dict,
-          calls: list[dict], until: int, waiting: Optional[list[dict]] = None) -> dict[str, Any]:
+          calls: list[dict], until: int, waiting: Optional[list[dict]] = None,
+          ctx: Optional[dict] = None) -> dict[str, Any]:
+    ctx = ctx or {"files": [], "own_statement": False, "rf_trusted": {}, "names": {}}
+    # whole-fund reports only (no statement of Lam's own, none unread — an unread
+    # scan may be Lam's statement): Lam's share needs Lam's commitment
+    whole_fund = ([x["id"] for x in ctx["files"] if x["report_type"] == "fund_financials"]
+                  if not ctx["own_statement"] and not ctx.get("unread") else [])
+    ctx = {**ctx, "whole_fund": whole_fund}
     quarters = sorted(quarters, key=lambda q: q["period_order"])
     src: dict[str, str] = {}
 
@@ -384,26 +406,74 @@ def _fund(name: str, quarters: list[dict], det: dict, prof: dict, facts: dict,
             "investment_balance": balance},
         "latest_quarter": quarters[-1]["period_label"] if quarters else None,
         "details": det, "sources": src, "estimated": sorted(estimated),
+        "files": ctx["files"],
+        # whole-fund reports only: Lam's share needs Lam's commitment, then a re-read
+        "fund_level_ids": whole_fund,
+        "removable": not ctx["files"] and not quarters and commitment is None and drawn is None,
         "issues": _fund_issues({"commitment": commitment, "investment_balance": balance,
                                 "drawn_to_date": drawn, "distribution_to_date": distributed,
-                                "future_draw": future}, estimated, src, mismatches,
-                               waiting or []),
+                                "future_draw": future}, estimated, src,
+                               mismatches + _reconciles(name, quarters, ctx), waiting or [],
+                               name, ctx),
     }
 
 
-def _fund_issues(values: dict, estimated: set, src: dict, mismatches: list[str],
-                 waiting: list[dict]) -> list[dict]:
+# activity lines of a quarter's roll-forward (beginning + these = ending)
+_ROLL_FLOWS = ("funding", "equity_income_loss", "return_of_capital", "dividends", "other",
+               "investment_mtm", "sale_of_investment", "net_realized_gain", "accrued_interest",
+               "note_conversion", "gain_loss_on_conversion", "acquisition_impact", "impairment")
+
+
+def _reconciles(name: str, quarters: list[dict], ctx: dict) -> list[dict]:
+    """The latest quarter's approved roll-forward must add up: beginning +
+    activity = ending. If it doesn't, a balance was misread — flag it."""
+    if not quarters:
+        return []
+    q = quarters[-1]["period_label"]
+    vals = ctx["rf_trusted"].get((name, q), {})
+    if "beginning_balance" not in vals or "ending_balance" not in vals:
+        return []
+    begin = Decimal(vals["beginning_balance"]["value"])
+    end = Decimal(vals["ending_balance"]["value"])
+    activity = sum((Decimal(vals[k]["value"]) for k in _ROLL_FLOWS if k in vals), Decimal(0))
+    if abs(begin + activity - end) <= max(Decimal(1), abs(end) * Decimal("0.001")):
+        return []
+    sid = vals["beginning_balance"]["submission_id"]
+    return [{"kind": "mismatch", "submission_id": sid,
+             "message": f"{q} doesn't add up: beginning {begin:,.2f} + activity {activity:,.2f} = "
+                        f"{begin + activity:,.2f}, but the ending balance is {end:,.2f} — check "
+                        f"the beginning and ending balances in {ctx['names'].get(sid, 'the file')}"}]
+
+
+def _fund_issues(values: dict, estimated: set, src: dict, mismatches: list,
+                 waiting: list[dict], name: str = "", ctx: Optional[dict] = None) -> list[dict]:
     """What a person needs to look at for one fund."""
+    ctx = ctx or {"files": [], "own_statement": False}
     out = []
     pending = {w["field"] for w in waiting}
     labels = dict(_FUND_FIGURES)
+    fund_level = ctx.get("whole_fund", [])
+    if fund_level and values.get("commitment") is None:
+        out.append({"kind": "commitment", "reread_ids": fund_level,
+                    "message": f"{name}'s report{'s' if len(fund_level) > 1 else ''} cover"
+                               f"{'' if len(fund_level) > 1 else 's'} the whole fund — Lam's own "
+                               "row isn't in it. Enter Lam's commitment to the fund: Lam's share "
+                               "is then worked out from the report (it's re-read for you)"})
     missing = [f for f, _l in _FUND_FIGURES if values.get(f) is None and f not in pending]
     if missing:
-        out.append({"kind": "missing", "fields": missing,
-                    "message": ", ".join(labels[f] for f in missing) + ": not on file — upload "
-                               "the statement that shows " + ("them" if len(missing) > 1 else "it")
-                               + ", or enter " + ("them" if len(missing) > 1 else "it")
-                               + " in the fund's details"})
+        plural = len(missing) > 1
+        if ctx["files"]:
+            out.append({"kind": "missing", "fields": missing, "files": ctx["files"],
+                        "message": ", ".join(labels[f] for f in missing) + ": not in what was "
+                                   "read from its files — re-read them (files read before an "
+                                   "update miss what's read now), or enter "
+                                   + ("them" if plural else "it") + " in the fund's details"})
+        else:
+            out.append({"kind": "missing", "fields": missing,
+                        "message": ", ".join(labels[f] for f in missing) + ": no file on record "
+                                   "— upload the statement that shows " + ("them" if plural else "it")
+                                   + ", or enter " + ("them" if plural else "it")
+                                   + " in the fund's details"})
     est = [f for f, _l in _FUND_FIGURES if f in estimated and values.get(f) is not None]
     if est:
         out.append({"kind": "estimate", "fields": est,
@@ -411,7 +481,7 @@ def _fund_issues(values: dict, estimated: set, src: dict, mismatches: list[str],
                                "quarters on file — a statement with the since-inception figures "
                                "replaces " + ("them" if len(est) > 1 else "it")
                                + ", or enter the figures"})
-    out += [{"kind": "mismatch", "message": m} for m in mismatches]
+    out += [m if isinstance(m, dict) else {"kind": "mismatch", "message": m} for m in mismatches]
     by_file: dict[int, list[str]] = {}
     files: dict[int, str] = {}
     for w in waiting:
@@ -449,7 +519,8 @@ def _invested(calls: list[dict], quarters: list[dict], until: int) -> list[dict]
     return sorted(rows, key=lambda r: r["date"])
 
 
-def _company(name: str, det: dict, facts: dict, calls: list[dict], until: int) -> dict[str, Any]:
+def _company(name: str, det: dict, facts: dict, calls: list[dict], until: int,
+             files: Optional[list[dict]] = None) -> dict[str, Any]:
     src: dict[str, str] = {}
     invested = _invested(calls, [], until)
     total = _d(det.get("total_invested"))
@@ -481,9 +552,12 @@ def _company(name: str, det: dict, facts: dict, calls: list[dict], until: int) -
         "exit": {"date": det.get("exit_date"), "value": _d(det.get("exit_value")),
                  "proceeds": _d(det.get("exit_proceeds")), "escrow": _d(det.get("exit_escrow"))},
         "invested": invested, "details": det, "sources": src,
+        "files": files or [],
+        "removable": not files and total is None and value is None,
         "issues": ([] if total is not None else [
             {"kind": "missing", "field": "total_invested",
-             "message": "Total Investment to Date: not on file — enter it in the company's details"}])
+             "message": "Lam's holding record — Total Investment to Date, round, theme, status — "
+                        "isn't in the company's own statements; enter it once in its details"}])
         + ([{"kind": "missing", "field": "exit_proceeds",
              "message": "Exit proceeds: enter them in the company's details"}]
            if exited and det.get("exit_proceeds") in (None, "") else []),

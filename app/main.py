@@ -388,6 +388,9 @@ async def set_portfolio_details(entity: str, request: Request):
     values: dict = {}
     for key, raw in body.items():
         if key == "kind":
+            if raw in (None, ""):
+                values["kind"] = None          # a hand-added entry leaves the report
+                continue
             if raw not in ("fund", "direct_investment"):
                 raise HTTPException(400, "kind must be fund or direct_investment")
             values["kind"] = raw

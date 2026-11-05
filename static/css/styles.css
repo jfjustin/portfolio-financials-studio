@@ -308,6 +308,7 @@ sup.est { color: var(--warn); font-weight: 700; margin-left: 1px; cursor: help; 
 .att-item.review { border-left-color: var(--brand); }
 .att-item.unread, .att-item.mismatch { border-left-color: var(--err); }
 .att-item.estimate, .att-item.check { border-left-color: var(--muted); }
+.att-item.commitment { border-left-color: var(--brand); }
 .att-kind { font-size: 11px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); min-width: 70px; }
 .tbl-dif input.dif-act.missing { border: 1px dashed var(--warn); background: color-mix(in srgb, var(--warn) 8%, var(--panel)); }
 .tbl-dif input.dif-act.manual { border-color: color-mix(in srgb, var(--brand) 55%, var(--line)); }
