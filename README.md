@@ -1,48 +1,245 @@
-# Portfolio Financials Studio
+<div align="center">
 
-Extract, validate, and review confidential **fund / JV / direct-investment**
-financials from **PDF and Excel** reports — replacing manual data entry into
-spreadsheets — with a **pluggable model backend** and a strict human-in-the-loop
-review step.
+# 📊 Portfolio Financials Studio
 
-Runs **deterministic-only by default**: no model, no credentials, nothing leaves
-the machine. When you need help with non-standard layouts, plug in a model
-provider — including a **customer's own Microsoft model (Azure OpenAI)** running
-inside their Azure tenant, so data never goes to a public vendor.
+**Audit-ready numbers from messy investment reports — read, reconciled, reviewed by a person,
+and delivered in the team's own workbooks.**
+
+[![CI/CD](https://img.shields.io/github/actions/workflow/status/jfjustin/portfolio-financials-studio/azure-deploy.yml?branch=main&label=CI%2FCD&logo=githubactions&logoColor=white)](https://github.com/jfjustin/portfolio-financials-studio/actions/workflows/azure-deploy.yml)
+![Python](https://img.shields.io/badge/python-3.11%2B-3776AB?logo=python&logoColor=white)
+![FastAPI](https://img.shields.io/badge/FastAPI-009688?logo=fastapi&logoColor=white)
+![Azure](https://img.shields.io/badge/Azure-App%20Service%20%C2%B7%20OpenAI%20%C2%B7%20ADLS-0078D4)
+![Delta Lake](https://img.shields.io/badge/Delta%20Lake-medallion-00ADD4)
+![Power BI](https://img.shields.io/badge/Power%20BI%20%2F%20Fabric-ready-F2C811)
+![Tests](https://img.shields.io/badge/end--to--end%20checks-146-2EA44F)
+
+[See it in action](#-see-it-in-action) · [Highlights](#-highlights) · [Architecture](#%EF%B8%8F-architecture) ·
+[Quick start](#-quick-start) · [User guide](GUIDE.md) · [Architecture notes](docs/ARCHITECTURE.md)
+
+</div>
+
+---
+
+Investment teams receive their quarterly numbers in every format there is: capital-account
+statements, fund financial statements, scanned PDFs, portfolio companies' own P&Ls, Excel
+workbooks and CSV exports. **Portfolio Financials Studio** reads them with rule-based parsers
+first and a vision-capable model only where rules can't, maps every figure to a canonical metric,
+reconciles it before it is recorded, and routes anything uncertain to a person. Only approved
+values reach the dashboards, the Delta Lake tables behind Power BI, and the two quarterly Excel
+deliverables the team sends.
+
+| How it reads | Backend | Data boundary |
+|---|---|---|
+| 🔒 **Deterministic** *(default)* | Rule-based parsers only — `pdfplumber`, `openpyxl` | Nothing leaves the machine; no credentials |
+| 🏢 **Azure OpenAI** | The customer's own deployment, text and vision | Stays inside the customer's Azure tenant |
+| ☁️ **OpenAI** · 🖥️ **Ollama** | Public cloud, or a local model | Quick trials · fully offline |
+
+## ✨ Highlights
+
+- 📥 **Reads what arrives** — native and scanned PDF, XLSX/XLSM/XLS and CSV; side-by-side statements,
+  multi-period columns, European number formats, figures stated "in $000".
+- 🧮 **Deterministic first** — exact rules do the reading; the optional model step reads only what the
+  rules can't (including scanned pages), and every model reading goes to review.
+- 🔁 **Reconciles before it records** — last quarter's ending carries forward, year-to-date statements are
+  de-cumulated into quarters, and every quarter must add up (beginning + activity = ending).
+- 🧑‍⚖️ **Human in the loop** — confirm, correct or reject each value; an append-only audit trail records
+  every change; nothing unreviewed reaches a report.
+- 🚩 **Flags gaps, never guesses** — *missing*, *to review*, *mismatch*, *estimate* and *unread* items, each
+  with a one-click fix: open the file, re-read it, or enter the figure by hand.
+- 📑 **Two quarterly deliverables** in the team's own workbook layouts — *Direct Investment Financials*
+  (budget vs. actual, burn and runway) and *Investment Portfolio* (fund sheets linked to a summary).
+- 🧠 **Format memory** — learns each fund's statement wording from reviewers and confirmed values; no
+  retraining.
+- 🏞️ **Lakehouse-ready** — Land → Bronze → Silver → Gold Delta tables on ADLS Gen2 or Fabric OneLake, plus
+  versioned Parquet exports for Power BI.
+- 🚀 **Shipped to Azure** — GitHub Actions runs 146 end-to-end checks before every deploy to App Service;
+  Entra ID SSO and keyless (managed identity) access to Azure services.
+
+## 🎬 See it in action
+
+Two recordings of the complete workflow — upload → extraction → sectioned
+review → edit a value → human confirm → portfolio sections → export — on the
+same tool, two model configurations:
+
+| Deterministic (no model) | Azure OpenAI (customer's own deployment) |
+|---|---|
+| ![Deterministic workflow](docs/demo/deterministic_demo.gif) | ![Azure OpenAI workflow](docs/demo/azure_demo.gif) |
+| Zero credentials, nothing leaves the machine. | A required field is genuinely missing — the model suggests three values (flagged, capped at 50% confidence), a human overwrites one, and TVPI/DPI/NAV go from "—" to real numbers once confirmed. |
+
+## 📑 The quarterly deliverables
+
+**Direct Investment Financials** — each portfolio company's quarter: budget vs. actual, gross and net
+monthly burn, runway. Exported as one sheet per company.
+
+[![Direct Investment Financials](docs/images/direct-investment-financials.png)](docs/images/direct-investment-financials.png)
+
+**Investment Portfolio** — funds and direct investments as of a quarter, with the portfolio's cash
+flows. Exported as per-fund sheets linked to a summary sheet.
+
+[![Investment Portfolio](docs/images/investment-portfolio.png)](docs/images/investment-portfolio.png)
+
+<sub>Screenshots use the made-up companies and funds generated by `samples/make_samples.py`.</sub>
+
+<details>
+<summary><b>How each figure is sourced</b></summary>
+
+<br>
+
+**Direct Investment Financials** (`app/direct_investments.py`, `app/extractors/company.py`) — per
+company, Budget | Actual for each quarter and the year, in $000:
+
+| Row | Actual comes from |
+|---|---|
+| Revenue | P&L "Total for Income" / "Total revenue" / "Revenue" |
+| Operating Cash Flow | Cash flow "Net cash provided by (used in) operating activities" |
+| CapEx | Fixed-asset purchases under investing activities (not deposits or securities) |
+| Ending Cash | Balance sheet "Total for Bank Accounts" / "Cash and cash equivalents", checked against the cash flow's closing cash |
+| Operating Expense | P&L "Total for Expenses" / "Total operating expenses" |
+| Gross / Net Monthly Burn | Operating expense ÷ months · −(operating cash flow + CapEx) ÷ months |
+| Gross / Net Runway | Ending cash ÷ monthly burn, in whole months (n/a when cash-flow positive) |
+
+Each figure is matched on its whole wording inside the right statement ("Deferred Revenue" is never
+revenue) and read from the column covering the quarter — the "Total" of Jan | Feb | Mar, the
+"Three Months Ended" column rather than a prior year beside it, never a budget column. Scanned
+statements go to the vision model (or Tesseract). The workbook has a **Sources** sheet naming the file
+and line behind every actual.
+
+**Investment Portfolio** (`app/portfolio.py`) — one sheet per fund with the template's cells
+(Investment Name B2 … Drawn to Date B13, Distribution to Date F13), the **Latest Stats** row (date,
+number of investments, cost, value, gain %), the dated **Invested** history and the accounting
+team's equity-investments summary; one sheet per direct investment; and a **Summary-Cash Flows**
+sheet whose cells reference those sheets (`='Fund 1'!$B$13`, …) with the template's cash-flow
+totals. Investment Balance is the roll-forward's ending balance; drawn, distributed and remaining
+commitment come from the statements' since-inception lines; Latest Stats from the fund's schedule of
+investments. Master data (type, vintage, fund size, region / sector, GL account…) and dated capital
+calls are entered once per fund.
+
+**Gaps are flagged, never guessed.** A figure no approved file shows is *missing*; one read but not yet
+approved is *to review*; approved figures that disagree, or a quarter that doesn't add up, are a
+*mismatch*. A person can type a figure in from the dashboard — it's kept in its own "Entered
+manually" submission, confirmed, flagged `manual_entry` and audited.
+
+</details>
+
+## 🏗️ Architecture
 
 ```
- upload ─▶ extract ─▶ classify+map ─▶ validate ─▶ human review ─▶ GRAND LEDGER ─▶ trend over time
- (any co,  (PDF/Excel) (entity+metric) (reconcile) (confirm/edit)  (consolidated   (+ CSV export)
-  any fmt)                                                          all companies)
+  PDF · scanned PDF · XLSX · CSV
+                 │  upload
+                 ▼
+  ┌────────────────────────────┐
+  │ 1  Land                    │  original kept exactly as received ............ Land
+  ├────────────────────────────┤
+  │ 2  Extract                 │  rule-based parsers (pdfplumber, openpyxl)
+  │    deterministic first     │  + model step for the rest (Azure OpenAI text & vision)
+  ├────────────────────────────┤
+  │ 3  Map & reconcile         │  canonical metrics · format memory · carry-forward
+  │                            │  · YTD de-cumulation · balance checks ......... Bronze
+  ├────────────────────────────┤
+  │ 4  Human review            │  confirm · correct · reject · enter by hand
+  │                            │  · append-only audit trail .................... Silver
+  ├────────────────────────────┤
+  │ 5  Publish                 │  approved values only ......................... Gold
+  └─────────────┬──────────────┘
+                ├──▶  Dashboard — TVPI · DPI · IRR · quarterly roll-forward · grand ledger
+                ├──▶  Excel — Direct Investment Financials · Investment Portfolio
+                └──▶  Power BI / Fabric — Delta tables (ADLS Gen2 / OneLake) · Parquet exports
 ```
 
-The end goal: take every company's report — **different companies, different
-formats** — normalize them into one **grand ledger**, and **visualize value over
-time**. This project combines two lineages: the rigor of a deterministic,
-audit-trailed extraction pipeline, and the domain model of an
-investment-intelligence app (entity classification, capital-account
-roll-forwards, workbook field mapping).
+**The lake is the system of record, Fabric the analytics backbone, Azure AI does the reading.**
+Land keeps every original; Bronze every line read, with its page or cell; Silver every standardized
+value; Gold only approved values, with entity, period and metric dimensions and a reporting version
+per entity and period. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
-## Architecture
+## 🧰 Tech stack
 
-**The lake is the system of record. Fabric is the analytics backbone. Azure AI
-does the reading.** The app lands every original, keeps every extraction (Bronze)
-and every standardized value (Silver). It publishes **approved and
-auto-accepted values to Gold** (never values waiting for review), the
-dimensional tables Power BI and Fabric build on. See
-[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md). Settings: `LAKE_BACKEND`
-(`none` | `local` | `adls` | `onelake`), `LAKE_ACCOUNT_URL`, `LAKE_FILESYSTEM`,
-`LAKE_ROOT`, `PUBLISH_AUTO_ACCEPTED`.
+| Layer | Technology |
+|---|---|
+| Backend | Python 3.12 · FastAPI · Pydantic · SQLAlchemy Core |
+| Document reading | pdfplumber · openpyxl · Tesseract (optional) |
+| AI | Azure OpenAI (text and vision) · OpenAI · Ollama — one pluggable interface |
+| Storage | SQLite · Azure SQL / PostgreSQL · Azure Blob for source documents |
+| Data platform | Delta Lake (`deltalake`, PyArrow) on ADLS Gen2 or Microsoft Fabric OneLake · Parquet exports |
+| Frontend | Plain JavaScript with SVG charts — no external CDNs, fonts or scripts |
+| Cloud & DevOps | Azure App Service · GitHub Actions · Docker · Azure Container Apps · Entra ID · managed identity |
+| Testing | End-to-end suite of 146 checks on synthetic documents, run before every deploy |
 
-**📖 New here? Read the [User Guidebook (GUIDE.md)](GUIDE.md)** for a
-screen-by-screen walkthrough.
-**🔌 Integrating BI?** See the
-**[Fabric / Power BI Integration Spec](docs/FABRIC_INTEGRATION.md)**.
+## 🚀 Quick start
 
-## Reporting integration (Microsoft Fabric / Power BI)
+```bash
+git clone https://github.com/jfjustin/portfolio-financials-studio.git
+cd portfolio-financials-studio
+pip install -r requirements.txt          # core dependencies; model SDKs are optional
+python samples/make_samples.py           # synthetic documents to try
+./run.sh                                 # → http://127.0.0.1:8713
+```
 
-The app is the **OLTP system**; Fabric/Power BI is the **reporting layer**. Output
-is published as two versioned tables with a frozen schema (`schema_version 1.0`):
+Drag files onto the upload area, open a submission to review it, then confirm. Run the test suite
+with `python tests/test_e2e.py`. To read with your own Azure OpenAI deployment:
+
+```bash
+export LLM_PROVIDER=azure
+export AZURE_OPENAI_ENDPOINT=https://your-resource.openai.azure.com
+export AZURE_OPENAI_DEPLOYMENT=your-deployment-name
+export AZURE_OPENAI_API_KEY=...           # or keyless: AZURE_USE_ENTRA_ID=true
+./run.sh
+```
+
+## 🛡️ Why the numbers are trustworthy
+
+No extractor — model or otherwise — can guarantee correct figures on its own. Trust is built in layers:
+
+1. **Deterministic parsing first.** Standard sheets and native PDFs are parsed by exact rules, never
+   guessed. In multi-sheet workbooks the primary statement sheet is detected, so values aren't pulled
+   off a look-alike summary tab.
+2. **Reconciliation.** Assets = Liabilities + Net Assets; Income − Expenses = Net Income; equity income =
+   ownership × JV net income; fair value − cost = unrealized; MOIC = FV / cost; the capital-account
+   roll-forward (beginning + activity = ending). Anything that fails goes to review.
+3. **Human in the loop.** Every low-confidence, flagged or model-suggested value is surfaced for a person.
+   Only high-confidence values that pass every check (`auto`) and reviewer-`confirmed` values feed
+   reports and exports.
+4. **Full audit trail.** Every value and every change (old → new, who, when, why) is recorded append-only.
+   Money is stored as exact decimals, never floats.
+
+The model is a reader of last resort, and its output is **always** reviewed — the guarantee never rests
+on the model.
+
+## 📚 Documentation
+
+| Guide | What's in it |
+|---|---|
+| [User Guidebook](GUIDE.md) | Screen-by-screen workflow: upload, review, approve, deliverables, troubleshooting |
+| [Architecture](docs/ARCHITECTURE.md) | The medallion lake, ADLS Gen2 → OneLake, Power BI over Delta tables |
+| [Fabric / Power BI integration](docs/FABRIC_INTEGRATION.md) | Export contract, landing options, DAX starters and SQL views |
+
+<details>
+<summary><b>Dashboard and the grand ledger</b></summary>
+
+<br>
+
+- **Overall Performance** — TVPI, DPI and a money-weighted IRR across all fund investments, from
+  confirmed funding, distributions and NAV (`app/performance.py`).
+- **Direct Investments** — per company: investment cost, estimated FMV, book value, unrealized
+  gain/(loss), MOIC, ownership.
+- **Direct Investment Financials** and **Investment Portfolio** — the two quarterly deliverables, each
+  with **Download xlsx** in the team's workbook layout.
+- **Portfolio value over time** — total investment balance per period, with a thin line per entity;
+  each period shows its calendar and fiscal-year label (e.g. "2026-Q1" / "FY2026 Q2").
+- **Quarterly roll-forward** — Beginning → Funding → … → Ending per entity and calendar quarter. Each
+  quarter's beginning carries forward the previous ending, year-to-date statements are de-cumulated, and
+  every adjustment is badged and sent to review.
+- **Grand ledger** — every trusted figure from every company and period in one filterable table,
+  grouped into Assets & Balances / Income & Profit / Distributions & Capital Flows / Performance Ratios.
+
+</details>
+
+<details>
+<summary><b>Reporting integration (Microsoft Fabric / Power BI)</b></summary>
+
+<br>
+
+The app is the system of record; Fabric / Power BI is the reporting layer. Output is published as
+versioned tables with a frozen schema (`schema_version 1.0`):
 
 | Table | Grain | Key |
 |---|---|---|
@@ -53,203 +250,34 @@ is published as two versioned tables with a frozen schema (`schema_version 1.0`)
 curl -O http://127.0.0.1:8713/api/fabric/fact_financial_metric.parquet   # recommended
 curl -O http://127.0.0.1:8713/api/fabric/dim_entity.parquet
 curl    http://127.0.0.1:8713/api/fabric/schema                          # contract JSON
-# CSV variants exist at the same paths with .csv
 ```
 
-- **Parquet preserves money as `decimal(38,6)`** — CSV can coerce it to float.
-- **Only `auto` + `confirmed` rows are exported**, so a dashboard can never show
-  an unreviewed figure.
-- Four landing options (file + OneLake shortcut, Azure SQL mirroring, Data Factory
-  pipeline, or **Power BI direct to Azure SQL with no Fabric at all**), plus DAX
-  starters and ready-made SQL views, are documented in the
-  [integration spec](docs/FABRIC_INTEGRATION.md).
+Parquet keeps money as `decimal(38,6)`, and only approved rows are exported, so a dashboard never
+shows an unreviewed figure. With `LAKE_BACKEND=adls` or `onelake` the same data lands as Delta tables
+(Land, Bronze, Silver, Gold) after every change. See [docs/FABRIC_INTEGRATION.md](docs/FABRIC_INTEGRATION.md).
 
-## Dashboard & the grand ledger
+</details>
 
-- **Overall Performance** — TVPI, DPI, and a money-weighted IRR
-  aggregated across all fund investments, computed from confirmed funding,
-  distributions, and NAV (`app/performance.py`).
-- **Direct Investments** — one row per company: investment cost, estimated FMV,
-  book value, unrealized gain/(loss), MOIC, ownership — mirroring the firm's
-  own "Portfolio Value" report format.
-- **Direct Investment Financials** and **Investment Portfolio** — the two
-  quarterly deliverables, each with a **Download xlsx** in the firm's own workbook
-  layout (see [Quarterly deliverables](#quarterly-deliverables)).
-- **Portfolio value over time** — a line chart of total investment balance per
-  period (plus a thin line per entity); each period shows both its calendar
-  label and fiscal-year label (e.g. "2026-Q1" / "FY2026 Q2").
-- **Investment portfolio** — the consolidated entities table (`investment_entities`).
-- **Quarterly roll-forward** — Beginning → Funding → … → Ending per entity and
-  calendar quarter (`investment_quarters`), with entity drill-down.
-  - Each quarter's beginning is carried forward from the previous quarter's ending.
-  - Year-to-date statements are de-cumulated, and every quarter reconciles.
-  - Each adjustment is badged and sent to review (GUIDE §4b-2).
-- **Grand ledger** — every trusted fact from every company/period in one
-  normalized, filterable table, grouped by **section** (Assets & Balances /
-  Income & Profit / Distributions & Capital Flows / Performance Ratios);
-  **Export ledger CSV**.
-- **KPI tiles**, value-by-type / value-by-entity bars, submissions list, and a
-  per-submission **review modal sectioned the same way** so a reviewer checks
-  balances, P&L, and capital flows as distinct groups rather than one long list.
+<details>
+<summary><b>Model providers and choosing a model</b></summary>
 
-Only `auto` + human-`confirmed` values appear in these views — unreviewed or
-unreconciled figures stay out until a person accepts them.
-
-## Quarterly deliverables
-
-Both are built from **approved values only** and say where every figure came from.
-
-**Direct Investment Financials Qn YYYY** (`app/direct_investments.py`). Per portfolio
-company, Budget | Actual for Q1'26 … Q4'26 and the year, in $000:
-
-| Row | Actual comes from |
-|---|---|
-| Revenue | P&L "Total for Income" / "Total revenue" / "Revenue" |
-| Operating Cash Flow | CF "Net cash provided by (used in) operating activities" |
-| CapEx | CF fixed-asset purchases under investing activities (not deposits or securities) |
-| Ending Cash | BS "Total for Bank Accounts" / "Cash and cash equivalents" (checked against the CF's closing cash) |
-| Operating Expense | P&L "Total for Expenses" / "Total operating expenses" |
-| Gross Monthly Burn | Operating Expense ÷ months in the period |
-| Gross Runway | Ending Cash ÷ gross monthly burn, whole months |
-| Net Monthly Burn | −(Operating Cash Flow + CapEx) ÷ months in the period |
-| Net Runway | Ending Cash ÷ net monthly burn, whole months (n/a when cash-flow positive) |
-
-A file named "Company X" / "Note X" (or reading as a company's own P&L, balance sheet
-or cash flow) is filed as **Direct Investment Financials**. `app/extractors/company.py`
-matches each figure on its whole wording inside the right statement — "Deferred
-Revenue" is never revenue — and takes the column covering the quarter (the "Total"
-of Jan | Feb | Mar, the "Three Months Ended" 2026 column rather than a prior year to
-its right, never a budget column). Scanned statements are read by the vision model
-(or Tesseract), and figures stated "in $000" are recorded in whole dollars. Budgets
-are typed into the dashboard (`POST /api/budgets`).
-`GET /api/exports/direct-investment-financials.xlsx?year=2026&quarter=1` gives one
-sheet per company ("Company Y(in $000)", the template's rows and formats) and a **Sources** sheet
-naming the file and line behind every actual.
-
-**Investment Portfolio Mon'YY** (`app/portfolio.py`). One sheet per fund in the template's
-layout — Investment Name (B2), Type (B3), Round (B4), Vintage (B5), Fund Size (B6),
-Commitment (B7), Future Draw (B9), Region / Sector (B10), Investment Balance (B11),
-Drawn to Date (B13), Distribution to Date (F13), the **Latest Stats** row (date, #
-of investments, cost, value, gain %) and the dated **Invested** history — plus the
-accounting team's Equity Investments Summary beside it; one sheet per direct
-investment; and a **Summary-Cash Flows** sheet whose cells reference those sheets
-exactly as the template workbook does (`='Fund 1'!$B$13`, …) with the cash-flow totals
-(cash inflow = distributions + exit proceeds; actual outflow = drawn + invested;
-committed = future draw). Investment Balance is the roll-forward's ending balance;
-drawn, distributed and remaining commitment come from the statements' since-inception
-lines (else the quarters on file, marked as an estimate); Latest Stats from the fund's
-schedule of investments (model step, or its "Total Portfolio Investments" line);
-master data (type, vintage, fund size, region / sector, GL account, company code…)
-and dated calls are entered once per fund (`POST /api/portfolio/{entity}/details`,
-`…/calls`). `GET /api/exports/investment-portfolio.xlsx?as_of=2026-Q2` →
-"Investment Portfolio Jun'26.xlsx".
-
-**Gaps are flagged, never guessed.** Both reports list, per company / fund, what
-needs a person: figures in no approved file (*missing*), figures read but not yet
-approved (*to review*, with the file), approved figures that disagree (*mismatch*),
-and estimates. A person types a missing figure in from the dashboard
-(`POST /api/manual-values`, or `POST /api/submissions/{id}/facts` while reviewing a
-file); it's kept in its own "Entered manually" submission, confirmed, flagged
-`manual_entry` and audited, and an empty value withdraws it.
-
-### Metric sections (asset / income / distribution / ratio)
-
-Every metric across all five report types carries a `category` so the review
-screen, grand ledger, and Fabric export all group figures the same way:
-
-| Section | Examples |
-|---|---|
-| **Assets & Balances** | NAV, cost basis, fair value, beginning/ending balance |
-| **Income & Profit / (Loss)** | net income, realized/unrealized gain, equity income |
-| **Distributions & Capital Flows** | capital called, contributions, distributions, dividends |
-| **Performance Ratios** | ownership %, MOIC, IRR |
-
-Edit the taxonomy in `app/report_types.py` (`MetricCategory`, `CATEGORY_LABELS`) —
-every metric spec carries a `category=...` kwarg.
-
-### Fiscal year
-
-Every period shown in the app carries both its **calendar** label (e.g.
-`2026-Q1`) and a **fiscal-year** label (e.g. `FY2026 Q2`), computed from
-`FISCAL_YEAR_END_MONTH` (default `9`: FY2026 = Oct 2025–Sep 2026, so Jan–Mar
-2026 is FY2026 Q2 and Apr–Jun 2026 is FY2026 Q3). Set it to `12` for a pure
-calendar year. See `app/db.py:fiscal_info()`.
-
-## Why the numbers are trustworthy
-
-No automated extractor — model or otherwise — can *guarantee* correct figures on
-its own. Trust is built in four layers:
-
-1. **Deterministic parsing first.** Standard sheets and native PDFs are parsed by
-   exact rules (openpyxl / pdfplumber), never guessed. In multi-sheet workbooks
-   the **primary statement sheet** is detected so values aren't pulled off a
-   look-alike summary tab.
-2. **Validation / reconciliation.** Arithmetic checks run automatically:
-   Assets = Liabilities + Net Assets; Income − Expenses = Net Income;
-   Equity income = Ownership % × JV Net Income; Fair Value − Cost = Unrealized;
-   MOIC = FV / Cost; **capital-account roll-forward** (Beginning + Activity =
-   Ending); ownership in 0–100; currency consistency. Anything that fails is
-   downgraded to *needs review*.
-3. **Human-in-the-loop.** Every low-confidence, flagged, or **model-suggested**
-   value is surfaced for a person to confirm or correct. Only `auto`
-   (high-confidence + passed checks) and `confirmed` values feed the dashboard
-   and export.
-4. **Full audit trail.** Every value and every change (old → new, when, note) is
-   recorded append-only in SQLite. Money is stored as exact decimals, never floats.
-
-The LLM is used **only as a fallback** for non-standard layouts, and its output is
-**always** routed to human review — the guarantee never rests on the model.
-
-## Model providers (pluggable)
-
-Select with the `LLM_PROVIDER` environment variable:
+<br>
 
 | `LLM_PROVIDER` | Model runs | Data boundary | Use when |
 |---|---|---|---|
 | `none` *(default)* | — | nothing leaves the machine | demos, fully deterministic runs |
-| `azure` | **customer's Azure tenant** | inside their Azure subscription | enterprise / confidential data |
+| `azure` | the customer's Azure tenant | inside their Azure subscription | enterprise / confidential data |
 | `openai` | public OpenAI cloud | leaves to OpenAI | quick trials |
 | `ollama` | local machine | nothing leaves the machine | fully offline with a model |
 
-With a model configured, investor statements in layouts the parser doesn't
-fully cover are read by a dedicated capital-account step. It covers
-multi-column (fund total vs. investor, quarter vs. YTD/inception) and
-since-inception statements, European number formats, and scanned pages (vision
-for `azure`/`openai`, else local Tesseract). It reads the investor named in
-`LP_NAMES` and the current-quarter column. Every value goes to review; see
-GUIDE §6b.
+With a model configured, statements the parser can't fully read go to dedicated model steps: investor
+capital accounts (the investor's column, the current quarter's column, since-inception lines),
+fund-level reports (the investor's share worked out from the fund's figures and its commitment),
+schedules of investments, and portfolio companies' own statements — text or scanned pages. Code, not the
+model, parses and sums the printed figures it points to.
 
-**Fund-level reports** (GUIDE §6d) compute our quarter pro-rata from the fund's
-figures once our commitment to that fund is known. Side-by-side statements are
-read block by block, and our row in an investor table is used as a check. Any
-stored file can be re-read after teaching the app something new.
-
-**Format memory** (GUIDE §6c): the parser and the model both use known statement
-wording. It's pre-loaded (`app/data/statement_terms.json`), taught by reviewers
-(for one fund or all), and learned from each fund's confirmed values. Each new
-statement is read the way that fund was confirmed before, with no retraining.
-
-### Customer Microsoft model (Azure OpenAI)
-
-Connects to an Azure OpenAI **deployment** in the customer's own subscription, so
-prompts/data stay within their Azure boundary and are not shared with OpenAI.
-
-```bash
-export LLM_PROVIDER=azure
-export AZURE_OPENAI_ENDPOINT=https://your-resource.openai.azure.com
-export AZURE_OPENAI_DEPLOYMENT=your-deployment-name        # deployment, not base model
-export AZURE_OPENAI_API_VERSION=2024-10-21
-export AZURE_OPENAI_API_KEY=...          # OR keyless: AZURE_USE_ENTRA_ID=true
-pip install "openai>=1.40" "azure-identity>=1.17"
-./run.sh
-```
-
-**Choosing the model.** The model is whatever deployment `AZURE_OPENAI_DEPLOYMENT`
-names, so switching is one app setting. The capital-account step needs a model
-that does chat completions with JSON output and reads images (for scans), and
-`LLM_REASONING_EFFORT=high` makes GPT-5/6-class models read more carefully. Each
-file's model reading must finish within App Service's ~230 s request limit
-(uploads go one file per request; calls time out at 180 s). Benchmarked on four
+The model is whatever deployment `AZURE_OPENAI_DEPLOYMENT` names. It needs JSON output and image input
+(for scans); `LLM_REASONING_EFFORT=high` makes reasoning models read more carefully. Benchmarked on four
 hard statements (two-column, scanned, fund-level, reserves workbook):
 
 | Deployment | Result | Time per file |
@@ -258,72 +286,44 @@ hard statements (two-column, scanned, fund-level, reserves workbook):
 | GPT-6.1 Sol (near-Astra, ~1/5 the price) | all correct | 21–39 s |
 | gpt-5-mini | one misread | 25–48 s |
 
-Keyless (recommended for enterprise): set `AZURE_USE_ENTRA_ID=true` and
-authenticate with `azure-identity` (`DefaultAzureCredential`: managed identity,
-`az login`, or environment credentials) — no API key stored anywhere.
+Keyless access: set `AZURE_USE_ENTRA_ID=true` and authenticate with `DefaultAzureCredential` (managed
+identity, `az login` or environment credentials) — no key stored anywhere.
 
-### Deterministic-only (demo)
+</details>
 
-```bash
-./run.sh            # LLM_PROVIDER defaults to none
-```
+<details>
+<summary><b>Authentication</b></summary>
 
-## Authentication (private workspace)
-
-Set `AUTH_MODE`:
+<br>
 
 | `AUTH_MODE` | Gate | Use when |
 |---|---|---|
-| `none` *(default)* | open | local / single user |
-| `password` | one shared workspace password (`APP_PASSWORD`) | quick private deployments, demos |
-| `entra` | **Microsoft Entra ID SSO** (OIDC auth-code flow via MSAL) | enterprise |
+| `none` *(default)* | open | local, single user |
+| `password` | one shared workspace password (`APP_PASSWORD`) | quick private deployments |
+| `entra` | **Microsoft Entra ID SSO** (OIDC via MSAL) | enterprise |
 
 ```bash
-# shared-password workspace
 AUTH_MODE=password APP_PASSWORD='choose-one' SESSION_SECRET=$(openssl rand -hex 32) ./run.sh
-
-# Microsoft Entra ID SSO
 AUTH_MODE=entra ENTRA_TENANT_ID=... ENTRA_CLIENT_ID=... ENTRA_CLIENT_SECRET=... ./run.sh
-# register the redirect URI <your-host>/auth/callback in the Entra app registration
 ```
 
-Sessions are signed HttpOnly cookies. Static assets, the login page, and the
-health check are the only unauthenticated routes.
+Sessions are signed HttpOnly cookies; static assets, the login page and the health check are the only
+unauthenticated routes. Use `password` or `entra` for any deployment other people can reach.
 
-## Deploy to Azure (Microsoft-environment target)
+</details>
 
-For a Microsoft shop (Entra ID + Fabric + Azure), the coherent combo is the
-**Azure OpenAI model** + the app on **Azure Container Apps**, both inside the
-tenant, reached over the corporate VPN:
+<details>
+<summary><b>Deploy to Azure</b></summary>
 
-- Container image: `Dockerfile` (multi-stage; injects `$PORT`).
-- One-shot reference deploy: [`deploy/azure-container-apps.sh`](deploy/azure-container-apps.sh)
-  — builds the image, creates a Container App with a **system-assigned managed
-  identity**, and grants it `Cognitive Services OpenAI User` + `Storage Blob
-  Data Contributor` (keyless; no secrets stored).
-- Storage: `DATABASE_URL` → **Azure SQL / PostgreSQL**; `STORAGE_BACKEND=azure`
-  → **Blob** for source docs. Both support Entra ID / managed identity.
-- Network: deploy with **internal ingress** + a **Private Endpoint** on Azure
-  OpenAI, so model traffic stays on the Azure backbone and the app is only
-  reachable on the VPN.
-- **Microsoft Fabric / Power BI**: publish the versioned export tables
-  (`/api/fabric/*.parquet`) into OneLake / a Lakehouse, or point Power BI straight
-  at the database. See **[docs/FABRIC_INTEGRATION.md](docs/FABRIC_INTEGRATION.md)**.
+<br>
+
+**CI/CD.** Every push to `main` runs the end-to-end suite in GitHub Actions and, if it passes, deploys
+to Azure App Service (`.github/workflows/azure-deploy.yml`). On App Service the database defaults to the
+persistent `/home/data` mount; use `DATABASE_URL` (Azure SQL / PostgreSQL) for multi-instance production.
+
+**From source, no Docker** (e.g. a subscription without ACR Tasks):
 
 ```bash
-docker build -t portfolio-financials-studio .
-docker run -p 8000:8000 -e LLM_PROVIDER=none portfolio-financials-studio   # local container
-# full Azure deploy:
-bash deploy/azure-container-apps.sh        # edit the names/SKUs at the top first
-```
-
-### No Docker / restricted subscription? Deploy from source on App Service
-
-If your subscription disables ACR Tasks (common on trial/sponsored accounts) or
-you have no local Docker, deploy straight from source — no image build:
-
-```bash
-# in Azure Cloud Shell (has az + git); region must be allowed by your subscription
 az group create -n rg-pfs -l swedencentral
 APP=pfs-$RANDOM; echo "https://$APP.azurewebsites.net"
 az webapp up --name "$APP" --resource-group rg-pfs --runtime "PYTHON:3.12" --sku B1
@@ -331,109 +331,93 @@ az webapp config set -g rg-pfs -n "$APP" \
   --startup-file "python -m uvicorn app.main:app --host 0.0.0.0 --port 8000"
 az webapp config appsettings set -g rg-pfs -n "$APP" --settings WEBSITES_PORT=8000 LLM_PROVIDER=none
 ```
-Set env vars (`LLM_PROVIDER=azure …`, `AUTH_MODE=password …`) with
-`az webapp config appsettings set`.
 
-> **Data persistence.** App Service for Python/Linux unpacks the deployed app
-> into an **ephemeral path** on every container start/restart/redeploy — a
-> default SQLite DB placed relative to the app code is silently wiped each
-> time. The app auto-detects App Service (via `WEBSITE_INSTANCE_ID`) and
-> defaults storage to `/home/data`, the platform's **persistent** mount, so
-> this works with zero configuration on a current checkout. If you're
-> redeploying code that predates this fix, `git pull` first. For true
-> multi-instance production, use `DATABASE_URL` (Azure SQL/Postgres) instead
-> of SQLite — see [docs/FABRIC_INTEGRATION.md](docs/FABRIC_INTEGRATION.md) for
-> the same database feeding your BI layer.
+**Container Apps, inside the tenant.** `deploy/azure-container-apps.sh` builds the image (`Dockerfile`)
+and creates a Container App with a system-assigned managed identity granted `Cognitive Services OpenAI
+User` and `Storage Blob Data Contributor` — keyless, no secrets stored. With internal ingress and a
+private endpoint on Azure OpenAI, model traffic stays on the Azure backbone and the app is reachable only
+on the corporate network.
 
-See **[GUIDE.md](GUIDE.md)** for the full step-by-step with Azure OpenAI + auth.
+</details>
 
-## Report types supported
+<details>
+<summary><b>Report types, metric sections and fiscal year</b></summary>
 
-- **Fund Financials** — assets, liabilities, NAV, income, expenses, contributions, distributions…
-- **Joint Venture** — ownership %, JV assets/liabilities/equity, revenue, net income, carrying value
-- **JV Equity Income / (Loss)** — equity-method share of JV earnings (auto-recomputed & checked)
-- **Direct Investment** — cost, fair value, unrealized/realized, ownership, MOIC, IRR
-- **Direct Investment Financials** — a portfolio company's own P&L / balance sheet /
-  cash flow: revenue, operating expense, operating cash flow, CapEx, ending cash
-- **Investment Roll-Forward** — capital-account statements (Beginning → Funding →
-  Equity Income/(Loss) → Return of Capital → … → Ending), reconciled end-to-end
+<br>
 
-Add or edit metrics/synonyms in `app/report_types.py` — the rest of the pipeline adapts.
+| Report type | Key metrics |
+|---|---|
+| Fund Financials | assets, liabilities, NAV, income, expenses, contributions, distributions, fund size, schedule totals |
+| Joint Venture | ownership %, JV assets / liabilities / equity, revenue, net income, carrying value |
+| JV Equity Income / (Loss) | ownership %, JV net income, equity income (recomputed and checked) |
+| Direct Investment | cost, fair value, unrealized / realized, ownership, MOIC, IRR |
+| Direct Investment Financials | a company's own revenue, operating expense, operating cash flow, CapEx, ending cash |
+| Investment Roll-Forward | Beginning → Funding → Equity income / (loss) → Return of capital → … → Ending |
 
-## Setup
+Every metric carries a section — Assets & Balances, Income & Profit / (Loss), Distributions & Capital
+Flows, Performance Ratios — so review, ledger and exports group figures the same way. Every period
+carries its calendar label (`2026-Q1`) and fiscal label (`FY2026 Q2`) from `FISCAL_YEAR_END_MONTH`.
+Metrics and wording live in `app/report_types.py`; the pipeline adapts.
 
-```bash
-cd portfolio-financials-studio
-pip install -r requirements.txt          # core deps; LLM SDKs are optional
-python samples/make_samples.py           # optional: generate demo files
-./run.sh                                  # http://127.0.0.1:8713
-```
+</details>
 
-Open **http://127.0.0.1:8713**, drag PDFs/Excel onto the upload area, then click a
-submission to review, confirm, and lock in the values.
-
-## What's in the box
+## 🗂️ Project structure
 
 ```
 app/
-  report_types.py     canonical report types, metrics, synonym maps
-  models.py           data models + robust number/currency parsing + label→metric mapping
+  main.py                   FastAPI app, JSON API, auth routes
+  pipeline.py               ingest → extract → carry forward → validate → store → lake
   extractors/
-    base.py           period normalization, entity guessing, document classification
-    excel.py          deterministic .xlsx/.xlsm/.xls extraction
-    pdf_native.py     deterministic native-PDF extraction + scanned-file detection
-    registry.py       routing + assembly + primary-sheet selection + auto/needs-review policy
-  llm/                pluggable model layer (never auto-accepted)
-    base.py           provider interface + shared prompt/JSON handling + NoOp (deterministic)
-    azure_openai.py   customer Microsoft model (Azure OpenAI)
-    openai_cloud.py   public OpenAI cloud
-    ollama.py         local, on-machine model
-  validate.py         reconciliation / sanity checks
-  performance.py      Direct/Fund Investment summaries + portfolio TVPI/DPI/IRR
-  fabric_export.py    versioned Fabric/Power BI export (fact + dim tables)
-  pipeline.py         orchestrator (ingest → extract → validate → store)
-  db.py               SQLAlchemy Core storage + append-only audit (SQLite / Azure SQL / Postgres)
-                      + fiscal_info() (calendar <-> fiscal-year period labels)
-  storage.py          source-document storage (local folder or Azure Blob)
-  auth.py             AuthMiddleware + password gate / Entra ID SSO (optional)
-  config.py           settings; auto-detects Azure App Service's persistent /home mount
-  main.py             FastAPI app + JSON API + auth routes
-templates/            index.html (dashboard) + login.html (private-workspace gate)
-static/               dashboard UI (upload, review, offline SVG charts)
-docs/                 FABRIC_INTEGRATION.md — BI integration spec
-Dockerfile, deploy/   container image + Azure Container Apps deploy script
-samples/              demo report generator
+    registry.py             routing, assembly, model steps, auto / needs-review policy
+    pdf_native.py           native PDF: tables, statement lines, side-by-side blocks
+    excel.py, csv_native.py workbooks and CSV, stacked column headers
+    company.py              a company's own P&L / balance sheet / cash flow → five figures
+    base.py                 periods, quarters, statement and column detection
+    ocr.py                  optional Tesseract for scans
+  llm/                      pluggable model layer: Azure OpenAI · OpenAI · Ollama
+    capital_account.py      investor statements, fund-level reports, schedules of investments
+    company_statements.py   scanned or unusual company statements
+  carry_forward.py          quarter-to-quarter continuity, year-to-date de-cumulation
+  validate.py               reconciliation checks
+  terms.py                  format memory: preset, taught and learned wording
+  direct_investments.py     Direct Investment Financials report + workbook
+  portfolio.py              Investment Portfolio report + linked workbook
+  performance.py            TVPI / DPI / IRR and summaries
+  lake.py                   Land / Bronze / Silver / Gold Delta tables
+  fabric_export.py          versioned Parquet / CSV exports for Power BI
+  db.py                     SQLAlchemy Core storage, append-only audit trail
+  storage.py · auth.py · config.py
+templates/ · static/        dashboard — no external CDNs, SVG charts
+tests/test_e2e.py           146 end-to-end checks on synthetic documents
+samples/                    synthetic document generator (made-up companies and funds)
+docs/                       architecture, BI integration spec, screenshots, demos
+deploy/ · Dockerfile        Azure Container Apps script and container image
+.github/workflows/          CI/CD: test, then deploy to Azure App Service
 ```
 
-## Data & privacy
+## 🔒 Data and privacy
 
-- All data in `data/` (SQLite DB + copies of uploaded source files). Back this
-  folder up; it contains confidential financials.
-- Server binds to `127.0.0.1` only. No telemetry, no external fonts/CDNs/scripts.
-- In `azure`/`openai` modes, only the extracted text slice needed for a fallback
-  is sent to the configured endpoint, and only for non-standard layouts.
+- All data lives in `data/` (the database and copies of uploaded files) or in the configured Azure
+  database and storage. Locally the server binds to `127.0.0.1`; there is no telemetry.
+- In `azure` / `openai` modes, only the pages of a file the parser can't fully read — their text, or
+  images for scanned pages — are sent to the configured model endpoint. Azure OpenAI keeps them inside
+  the customer's Azure tenant.
+- Samples, tests and screenshots in this repository use made-up companies and figures only.
 
-## Known limitations / roadmap
+## 🗺️ Limitations and roadmap
 
-- **One value per metric per statement.** When several source lines collapse into
-  one canonical metric (e.g. multiple expense lines → "Other"), only one is kept
-  and the roll-forward reconciliation surfaces the gap for review. Line-level
-  aggregation is a planned enhancement.
-- **Scanned PDFs need a vision model or Tesseract.** With neither configured,
-  scanned pages are listed for the reviewer instead of read.
-- **Per-metric time series** — the trend view currently charts total balance;
-  charting an arbitrary metric (NAV, equity income) over time is a planned toggle.
-- **Vintage, fund size, region / sector and accounting details are entered,
-  not extracted.** They're master data on each fund's details (Investment
-  Portfolio card); fund size and the schedule of investments' totals and count
-  are read from fund reports by the model step and reviewed.
-- **Schedules of investments are read as totals.** Latest Stats takes the
-  grand total (cost, fair value) and the number of portfolio companies; the
-  individual holdings aren't stored line by line.
-- **Direct-investment holdings data is entered.** Theme, round, total invested,
-  projected investment, status and exit figures for the Investment Portfolio
-  come from each company's details — company statements don't carry them.
-- **IRR is a reasonable estimate, not GP-grade.** `app/performance.py:xirr()`
-  computes a money-weighted return from each period's net cash flows using the
-  period's calendar end-date as a proxy timestamp — it will differ from a GP's
-  own cash-flow-accurate IRR (exact call/distribution dates, carry waterfall).
+- **Currency** — each report keeps its own currency; totals across currencies aren't converted yet.
+- **Scanned PDFs** need a vision model or Tesseract; without either, scanned pages are listed for the
+  reviewer instead of read.
+- **Monthly company statements** are recorded per month and not yet rolled up into a quarter.
+- **Master data is entered** — vintage, region / sector and accounting details per fund, and a direct
+  investment's round, cost and status, aren't in the documents themselves.
+- **Schedules of investments are read as totals** (cost, fair value, number of companies), not holding
+  by holding.
+- **IRR is an estimate** — a money-weighted return on period-end dates, not a GP's cash-flow-exact IRR.
+
+---
+
+<div align="center">
+<sub>Built by <a href="https://github.com/jfjustin">Justin Jiang</a> · FastAPI · Azure OpenAI · Delta Lake · Power BI</sub>
+</div>
