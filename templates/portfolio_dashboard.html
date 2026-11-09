@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Investment Portfolio Dashboard · Portfolio Financials Studio</title>
+  <link rel="stylesheet" href="{{ asset_url('css/styles.css') }}">
+  <link rel="stylesheet" href="{{ asset_url('css/portfolio-dashboard.css') }}">
+</head>
+<body>
+  <header class="top">
+    <span class="brand-mark">PF</span>
+    <h1>Portfolio Financials Studio</h1>
+    <span class="confidential">Confidential · Internal Use</span>
+    <span class="spacer"></span>
+    {% if auth_mode != "none" and user %}
+      <span class="user-chip"><span class="dot"></span>{{ user }}</span>
+      <a class="btn sm" href="/logout">Sign out</a>
+    {% endif %}
+  </header>
+  {% include "site_tabs.html" %}
+
+  <div id="portfolio-preview">
+    <main class="main">
+      <p class="eyebrow">PORTFOLIO OVERVIEW</p>
+      <h1>Investment Portfolio Dashboard</h1>
+      {% if snapshot %}
+      <p class="muted">{{ snapshot.period }} snapshot · USD</p>
+      {% set totals = snapshot.sections[1].rows[0] %}
+      <section class="metrics" aria-label="Portfolio totals">
+        {% for label, value in [('Paid-in capital', totals[2]), ('Total portfolio value', totals[3]), ('Companies', totals[1])] %}
+        <div class="metric"><div class="muted">{{ label }}</div><div class="number">{{ value }}</div></div>
+        {% endfor %}
+      </section>
+      <div class="panels">
+        <section class="panel" aria-label="Paid-in capital and total value by investment category">
+          <h2>Capital and value by category</h2>
+          <div class="legend muted"><span><i class="key"></i>Paid-in capital</span><span><i class="key value"></i>Total value</span></div>
+          {% for name, bars in comparison %}
+          <div class="category">{{ name }}</div>
+          <div class="plot">
+            {% for label, value, width, class_name in bars %}
+            <div aria-hidden="true"><span class="bar {{ class_name }}" style="width:{{ width }}%"></span></div>
+            <span aria-label="{{ label }}: {{ value }}">{{ value }}</span>
+            {% endfor %}
+          </div>
+          {% endfor %}
+        </section>
+        <section class="panel" aria-label="Internal rate of return">
+          <h2>IRR by category</h2>
+          {% for label, value in [('Core', snapshot.irr[0]), ('Life Sciences', snapshot.irr[1])] %}
+          <div class="irr"><span>{{ label }}</span><strong>{{ value }}</strong></div>
+          {% endfor %}
+        </section>
+      </div>
+      {% for section in snapshot.sections %}
+      <section class="details">
+        <h2>{{ section.title }}</h2>
+        <div class="table-scroll" tabindex="0" role="region" aria-label="{{ section.title }}">
+          <table aria-label="{{ section.title }}">
+            <thead><tr>{% for column in section.columns %}<th scope="col">{{ column }}</th>{% endfor %}</tr></thead>
+            <tbody>
+              {% for row in section.rows %}
+              <tr{% if row[0].startswith('Total') %} class="subtotal"{% endif %}>
+                <th scope="row">{{ row[0] }}</th>
+                {% for value in row[1:] %}<td>{{ value }}</td>{% endfor %}
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      </section>
+      {% endfor %}
+      <p class="muted notes">— = blank in source. Values are shown as reported.</p>
+      {% if source %}
+      <footer><a href="{{ source }}" target="_blank" rel="noopener">Open original green summary in Excel ↗</a><br>{{ snapshot.period }} snapshot · Summary-Portfolio Value</footer>
+      {% endif %}
+      {% else %}
+      <p class="muted">No portfolio snapshot is configured for this Studio.</p>
+      {% endif %}
+    </main>
+  </div>
+</body>
+</html>

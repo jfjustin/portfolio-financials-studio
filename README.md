@@ -424,3 +424,20 @@ deploy/ · Dockerfile        Azure Container Apps script and container image
 <div align="center">
 <sub>Built by <a href="https://github.com/jfjustin">Justin Jiang</a> · FastAPI · Azure OpenAI · Delta Lake · Power BI</sub>
 </div>
+
+### Investment Portfolio Dashboard
+
+The second navigation tab displays an optional workbook snapshot. Supply
+`portfolio-dashboard.json` in the configured `DATA_DIR` through your deployment's
+private data volume. Keep the snapshot out of source control. The page uses
+the Studio's existing authentication, so configure authentication before
+hosting a Studio with confidential data.
+
+The JSON contains a `period` label, an optional HTTPS `source` workbook link,
+an `irr` array (Core and Life Sciences), and two ordered `sections`. Each
+section has a `title`, `columns`, and `rows` of display values. The first
+section holds direct and fund investments. The second holds Total Investments,
+Life Sciences, and Core, in that order, with the category, company count,
+paid-in capital, and total value as the first four columns. Supply the two
+amounts as dollar values in millions (for example, `"$12.3M"`). Replace the
+snapshot file to update the dashboard.

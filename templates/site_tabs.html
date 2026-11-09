@@ -1,0 +1,4 @@
+<nav class="site-tabs" aria-label="Studio pages">
+  <a href="{{ request.url_for('index').path }}"{% if request.url.path == request.url_for('index').path %} aria-current="page"{% endif %}>Studio</a>
+  <a href="{{ request.url_for('portfolio_dashboard').path }}"{% if request.url.path == request.url_for('portfolio_dashboard').path %} aria-current="page"{% endif %}>Investment Portfolio Dashboard</a>
+</nav>

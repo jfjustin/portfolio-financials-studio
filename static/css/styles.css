@@ -328,3 +328,14 @@ sup.man { color: var(--brand); margin-left: 2px; cursor: help; }
 .tbl-ps td, .tbl-ps th { white-space: nowrap; }
 .tbl-ps tr.ps-total td { font-weight: 700; border-top: 2px solid var(--ink); }
 .ps-notes { margin-top: 10px; line-height: 1.6; }
+
+.site-tabs {
+  display: flex; flex-wrap: wrap; gap: 8px; padding: 0 22px;
+  background: var(--panel); border-bottom: 1px solid var(--line);
+}
+.site-tabs a {
+  padding: 9px 12px 7px; border-bottom: 3px solid transparent;
+  text-decoration: none; color: var(--muted); font-weight: 600;
+}
+.site-tabs a:hover { color: var(--ink); }
+.site-tabs a[aria-current="page"] { color: var(--ink); border-color: var(--accent); }

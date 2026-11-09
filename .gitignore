@@ -5,6 +5,7 @@ __pycache__/
 venv/
 # Local data (confidential) — keep the dirs, ignore contents
 data/pipeline.db
+data/portfolio-dashboard.json
 data/uploads/*
 data/processed/*
 !data/**/.gitkeep

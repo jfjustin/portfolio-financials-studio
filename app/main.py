@@ -11,10 +11,12 @@ import csv
 import hashlib
 import re
 import io
+import json
 import secrets
 from decimal import Decimal
 from pathlib import Path
 from typing import Optional
+from urllib.parse import urlsplit
 
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import (HTMLResponse, JSONResponse, RedirectResponse,
@@ -82,7 +84,8 @@ async def cache_headers(request: Request, call_next):
         response.headers["Cache-Control"] = (
             "public, max-age=31536000, immutable" if "v" in request.query_params
             else "no-cache")
-    elif response.headers.get("content-type", "").startswith("text/html"):
+    elif (response.headers.get("content-type", "").startswith("text/html")
+          and "Cache-Control" not in response.headers):
         response.headers["Cache-Control"] = "no-cache"
     return response
 
@@ -105,6 +108,45 @@ def index(request: Request):
         "user": auth.current_user(request) or "",
         "fiscal_year_end_month": settings.fiscal_year_end_month,
     })
+
+
+@app.get("/portfolio-dashboard", response_class=HTMLResponse)
+def portfolio_dashboard(request: Request):
+    """Show the separately supplied workbook snapshot through the Studio's auth."""
+    snapshot_path = settings.data_dir / "portfolio-dashboard.json"
+    snapshot = None
+    comparison = []
+    source = None
+    try:
+        snapshot = json.loads(snapshot_path.read_text(encoding="utf-8"))
+        rows = snapshot["sections"][1]["rows"]
+        categories = [("Core", rows[2]), ("Life Sciences", rows[1])]
+        amounts = [
+            [Decimal(value.replace("$", "").replace("M", "").replace(",", "")) for value in row[2:4]]
+            for _, row in categories
+        ]
+        scale = max(Decimal(1), *(abs(value) for pair in amounts for value in pair))
+        comparison = [
+            (name, [
+                (label, row[column], round(abs(amount) * 100 / scale, 2), style)
+                for label, column, amount, style in zip(
+                    ("Paid-in capital", "Total value"), (2, 3), pair, ("capital", "value")
+                )
+            ])
+            for (name, row), pair in zip(categories, amounts)
+        ]
+        url = urlsplit(snapshot.get("source", ""))
+        if url.scheme == "https" and url.hostname:
+            source = url.geturl()
+    except FileNotFoundError:
+        pass
+    return templates.TemplateResponse(request, "portfolio_dashboard.html", {
+        "snapshot": snapshot,
+        "comparison": comparison,
+        "source": source,
+        "auth_mode": settings.auth_mode,
+        "user": auth.current_user(request) or "",
+    }, headers={"Cache-Control": "private, no-store"})
 
 
 # --------------------------------------------------------------------------

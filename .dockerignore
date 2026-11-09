@@ -5,6 +5,7 @@ __pycache__/
 .venv/
 venv/
 data/pipeline.db
+data/portfolio-dashboard.json
 data/uploads/*
 data/processed/*
 .env
