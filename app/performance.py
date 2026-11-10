@@ -233,12 +233,22 @@ def fund_summary() -> list[dict[str, Any]]:
 # Portfolio-level TVPI / DPI / IRR (Lam Capital overall, across all funds)
 # --------------------------------------------------------------------------
 def portfolio_performance() -> dict[str, Any]:
-    """Aggregate TVPI, DPI, and a money-weighted IRR across all fund entities."""
+    """Aggregate TVPI, DPI, and a money-weighted IRR across all fund entities.
+
+    TVPI and DPI are the Portfolio Summary's "Fund Investments" row — the same
+    paid-in, distributions and NAV (in USD), so the two never disagree. IRR is
+    worked out from the dated quarterly flows of the roll-forward."""
+    from . import portfolio
+    summ = portfolio.summary()
+    funds = [ln for ln in summ["lines"] if ln["kind"] == "fund"]
+    row = next((r for r in summ["rows"] if r["kind"] == "fund"), {})
+    paid_in = float(sum((ln["paid_in"] for ln in funds), Decimal(0)))
+    distributions = float(sum((ln["proceeds"] for ln in funds), Decimal(0)))
+    nav = float(sum((ln["aum"] for ln in funds), Decimal(0)))
+
     quarters_by_entity: dict[str, list[dict]] = {}
     for q in db.get_investments()["quarters"]:
         quarters_by_entity.setdefault(q["entity_name"], []).append(q)
-
-    total_funding = total_distributions = total_nav = 0.0
     cashflows: list[tuple[date, float]] = []
     for name, qs in quarters_by_entity.items():
         qs = sorted(qs, key=lambda r: r["period_order"])
@@ -248,32 +258,31 @@ def portfolio_performance() -> dict[str, Any]:
             # see fund_summary(): distributions are stored as the negative
             # balance-impact; use the positive cash-received magnitude here.
             dist = abs(q.get("return_of_capital") or 0) + abs(q.get("dividends") or 0)
-            total_funding += funding
-            total_distributions += dist
             if d:
                 if funding:
                     cashflows.append((d, -funding))
                 if dist:
                     cashflows.append((d, dist))
         ending = qs[-1].get("ending_balance") or 0
-        total_nav += ending
         d = _period_end_date(qs[-1]["period_label"])
         if d and ending:
             cashflows.append((d, ending))  # terminal value as a final inflow
 
     cashflows.sort(key=lambda cf: cf[0])
-    tvpi = round((total_distributions + total_nav) / total_funding, 2) if total_funding else None
-    dpi = round(total_distributions / total_funding, 2) if total_funding else None
     irr = xirr(cashflows)
-
     return {
-        "total_funding": round(total_funding, 2),
-        "total_distributions": round(total_distributions, 2),
-        "total_nav": round(total_nav, 2),
-        "tvpi": tvpi,
-        "dpi": dpi,
+        "total_funding": round(paid_in, 2),
+        "total_distributions": round(distributions, 2),
+        "total_nav": round(nav, 2),
+        "tvpi": round(row["tvpi"], 2) if row.get("tvpi") is not None else None,
+        "dpi": round(row["dpi"], 2) if row.get("dpi") is not None else None,
         "irr_pct": round(irr * 100, 1) if irr is not None else None,
-        "n_funds": len(quarters_by_entity),
+        "n_funds": len(funds),
+        "as_of_label": summ["as_of_label"],
+        "estimated": sorted(row.get("estimated", [])),
+        # funds on file the figures leave out (no paid-in / balance, or no USD rate)
+        "left_out": [n["name"] for n in summ["notes"]
+                     if n["kind"] == "fund" and n["message"].startswith("left out")],
     }
 
 

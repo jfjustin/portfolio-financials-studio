@@ -247,6 +247,10 @@ upload is checked against the entity's earlier quarters:
 
 Above the trend chart, three ratios summarize the whole fund portfolio:
 
+TVPI and DPI are the Portfolio Summary's *Fund Investments* row (§4d) — the same
+paid-in, distributions and NAV, in USD — so the two cards never disagree. A `*`
+marks a ratio that rests on an estimate.
+
 - **TVPI** (Total Value to Paid-In) = (distributions + current NAV) ÷ total
   capital called. Above 1.0x means the portfolio is worth more than was paid in.
 - **DPI** (Distributions to Paid-In) = cash actually returned ÷ total capital
@@ -301,14 +305,30 @@ net burn $360K/month (10 months).
 - Direct investments are *current*, *impaired* (an impairment is entered) or *exited* (an exit
   date is entered). Held: unrealized = value − cost, AUM = value. Exited: realized = proceeds −
   cost, unrealized = value − proceeds.
-- Funds: value = NAV + distributions, realized = distributions, unrealized = NAV − paid-in,
-  book value and AUM = NAV.
+- Funds: value = NAV + distributions, realized = distributions − returned capital, unrealized =
+  NAV − (paid-in − returned capital), book value and AUM = NAV. Returned capital is the figure
+  entered in the fund's details, else the return-of-capital lines of the quarters on file.
+- A `*` marks a cell that rests on an estimate — the quarters on file rather than a
+  since-inception figure. Hover it, and see the note under the table.
 - Every row: total gain = realized + unrealized, gain % = total gain ÷ cost, TVPI = value ÷
   cost, DPI = proceeds ÷ cost.
 - In each company's details, enter its **impairment**, **book value** (default: cost − impairment)
   and **portfolio group** (default: Life Sciences when its theme says so, else Core). A fund that
   reports in another currency needs its **USD rate** in its details; until then it's listed under
-  the table and left out of the totals.
+  the table and left out of the totals. For a rate per quarter, fill **USD rate by quarter**
+  (`2026-Q1=1.08; 2026-Q2=1.10`): the report's quarter uses its own rate, else the latest
+  earlier one (noted under the table).
+
+**Holdings sheet** (Investment Portfolio → Direct investments)
+A company's own statements never show what the stake cost or is worth. Instead of typing each
+company's details, **Download holdings sheet**, fill it in (or use your own sheet with a
+*Company* column) and **Import holdings sheet** (.xlsx or .csv):
+- Recognised columns: cost / total investment to date, fair value / total value, round, theme,
+  last investment date, projected investment, impairment, book value, status, group, exit date /
+  value / proceeds / escrow, USD rate.
+- A column headed `($M)` or `($000)` is scaled. An empty cell keeps what is on file.
+- A row that can't be read is listed with its row number and skipped; the rest are applied.
+  Every change is in the audit trail.
 
 **When a statement is empty, unreadable or missing a figure**
 Nothing is guessed. Each card lists what needs a person under **Needs attention**:
@@ -387,7 +407,15 @@ label + figure:
   filename or the text.
 - **Several figure columns** (e.g. *Total Partnership | our investor*, or
   *3 months | year to date | inception*): it keeps the right-most and marks
-  the value `multi_column(n)` for review.
+  the value `multi_column(n)` for review. When the page names its columns by
+  date (*March 31, 2026 | December 31, 2025*), the reporting period's column is
+  taken instead, and the choice is shown with the value.
+- **Split numbers:** some redacted or re-saved PDFs print `88,450,000` as
+  `8 8,450,000`. The stray space is dropped so the number is read whole.
+- **Scale:** a fund total smaller than our own balance in that fund, a balance
+  larger than the fund, or a share far from the commitment's share of the fund
+  size is flagged for review (`below_investor_balance`, `above_fund_total`,
+  `share_out_of_line`) — a sign a column or unit was misread.
 
 **2. Model step (when a model is configured).** It runs when the parser's
 roll-forward is incomplete, has multi-column picks, or doesn't add up; when a

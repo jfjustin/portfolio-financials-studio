@@ -12,7 +12,7 @@ from typing import Optional
 from sqlalchemy import select
 
 from .config import settings
-from .models import FactStatus, FinancialFact
+from .models import FactStatus, FinancialFact, parse_number
 
 
 class Check:
@@ -260,11 +260,9 @@ def scale_checks(report_type: str, entity: str, facts: list[FinancialFact]) -> l
 
     def number(*candidates) -> Optional[Decimal]:
         for v in candidates:
-            try:
-                if v not in (None, "") and Decimal(str(v)) > 0:
-                    return Decimal(str(v))
-            except Exception:
-                continue
+            n = parse_number(str(v))[0] if v not in (None, "") else None   # "5m", "5,000,000"
+            if n is not None and n > 0:
+                return n
         return None
 
     commitment = number(prof, m["commitment"].value if "commitment" in m else None,

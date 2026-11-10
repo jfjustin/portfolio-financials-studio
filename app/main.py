@@ -375,19 +375,7 @@ def portfolio_report(as_of: Optional[str] = None):
 
 
 def _parse_date(raw: str) -> Optional[str]:
-    """"3/15/2019", "2019-03-15", "15 Mar 2019" -> "2019-03-15"."""
-    from .extractors.base import normalize_period
-    raw = (raw or "").strip()
-    m = re.fullmatch(r"(\d{1,2})/(\d{1,2})/(\d{2}|\d{4})", raw)
-    if m:
-        y = int(m.group(3)) + (2000 if len(m.group(3)) == 2 else 0)
-        try:
-            from datetime import date
-            return date(y, int(m.group(1)), int(m.group(2))).isoformat()
-        except ValueError:
-            return None
-    p = normalize_period(raw)
-    return p if p and re.fullmatch(r"\d{4}-\d{2}-\d{2}", p) else None
+    return portfolio.parse_date(raw)
 
 
 @app.get("/api/portfolio/summary")
@@ -399,48 +387,39 @@ def portfolio_summary(as_of: Optional[str] = None):
     return portfolio.summary(as_of)
 
 
+@app.get("/api/portfolio/holdings.csv")
+def holdings_sheet():
+    """Every direct investment's holding record as one sheet, to fill in and import."""
+    return StreamingResponse(iter([portfolio.holdings_csv()]), media_type="text/csv", headers={
+        "Content-Disposition": 'attachment; filename="holdings.csv"'})
+
+
+@app.post("/api/portfolio/holdings")
+async def import_holdings(request: Request, file: UploadFile = File(...)):
+    """Fill the direct investments' holding records — cost, value, round, dates,
+    impairment, group, exit — from one sheet (xlsx or csv), a row per company."""
+    name = file.filename or "holdings.csv"
+    if not name.lower().endswith((".xlsx", ".xlsm", ".csv")):
+        raise HTTPException(400, "the holdings sheet must be an .xlsx or .csv file")
+    try:
+        return portfolio.import_holdings(await file.read(), name,
+                                         user=auth.current_user(request) or "local")
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    except Exception:
+        raise HTTPException(400, "this file couldn't be read as a sheet")
+
+
 @app.post("/api/portfolio/{entity}/details")
 async def set_portfolio_details(entity: str, request: Request):
     """Master data for a fund or direct investment (type, vintage, fund size,
     region / sector, accounting details, theme, round, status, exit...)."""
     body = await request.json()
     user = auth.current_user(request) or "local"
-    fields = {k: t for k, _l, t in portfolio.FUND_FIELDS + portfolio.COMPANY_FIELDS}
-    values: dict = {}
-    for key, raw in body.items():
-        if key == "kind":
-            if raw in (None, ""):
-                values["kind"] = None          # a hand-added entry leaves the report
-                continue
-            if raw not in ("fund", "direct_investment"):
-                raise HTTPException(400, "kind must be fund or direct_investment")
-            values["kind"] = raw
-            continue
-        if key == "commitment":
-            continue
-        if key not in fields:
-            raise HTTPException(400, f"unknown field '{key}'")
-        text = str(raw if raw is not None else "").strip()
-        kind = fields[key]
-        if not text:
-            values[key] = None
-        elif kind in ("money", "int", "percent", "year", "rate"):
-            from .models import parse_number
-            v = parse_number(text)[0]
-            if v is None:
-                raise HTTPException(400, f"{key}: can't read a number from '{text}'")
-            values[key] = str(int(v)) if kind in ("int", "year") else str(v)
-        elif kind == "date":
-            iso = _parse_date(text)
-            if iso is None:
-                raise HTTPException(400, f"{key}: can't read a date from '{text}'")
-            values[key] = iso
-        elif kind.startswith("choice:"):
-            if text not in kind[7:].split(","):
-                raise HTTPException(400, f"{key} must be one of {kind[7:]}")
-            values[key] = text
-        else:
-            values[key] = text[:2000]
+    try:
+        values = portfolio.coerce_details(body)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
     details = db.set_details(entity, values, user=user)
     if "commitment" in body:
         commitment = str(body.get("commitment") or "").strip()

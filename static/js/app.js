@@ -425,6 +425,7 @@
   }
 
   // ---------------- Portfolio Summary (direct by status, funds, all by group) ----------------
+  const EST_MARK = '<sup class="est" title="Includes an estimate — only the quarters on file, not a since-inception figure">*</sup>';
   const psMoney = v => v == null ? '<span class="muted">—</span>'
     : (Number(v) < 0 ? "-" : "") + "$" + Math.abs(Number(v) / 1e6).toFixed(1) + "M";
   function psCell(k, v) {
@@ -448,7 +449,8 @@
                            : '<th class="blank"></th>').join("") + "</tr>";
     const body = (rows, keys) => rows.map(r => `<tr class="${r.kind === "total" ? "ps-total" : ""}">` +
       `<td class="lbl">${esc(r.label)}</td>` + S.columns.map(c => !keys.includes(c.key) ? '<td class="blank"></td>' :
-        `<td class="num ${c.key !== "gain_pct" && Number(r[c.key]) < 0 ? "is-neg" : ""}">${psCell(c.key, r[c.key])}</td>`).join("") +
+        `<td class="num ${c.key !== "gain_pct" && Number(r[c.key]) < 0 ? "is-neg" : ""}">${psCell(c.key, r[c.key])}` +
+        `${r[c.key] != null && (r.estimated || []).includes(c.key) ? EST_MARK : ""}</td>`).join("") +
       "</tr>").join("");
     $("#ps-table").innerHTML = `<thead>${head(first, "")}</thead><tbody>${body(S.rows, first)}</tbody>` +
       `<tbody class="ps-mid"><tr class="ps-gap"><td colspan="${all.length + 1}"></td></tr>${head(all, "ps-subhead")}</tbody>` +
@@ -517,6 +519,20 @@
       e.preventDefault();
       const f = e.target, body = Object.fromEntries(new FormData(f).entries());
       if (await saveManual(body)) f.reset();
+    });
+    $("#pf-holdings").addEventListener("change", async e => {
+      const file = e.target.files[0];
+      if (!file) return;
+      const fd = new FormData(); fd.append("file", file);
+      const res = await fetch("/api/portfolio/holdings", { method: "POST", body: fd });
+      e.target.value = "";
+      const r = await res.json();
+      const out = $("#pf-holdings-result");
+      if (!res.ok) { out.innerHTML = `<span class="warn-text">Not imported: ${esc(r.detail)}</span>`; return; }
+      out.innerHTML = `${r.updated} compan${r.updated === 1 ? "y" : "ies"} updated from ${esc(file.name)}` +
+        (r.ignored_columns.length ? ` · columns not used: ${r.ignored_columns.map(esc).join(", ")}` : "") +
+        r.errors.map(x => `<div class="warn-text">Row ${x.row} (${esc(x.company)}) skipped — ${esc(x.message)}</div>`).join("");
+      await loadPortfolio(PF.as_of);
     });
     $("#pf-add").addEventListener("submit", async e => {
       e.preventDefault();
@@ -597,13 +613,16 @@
 
   function renderPerformance(perf) {
     const p = perf.portfolio || {};
-    $("#perf-tvpi").textContent = p.tvpi != null ? p.tvpi.toFixed(2) + "x" : "—";
-    $("#perf-dpi").textContent = p.dpi != null ? p.dpi.toFixed(2) + "x" : "—";
+    // the Portfolio Summary's "Fund Investments" row: the two always agree
+    const est = k => (p.estimated || []).includes(k) ? EST_MARK : "";
+    $("#perf-tvpi").innerHTML = (p.tvpi != null ? p.tvpi.toFixed(2) + "x" : "—") + est("tvpi");
+    $("#perf-dpi").innerHTML = (p.dpi != null ? p.dpi.toFixed(2) + "x" : "—") + est("dpi");
     $("#perf-irr").textContent = p.irr_pct != null ? p.irr_pct.toFixed(1) + "%" : "—";
     $("#perf-nav").textContent = p.total_nav != null ? money(p.total_nav) : "—";
     $("#perf-asof").textContent = p.n_funds
-      ? `Across ${p.n_funds} fund${p.n_funds === 1 ? "" : "s"} · ${money(p.total_funding||0)} called · ${money(p.total_distributions||0)} distributed`
-      : "No confirmed fund roll-forward data yet";
+      ? `Across ${p.n_funds} fund${p.n_funds === 1 ? "" : "s"} as of ${p.as_of_label} · ${money(p.total_funding||0)} paid in · ${money(p.total_distributions||0)} distributed`
+        + ((p.left_out || []).length ? ` · not included: ${p.left_out.join(", ")}` : "")
+      : "No confirmed fund data yet";
 
     // Direct Investments table
     const di = perf.direct_investments || [];

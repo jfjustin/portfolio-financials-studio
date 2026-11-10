@@ -293,6 +293,10 @@ table.tbl-report { width: 100%; border-collapse: collapse; font-size: 13px; }
 .pf-sub { margin: 14px 0 6px; font-size: 13px; text-transform: uppercase; letter-spacing: .06em;
   color: var(--muted); }
 .tbl-pf td { white-space: nowrap; }
+.pf-holdings { display: flex; flex-wrap: wrap; gap: 8px 10px; align-items: center; margin: 0 0 10px; }
+.pf-holdings label.btn { cursor: pointer; }
+.pf-holdings #pf-holdings-result { flex-basis: 100%; }
+.pf-holdings #pf-holdings-result:empty { display: none; }
 .tbl-pf a.pf-open { color: var(--brand); text-decoration: none; }
 .tbl-pf a.pf-open:hover { text-decoration: underline; }
 .modal.pf-modal { inset: 5vh max(3vw, calc(50vw - 460px)); }

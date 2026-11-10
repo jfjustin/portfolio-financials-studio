@@ -220,7 +220,7 @@ def choose_period_columns(raw_items: list[RawItem], period: str) -> None:
 
 def _without_stray_spaces(page):
     """Some PDFs (redacted or re-saved ones) carry a space character lying on
-    top of a digit, so "65,389,675" reads as "6 5,389,675" and the tail is taken
+    top of a digit, so "88,450,000" reads as "8 8,450,000" and the tail is taken
     for a figure of its own. Drop a space that a digit covers when the number
     goes on without a gap; real gaps between words and columns stay."""
     try:

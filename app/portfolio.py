@@ -66,8 +66,11 @@ FUND_FIELDS = (
     ("drawn_to_date", "Drawn to Date — if no statement shows it", "money"),
     ("distribution_to_date", "Distribution to Date — if no statement shows it", "money"),
     ("future_draw", "Future Draw — if no statement shows it", "money"),
+    ("returned_capital", "Returned capital to date — the part of distributions that is "
+                         "capital, not gain", "money"),
     ("portfolio_group", "Portfolio group (e.g. Core, Life Sciences)", "text"),
     ("usd_rate", "USD per unit of its currency (non-USD funds)", "rate"),
+    ("usd_rates", "USD rate by quarter, e.g. 2026-Q1=1.08; 2026-Q2=1.10", "rates"),
 )
 _FUND_FIGURES = (("commitment", "Commitment"), ("investment_balance", "Investment Balance"),
                  ("drawn_to_date", "Drawn to Date"), ("distribution_to_date", "Distribution to Date"),
@@ -98,6 +101,7 @@ COMPANY_FIELDS = (
     ("exit_escrow", "Exit — Total Proceeds on Escrow", "money"),
     ("portfolio_group", "Portfolio group (e.g. Core, Life Sciences)", "text"),
     ("usd_rate", "USD per unit of its currency (if not USD)", "rate"),
+    ("usd_rates", "USD rate by quarter, e.g. 2026-Q1=1.08; 2026-Q2=1.10", "rates"),
 )
 _MONEY = {k for k, _l, t in FUND_FIELDS + COMPANY_FIELDS if t == "money"}
 
@@ -116,6 +120,82 @@ def _iso(v) -> Optional[date]:
         return date.fromisoformat(str(v)[:10]) if v else None
     except ValueError:
         return None
+
+
+def parse_date(raw: str) -> Optional[str]:
+    """"3/15/2019", "2019-03-15", "15 Mar 2019" -> "2019-03-15"."""
+    from .extractors.base import normalize_period
+    raw = (raw or "").strip()
+    m = re.fullmatch(r"(\d{1,2})/(\d{1,2})/(\d{2}|\d{4})", raw)
+    if m:
+        y = int(m.group(3)) + (2000 if len(m.group(3)) == 2 else 0)
+        try:
+            return date(y, int(m.group(1)), int(m.group(2))).isoformat()
+        except ValueError:
+            return None
+    p = normalize_period(raw)
+    return p if p and re.fullmatch(r"\d{4}-\d{2}-\d{2}", p) else None
+
+
+_RATE_PAIR = re.compile(r"(20\d{2})\s*-?\s*Q([1-4])\s*[=:]\s*([0-9][0-9.,]*)", re.I)
+
+
+def _rates(raw) -> dict[str, Decimal]:
+    """"2026-Q1=1.08; 2026-Q2=1.10" -> {"2026-Q1": 1.08, "2026-Q2": 1.10}."""
+    out: dict[str, Decimal] = {}
+    for y, q, v in _RATE_PAIR.findall(str(raw or "")):
+        rate = parse_number(v.rstrip(".,"))[0]
+        if rate:
+            out[f"{y}-Q{q}"] = rate
+    return out
+
+
+def coerce_details(body: dict[str, Any]) -> dict[str, Any]:
+    """Typed master-data values from what a person typed or a sheet holds: money
+    ("3m", "1,250,000"), dates, years, choices. An empty value removes the
+    field. Raises ValueError naming the field that can't be read."""
+    fields = {k: t for k, _l, t in FUND_FIELDS + COMPANY_FIELDS}
+    values: dict[str, Any] = {}
+    for key, raw in body.items():
+        if key == "kind":
+            if raw in (None, ""):
+                values["kind"] = None          # a hand-added entry leaves the report
+            elif raw not in ("fund", "direct_investment"):
+                raise ValueError("kind must be fund or direct_investment")
+            else:
+                values["kind"] = raw
+            continue
+        if key == "commitment":
+            continue
+        if key not in fields:
+            raise ValueError(f"unknown field '{key}'")
+        text = str(raw if raw is not None else "").strip()
+        kind = fields[key]
+        if not text:
+            values[key] = None
+        elif kind in ("money", "int", "percent", "year", "rate"):
+            v = parse_number(text)[0]
+            if v is None:
+                raise ValueError(f"{key}: can't read a number from '{text}'")
+            values[key] = str(int(v)) if kind in ("int", "year") else str(v)
+        elif kind == "rates":
+            rates = _rates(text)
+            if not rates:
+                raise ValueError(f"{key}: write each quarter's rate as 2026-Q1=1.08")
+            values[key] = "; ".join(f"{q}={r}" for q, r in sorted(rates.items()))
+        elif kind == "date":
+            iso = parse_date(text)
+            if iso is None:
+                raise ValueError(f"{key}: can't read a date from '{text}'")
+            values[key] = iso
+        elif kind.startswith("choice:"):
+            choice = next((c for c in kind[7:].split(",") if c.lower() == text.lower()), None)
+            if choice is None:
+                raise ValueError(f"{key} must be one of {kind[7:]}")
+            values[key] = choice
+        else:
+            values[key] = text[:2000]
+    return values
 
 
 def _order(period: str) -> int:
@@ -346,6 +426,17 @@ def _fund(name: str, quarters: list[dict], det: dict, prof: dict, facts: dict,
                 drawn = typed
             else:
                 distributed = typed
+    # the part of the distributions that gave capital back rather than paid out a gain
+    returned, returned_estimated = _d(det.get("returned_capital")), False
+    if returned is not None:
+        src["returned_capital"] = "entered"
+    elif quarters:
+        returned = sum((abs(Decimal(str(q["return_of_capital"] or 0))) for q in quarters),
+                       Decimal(0))
+        src["returned_capital"] = f"return of capital of the {on_file} only"
+        returned_estimated = True
+    if returned is not None and distributed is not None:
+        returned = min(abs(returned), distributed)
     future = fact("remaining_commitment")
     if future is not None:
         src["future_draw"] = src.pop("remaining_commitment")
@@ -405,7 +496,8 @@ def _fund(name: str, quarters: list[dict], det: dict, prof: dict, facts: dict,
         "fund_size": fund_size, "commitment": commitment, "future_draw": future,
         "region_sector": det.get("region_sector") or "",
         "investment_balance": balance, "drawn_to_date": drawn,
-        "distribution_to_date": distributed,
+        "distribution_to_date": distributed, "returned_capital": returned,
+        "returned_capital_estimated": returned_estimated,
         "drawn_commit": float(drawn / commitment) if drawn is not None and commitment else None,
         "stats": stats, "invested": invested,
         "accounting": {
@@ -619,15 +711,26 @@ def _group(row: dict) -> str:
     return "Life Sciences" if _LIFE_SCIENCES.search(text) else "Core"
 
 
-def _usd(row: dict) -> tuple[Optional[Decimal], str]:
-    """The factor that turns the entity's amounts into USD, or (None, reason)."""
+def _usd(row: dict, as_of: str = "") -> tuple[Optional[Decimal], str, str]:
+    """(factor, reason, note): the factor that turns the entity's amounts into
+    USD as of a quarter, or (None, reason). The quarter's own rate is used when
+    its details list one; else the latest earlier quarter's (noted), else the
+    single rate entered for the entity."""
+    det = row.get("details") or {}
     cur = (row.get("currency") or "USD").upper()
-    rate = _d((row.get("details") or {}).get("usd_rate"))
+    rates = _rates(det.get("usd_rates"))
+    single = _d(det.get("usd_rate"))
+    if as_of in rates:
+        return rates[as_of], "", ""
+    earlier = sorted((q for q in rates if _order(q) <= _order(as_of)), key=_order) if as_of else []
+    if earlier:
+        q = earlier[-1]
+        return rates[q], "", f"converted at the {q} USD rate — enter {as_of}'s in its details"
     if cur == "USD":
-        return rate or Decimal(1), ""
-    if rate is None:
-        return None, (f"reports in {cur} — enter its USD rate in its details to include it")
-    return rate, ""
+        return single or Decimal(1), "", ""
+    if single is None:
+        return None, f"reports in {cur} — enter its USD rate in its details to include it", ""
+    return single, "", ""
 
 
 def _company_line(co: dict) -> tuple[Optional[dict], str]:
@@ -664,12 +767,25 @@ def _fund_line(f: dict) -> tuple[Optional[dict], str]:
     if paid_in is None or nav is None:
         return None, "no drawn-to-date or investment balance on file"
     dist = f["distribution_to_date"] or Decimal(0)
-    est = bool(set(f.get("estimated") or []) & {"drawn_to_date", "distribution_to_date"})
+    returned = min(f.get("returned_capital") or Decimal(0), dist)
+    src = set(f.get("estimated") or [])
+    est: set[str] = set()
+    notes = []
+    if "drawn_to_date" in src:
+        est |= {"paid_in", "unrealized"}
+    if "distribution_to_date" in src:
+        est |= {"value", "proceeds", "realized"}
+    if est:
+        notes.append("drawn / distributed are estimates from the quarters on file")
+    if f.get("returned_capital_estimated") and returned:
+        est |= {"realized", "unrealized"}
+        notes.append("realized gain takes out the return of capital of the quarters on file "
+                     "only — enter Returned capital to date in its details")
     return {"entity": f["entity"], "name": f["investment_name"], "kind": "fund", "status": "fund",
             "group": _group(f), "paid_in": paid_in, "value": nav + dist, "book": nav,
-            "impairment": Decimal(0), "proceeds": dist, "realized": dist,
-            "unrealized": nav - paid_in, "aum": nav, "estimated": est}, (
-        "drawn / distributed are estimates from the quarters on file" if est else "")
+            "impairment": Decimal(0), "proceeds": dist, "realized": dist - returned,
+            "unrealized": nav - (paid_in - returned), "aum": nav, "estimated": bool(est),
+            "estimated_keys": sorted(est)}, "; ".join(notes)
 
 
 def _aggregate(label: str, lines: list[dict], kind: str) -> dict:
@@ -681,6 +797,13 @@ def _aggregate(label: str, lines: list[dict], kind: str) -> dict:
     out["gain_pct"] = float(out["total_gain"] / paid * 100) if paid else None
     out["tvpi"] = float(out["value"] / paid) if paid else None
     out["dpi"] = float(out["proceeds"] / paid) if paid else None
+    # which cells rest on an estimate (the quarters on file, not a since-inception figure)
+    est = {k for ln in lines for k in ln.get("estimated_keys", [])}
+    if est & {"paid_in", "proceeds"}:
+        est |= {"total_gain", "gain_pct", "dpi"}
+    if est & {"paid_in", "value"}:
+        est.add("tvpi")
+    out["estimated"] = sorted(est)
     return out
 
 
@@ -691,12 +814,14 @@ def summary(as_of: Optional[str] = None, rep: Optional[dict] = None) -> dict[str
 
       direct, held      unrealized = value − cost; AUM = value
       direct, exited    realized = proceeds − cost; unrealized = value − proceeds
-      fund              value = NAV + distributions; realized = distributions;
-                        unrealized = NAV − paid-in; book value and AUM = NAV
+      fund              value = NAV + distributions; realized = distributions −
+                        returned capital; unrealized = NAV − (paid-in − returned
+                        capital); book value and AUM = NAV
       every row         total gain = realized + unrealized; gain % = total ÷ cost;
                         TVPI = value ÷ cost; DPI = proceeds ÷ cost
     Amounts are in USD: an entity reporting in another currency needs its USD
-    rate, and is left out (with a note) until it has one. Pass `rep` (a
+    rate (per quarter, or one for all), and is left out (with a note) until it
+    has one. Rows carry `estimated`: the cells resting on the quarters on file. Pass `rep` (a
     report() result) to summarise it without reading everything again."""
     rep = rep or report(as_of)
     lines: list[dict] = []
@@ -705,20 +830,21 @@ def summary(as_of: Optional[str] = None, rep: Optional[dict] = None) -> dict[str
                        + [(f, _fund_line) for f in rep["funds"]]):
         line, note = maker(row)
         if line is None:
-            notes.append({"entity": row["entity"], "name": row["investment_name"],
+            notes.append({"entity": row["entity"], "name": row["investment_name"], "kind": row["kind"],
                           "message": f"left out: {note}"})
             continue
-        factor, why = _usd(row)
+        factor, why, fx_note = _usd(row, rep["as_of"])
         if factor is None:
-            notes.append({"entity": row["entity"], "name": row["investment_name"],
+            notes.append({"entity": row["entity"], "name": row["investment_name"], "kind": row["kind"],
                           "message": f"left out: {why}"})
             continue
+        note = "; ".join(n for n in (note, fx_note) if n)
         for k in _SUM_KEYS:
             line[k] = line[k] * factor
         line["currency"] = row.get("currency") or "USD"
         lines.append(line)
         if note:
-            notes.append({"entity": row["entity"], "name": row["investment_name"], "message": note})
+            notes.append({"entity": row["entity"], "name": row["investment_name"], "kind": row["kind"], "message": note})
     direct = [ln for ln in lines if ln["kind"] == "direct"]
     funds = [ln for ln in lines if ln["kind"] == "fund"]
     rows = [_aggregate(label, [ln for ln in direct if ln["status"] == st], "status")
@@ -937,6 +1063,7 @@ def _f(v: Optional[Decimal]) -> Optional[float]:
 def _dashboard(wb, summ: dict) -> None:
     """The portfolio summary as a sheet: direct investments by status and funds,
     then all investments by portfolio group (in $M, USD)."""
+    from openpyxl.comments import Comment
     from openpyxl.styles import Font
     ws = wb.create_sheet("Dashboard", 1)
     bold = Font(bold=True)
@@ -966,6 +1093,9 @@ def _dashboard(wb, summ: dict) -> None:
                     c.value, c.number_format = float(v) / 1e6, money
                 if row["kind"] == "total":
                     c.font = bold
+                if k in row.get("estimated", []):
+                    c.comment = Comment("Includes an estimate from the quarters on file — see "
+                                        "the notes below.", "PFS")
         return r
 
     first = [k for k, _l in SUMMARY_COLUMNS if k not in ("dpi", "aum")]
@@ -1113,3 +1243,133 @@ def _summary(ws, rep: dict, names: dict[str, str]) -> None:
     ws.column_dimensions["C"].width = 30
     for c in "DEFGHIJKL":
         ws.column_dimensions[c].width = 16
+
+
+# --------------------------------------------------------------------------
+# Holdings sheet — every direct investment's holding record in one file
+# --------------------------------------------------------------------------
+# A company's own statements never show what the stake cost or is worth, so
+# these come from the team's records: one row per company, one column per field.
+_HOLDING_ALIASES = {
+    "company": "name", "name": "name", "investment": "name", "portfolio company": "name",
+    "entity": "name", "cost": "total_invested", "investment cost": "total_invested",
+    "cost basis": "total_invested", "total invested": "total_invested",
+    "fair value": "total_value", "fmv": "total_value", "value": "total_value",
+    "latest fmv": "total_value", "round": "current_round", "current round": "current_round",
+    "status": "operating_status", "group": "portfolio_group", "portfolio": "portfolio_group",
+    "impairment": "impairment", "book value": "book_value", "type": "investment_type",
+    "last investment date": "last_investment_date", "projected": "projected_investment",
+    "exit date": "exit_date", "exit value": "exit_value", "exit proceeds": "exit_proceeds",
+    "proceeds": "exit_proceeds", "escrow": "exit_escrow", "usd rate": "usd_rate",
+    "security": "security", "display name": "display_name",
+}
+_IN_MILLIONS = re.compile(r"\(\s*\$?\s*(?:m|mm|mn|millions?)\s*\)|\$\s*(?:m|mm)\b|in millions", re.I)
+_IN_THOUSANDS = re.compile(r"\$\s*000|\(\s*\$?\s*(?:k|000s?|thousands?)\s*\)|\$\s*k\b|in thousands", re.I)
+
+
+def _holding_key(text: str) -> str:
+    t = _IN_MILLIONS.sub("", _IN_THOUSANDS.sub("", str(text or "")))
+    return re.sub(r"[^a-z0-9]+", " ", t.lower()).strip()
+
+
+def _holding_columns() -> dict[str, str]:
+    cols = dict(_HOLDING_ALIASES)
+    for key, label, _t in COMPANY_FIELDS:
+        cols[_holding_key(label)] = key
+        cols[_holding_key(key)] = key
+    cols[_holding_key("Investment Name")] = "display_name"
+    return cols
+
+
+def _sheet_rows(data: bytes, filename: str) -> list[list[Any]]:
+    if filename.lower().endswith((".xlsx", ".xlsm")):
+        import openpyxl
+        ws = openpyxl.load_workbook(io.BytesIO(data), data_only=True, read_only=True).worksheets[0]
+        return [list(r) for r in ws.iter_rows(values_only=True)]
+    import csv
+    text = data.decode("utf-8-sig", errors="replace")
+    return [row for row in csv.reader(io.StringIO(text))]
+
+
+def import_holdings(data: bytes, filename: str, user: str = "local") -> dict[str, Any]:
+    """Fill the direct investments' holding records from one sheet (xlsx or csv):
+    a "Company" column plus any of the holding fields — cost, value, round,
+    dates, impairment, book value, group, status, exit. A column headed "($M)"
+    or "($000)" is scaled; an empty cell leaves what is on file. A row that
+    can't be read is reported and skipped whole; nothing is half-applied."""
+    known = _holding_columns()
+    types = {k: t for k, _l, t in COMPANY_FIELDS}
+    labels = {k: l for k, l, _t in COMPANY_FIELDS}
+    rows = [r for r in _sheet_rows(data, filename) if any(c not in (None, "") for c in r)]
+    head = next((i for i, r in enumerate(rows[:15])
+                 if any(known.get(_holding_key(c)) == "name" for c in r)), None)
+    if head is None:
+        raise ValueError('no "Company" column found — the first row should name the columns '
+                         "(download the holdings sheet for the layout)")
+    columns: dict[int, tuple[str, Decimal]] = {}
+    ignored: list[str] = []
+    for i, cell in enumerate(rows[head]):
+        if cell in (None, ""):
+            continue
+        key = known.get(_holding_key(cell))
+        if key is None or (key in columns_keys(columns)):
+            ignored.append(str(cell))
+            continue
+        scale = (Decimal(1_000_000) if _IN_MILLIONS.search(str(cell)) else
+                 Decimal(1000) if _IN_THOUSANDS.search(str(cell)) else Decimal(1))
+        columns[i] = (key, scale)
+    existing = {**{e.lower(): e for e in db.all_details()},
+                **{str(d.get("display_name", "")).lower(): e
+                   for e, d in db.all_details().items() if d.get("display_name")}}
+    for f in db.get_facts():
+        existing.setdefault(str(f["entity_name"]).lower(), f["entity_name"])
+    done, errors = [], []
+    for n, row in enumerate(rows[head + 1:], start=head + 2):
+        body: dict[str, Any] = {}
+        name = ""
+        for i, (key, scale) in columns.items():
+            cell = row[i] if i < len(row) else None
+            if cell in (None, ""):
+                continue
+            if hasattr(cell, "isoformat"):
+                cell = cell.isoformat()[:10]
+            text = str(cell).strip()
+            if key == "name":
+                name = text
+                continue
+            if types.get(key) == "money" and scale != 1:
+                v = parse_number(text)[0]
+                if v is not None and re.fullmatch(r"[\s$€£(),.\-\d]+", text):
+                    text = str(v * scale)
+            body[key] = text
+        if not name or re.match(r"total\b", name, re.I):
+            continue
+        try:
+            values = coerce_details(body)
+        except ValueError as e:
+            message = re.sub(r"^\w+", lambda m: labels.get(m.group(0), m.group(0)), str(e))
+            errors.append({"row": n, "company": name, "message": message})
+            continue
+        entity = existing.get(name.lower(), name)
+        db.set_details(entity, {**values, "kind": "direct_investment"}, user=user)
+        done.append({"company": entity, "fields": sorted(values)})
+    return {"updated": len(done), "rows": done, "errors": errors, "ignored_columns": ignored}
+
+
+def columns_keys(columns: dict[int, tuple[str, Decimal]]) -> set[str]:
+    return {k for k, _s in columns.values()}
+
+
+def holdings_csv() -> str:
+    """The holdings sheet as it stands — every direct investment on the report
+    with its holding record — to fill in and import back."""
+    import csv
+    fields = [(k, l) for k, l, _t in COMPANY_FIELDS if k != "display_name"]
+    buf = io.StringIO()
+    w = csv.writer(buf)
+    w.writerow(["Company", "Investment Name"] + [label for _k, label in fields])
+    for co in report()["companies"]:
+        det = co["details"] or {}
+        w.writerow([co["entity"], det.get("display_name", "")]
+                   + [det.get(k, "") for k, _l in fields])
+    return buf.getvalue()

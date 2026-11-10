@@ -51,8 +51,8 @@
           <h3 class="report-title">Lam Capital Overall Performance</h3>
           <span class="small muted" id="perf-asof"></span>
         </div>
-        <p class="report-sub">TVPI, DPI, and a money-weighted IRR across all fund investments — computed
-          from confirmed funding, distributions, and NAV.</p>
+        <p class="report-sub">TVPI and DPI across all fund investments — the same paid-in, distributions
+          and NAV as the Portfolio Summary's fund row — and a money-weighted IRR from the quarterly flows.</p>
         <div class="perf-strip">
           <div class="perf-tile"><div class="pv" id="perf-tvpi">—</div><div class="pl">TVPI</div></div>
           <div class="perf-tile"><div class="pv" id="perf-dpi">—</div><div class="pl">DPI</div></div>
@@ -71,7 +71,8 @@
         </div>
         <p class="report-sub">In $M (USD), approved values only. Total gain = realized + unrealized ·
           Gain % = total gain ÷ cost · TVPI = total value ÷ cost · DPI = proceeds ÷ cost · AUM = value still
-          held. Impairment, book value and portfolio group come from each company's details.</p>
+          held. For funds, realized gain is distributions less returned capital. * marks a figure that
+          rests on an estimate. Impairment, book value and portfolio group come from each company's details.</p>
         <!-- one table in two blocks, so the columns they share line up -->
         <div class="scroll"><table class="tbl-report tbl-ps" id="ps-table"></table></div>
         <div id="ps-notes" class="small muted ps-notes"></div>
@@ -101,6 +102,13 @@
           <tbody id="pf-funds"></tbody>
         </table></div>
         <h4 class="pf-sub">Direct investments</h4>
+        <!-- a company's own statements never show cost or value: one sheet fills them all -->
+        <div class="pf-holdings small">
+          <span class="muted">Holding records (cost, value, round, dates, impairment, group) for every company at once:</span>
+          <a class="btn sm" href="/api/portfolio/holdings.csv">Download holdings sheet</a>
+          <label class="btn sm primary">Import holdings sheet<input type="file" id="pf-holdings" accept=".csv,.xlsx,.xlsm" hidden></label>
+          <div id="pf-holdings-result" class="muted" role="status"></div>
+        </div>
         <div class="scroll"><table class="tbl-report tbl-pf">
           <thead><tr><th class="lbl">Company</th><th class="lbl">Theme</th><th class="lbl">Round</th>
             <th>Most Recent Investment</th><th>Total Invested</th><th>Projected</th>

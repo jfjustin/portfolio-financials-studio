@@ -97,6 +97,7 @@ def main() -> int:
     investment_portfolio(samples)
     manual_entry(samples)
     portfolio_summary()
+    pdf_reading(samples)
     clear_data(samples)
 
     print()
@@ -1128,6 +1129,133 @@ def portfolio_summary() -> None:
     check(dash is not None and any(dash.cell(r, 1).value == "Total Investments"
                                    for r in range(1, dash.max_row + 1)),
           "the Investment Portfolio workbook carries the summary as a Dashboard sheet")
+
+    # funds: realized gain leaves out the capital that came back
+    client.post(P + "Fund 92/details", json={"returned_capital": "0.6m"})
+    S = client.get("/api/portfolio/summary").json()
+    f = {ln["entity"]: ln for ln in S["lines"]}["Fund 92"]
+    check(near(f["realized"], 400_000) and near(f["unrealized"], 1_600_000)
+          and near(float(f["realized"]) + float(f["unrealized"]), 2_000_000),
+          "a fund's realized gain = distributions − returned capital; total gain unchanged")
+
+    # a USD rate per quarter wins over the single rate
+    bad = client.post(P + "Fund 93/details", json={"usd_rates": "about 1.2"})
+    client.post(P + "Fund 93/details", json={"usd_rates": "2026-Q1=1.2, 2025 Q4: 1.05"})
+    S = client.get("/api/portfolio/summary?as_of=2026-Q1").json()
+    check(bad.status_code == 400
+          and near({ln["entity"]: ln for ln in S["lines"]}["Fund 93"]["aum"], 1_200_000),
+          "USD rates per quarter: the quarter's own rate converts it, unreadable rates are refused")
+    S2 = client.get("/api/portfolio/summary?as_of=2026-Q2").json()
+    check(near({ln["entity"]: ln for ln in S2["lines"]}["Fund 93"]["aum"], 1_200_000)
+          and any(n["entity"] == "Fund 93" and "2026-Q1 USD rate" in n["message"] for n in S2["notes"]),
+          "a quarter without its own rate uses the latest earlier one, and says so")
+
+    # cells resting on an estimate are marked, row by row
+    S = client.get("/api/portfolio/summary").json()
+    fund_row = next(r for r in S["rows"] if r["kind"] == "fund")
+    est_keys = {k for ln in S["lines"] if ln["kind"] == "fund" for k in ln["estimated_keys"]}
+    check(est_keys <= set(fund_row["estimated"])
+          and all(isinstance(r["estimated"], list) for r in S["rows"] + S["totals"])
+          and all(not r["estimated"] for r in S["rows"] if r["kind"] == "status"),
+          "summary rows list the cells that rest on an estimate; direct investments have none")
+
+    # Overview's TVPI / DPI are the summary's fund row
+    perf = client.get("/api/performance").json()["portfolio"]
+    check(perf["tvpi"] == round(fund_row["tvpi"], 2) and perf["dpi"] == round(fund_row["dpi"], 2)
+          and near(perf["total_nav"], fund_row["aum"]) and perf["n_funds"] == fund_row["count"],
+          "Overview's TVPI, DPI and NAV are the Portfolio Summary's fund row")
+
+    # one holdings sheet fills every company's holding record
+    sheet = ("Portfolio holdings\n"
+             "Company,Cost ($M),Fair Value ($M),Round,Status,Group,Last investment date,Impairment ($M),Notes\n"
+             "Company 91D,2.5,4.0,Series B,active,Life Sciences,3/15/2025,,\n"
+             "Company 91E,1.0,0.25,Seed,Active,,2024-11-02,0.75,\n"
+             "Company 91F,lots,1,Seed,Active,,,,\n"
+             "Total,3.5,4.25,,,,,,\n")
+    r = client.post("/api/portfolio/holdings", files={"file": ("holdings.csv", sheet.encode())})
+    res = r.json()
+    S = client.get("/api/portfolio/summary").json()
+    line = {ln["entity"]: ln for ln in S["lines"]}
+    check(r.status_code == 200 and res["updated"] == 2 and len(res["errors"]) == 1
+          and res["errors"][0]["company"] == "Company 91F" and res["ignored_columns"] == ["Notes"],
+          "holdings sheet: good rows imported, an unreadable row reported and skipped, totals row ignored")
+    d, e = line.get("Company 91D"), line.get("Company 91E")
+    check(d is not None and near(d["paid_in"], 2_500_000) and near(d["value"], 4_000_000)
+          and d["group"] == "Life Sciences" and e is not None and e["status"] == "impaired"
+          and near(e["impairment"], -750_000) and "Company 91F" not in line,
+          "imported holdings feed the summary: cost and value in $M, group, impairment")
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.append(["Investment", "Total Investment to Date", "Total Value"])
+    ws.append(["company 91d", 2_600_000, None])
+    buf = io.BytesIO()
+    wb.save(buf)
+    r = client.post("/api/portfolio/holdings", files={"file": ("holdings.xlsx", buf.getvalue())})
+    line = {ln["entity"]: ln for ln in client.get("/api/portfolio/summary").json()["lines"]}
+    back = client.get("/api/portfolio/holdings.csv").text
+    check(r.json().get("updated") == 1 and near(line["Company 91D"]["paid_in"], 2_600_000)
+          and near(line["Company 91D"]["value"], 4_000_000) and "Company 91D" in back
+          and client.post("/api/portfolio/holdings",
+                          files={"file": ("x.csv", b"a,b\n1,2\n")}).status_code == 400,
+          "an xlsx sheet updates a company by name, empty cells keep what is on file; "
+          "a sheet without a Company column is refused")
+
+
+def pdf_reading(samples: Path) -> None:
+    """Comparative columns, numbers a PDF splits apart, and figures at the wrong
+    scale: the reporting period's column is read, and mismatches are flagged."""
+    from app.extractors.pdf_native import extract_pdf
+    from app.models import FinancialFact
+    from app.validate import scale_checks
+    from fastapi.testclient import TestClient
+
+    from app.main import app
+
+    client = TestClient(app)
+    report = samples / "Fund 84_Q1 2026 LP Report.pdf"
+    if not report.exists():
+        import subprocess
+        subprocess.run([sys.executable, str(samples / "make_samples.py")], check=True)
+    items, text = extract_pdf(report)
+    check("88,450,000" in text and "2,100,000" in text and "8 8,450,000" not in text,
+          "a number the PDF splits apart (a stray space on a digit) is read whole")
+    r = process_path(report, allow_duplicate=True)
+    facts = {f["metric_key"]: f for f in db.get_facts(r["submission_id"])}
+    check(r["report_type"] == "fund_financials"
+          and Decimal(facts["total_assets"]["value"]) == 91_300_000
+          and Decimal(facts["total_liabilities"]["value"]) == 120_000
+          and Decimal(facts["nav"]["value"]) == 91_180_000
+          and "March 31, 2026" in facts["total_assets"]["provenance"],
+          "this period's column is read, not last year's comparative on its right")
+    check({c["name"]: c["ok"] for c in r["checks"]}.get("balance_sheet")
+          and all(f["status"] == "needs_review" for f in facts.values()),
+          "the figures reconcile, and a column choice still goes to a person to confirm")
+
+    def fact(rt: str, metric: str, value: int) -> FinancialFact:
+        return FinancialFact(entity_name="Fund 84", entity_kind="fund", report_type=rt,
+                             period="2026-Q1", metric_key=metric, metric_label=metric,
+                             value=Decimal(value), status="auto")
+
+    def names(rt: str, entity: str, fs: list) -> set:
+        return {c.name for c in scale_checks(rt, entity, fs)}
+
+    big = [fact("investment_roll_forward", "ending_balance", 95_000_000)]
+    check(names("investment_roll_forward", "Fund 84", big) == {"above_fund_total"}
+          and big[0].status == "needs_review" and "above_fund_total" in big[0].flags,
+          "an investor balance larger than the whole fund on file is flagged for review")
+    client.post("/api/portfolio/Fund 84/details", json={"fund_size": "100m", "commitment": "5m"})
+    off = [fact("investment_roll_forward", "ending_balance", 40_000_000)]
+    fine = [fact("investment_roll_forward", "ending_balance", 4_600_000)]
+    check(names("investment_roll_forward", "Fund 84", off) == {"share_out_of_line"}
+          and not names("investment_roll_forward", "Fund 84", fine) and fine[0].status == "auto",
+          "a balance far from the commitment's share of the fund is flagged; one in line is not")
+    client.post("/api/manual-values", json={
+        "entity": "Fund 85", "report_type": "investment_roll_forward", "period": "2026-Q1",
+        "metric": "ending_balance", "value": "4,000,000"})
+    small = [fact("fund_financials", "total_assets", 3_200), fact("fund_financials", "nav", 3_300)]
+    check(names("fund_financials", "Fund 85", small) == {"assets_below_net_assets",
+                                                         "below_investor_balance"},
+          "fund totals below the investor's own balance (or assets below net assets) are flagged")
 
 
 def clear_data(samples: Path) -> None:
