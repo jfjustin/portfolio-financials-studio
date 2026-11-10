@@ -23,6 +23,7 @@
       b.className = "badge on"; }
     else { b.textContent = h.llm_provider + " unavailable"; b.className = "badge off"; }
     if (ps.detail) b.title = ps.detail;
+    setupNav();
     $("#ledger-filter").addEventListener("input", renderLedger);
     $("#dif-year").addEventListener("change", e => loadDirectInvestments(+e.target.value));
     $("#dif-period").addEventListener("change", renderDif);
@@ -52,6 +53,84 @@
     await refresh();
   }
 
+  // ---------------- Section menu: one section, or several side by side ----------------
+  const CHARTS = { byType: null, byEntity: null, ts: null };
+  function drawCharts() {
+    const pane = $('.pane[data-pane="charts"]');
+    if (!pane || pane.hidden) return;              // drawn when its section is open (it needs a width)
+    if (CHARTS.byType) window.Charts.barChart($("#chart-type"), CHARTS.byType, { title: "Value by report type" });
+    if (CHARTS.byEntity) window.Charts.barChart($("#chart-entity"), CHARTS.byEntity, { title: "Value by entity" });
+    if (CHARTS.ts) window.Charts.lineChart($("#chart-time"), CHARTS.ts, { title: "Portfolio value over time" });
+  }
+  let SELECTED = [];
+  const panes = () => $$("#panes > .pane");
+  const store = {
+    get(k) { try { return localStorage.getItem(k); } catch (e) { return null; } },
+    set(k, v) { try { localStorage.setItem(k, v); } catch (e) { /* private window: not remembered */ } },
+  };
+  function setupNav() {
+    const list = $("#nav-list");
+    list.innerHTML = panes().map(p => {
+      const k = p.dataset.pane, t = p.dataset.title;
+      return `<li class="nav-item" data-pane="${k}">` +
+        `<label class="nav-check" title="Show alongside the open sections"><input type="checkbox" data-pane="${k}" aria-label="Show ${t} alongside"></label>` +
+        `<button type="button" class="nav-link" data-pane="${k}" title="Open ${t} (Ctrl/⌘-click to add it alongside)">${t}</button></li>`;
+    }).join("");
+    panes().forEach(p => {
+      const bar = document.createElement("div");
+      bar.className = "pane-bar";
+      bar.innerHTML = `<span>${p.dataset.title}</span><button type="button" class="pane-close" aria-label="Close ${p.dataset.title}">×</button>`;
+      $(".pane-close", bar).onclick = () => toggleSection(p.dataset.pane);
+      p.prepend(bar);
+    });
+    $$(".nav-link", list).forEach(b => b.addEventListener("click", e => {
+      if (e.metaKey || e.ctrlKey || e.shiftKey) toggleSection(b.dataset.pane);
+      else { SELECTED = [b.dataset.pane]; renderPanes(); window.scrollTo({ top: 0 }); }
+    }));
+    $$(".nav-check input", list).forEach(cb => cb.addEventListener("change", () => toggleSection(cb.dataset.pane)));
+    $("#nav-toggle").onclick = () => setNavCollapsed(!$("#shell").classList.contains("nav-collapsed"));
+    try { SELECTED = JSON.parse(store.get("pfs.sections") || "[]"); } catch (e) { SELECTED = []; }
+    setNavCollapsed(store.get("pfs.navCollapsed") === "1");
+    // charts are redrawn whenever their section changes width: window resize, menu hidden or
+    // shown, one section or three; a hidden section reports 0, so reopening it redraws too
+    let chartW = 0;
+    new ResizeObserver(([e]) => {
+      const w = Math.round(e.contentRect.width);
+      if (w !== chartW) { chartW = w; if (w) requestAnimationFrame(drawCharts); }
+    }).observe($('.pane[data-pane="charts"]'));
+    renderPanes();
+  }
+  function setNavCollapsed(on) {
+    $("#shell").classList.toggle("nav-collapsed", on);
+    const b = $("#nav-toggle");
+    b.textContent = on ? "›" : "‹";
+    b.title = on ? "Show the section menu" : "Hide the section menu";
+    b.setAttribute("aria-expanded", on ? "false" : "true");
+    store.set("pfs.navCollapsed", on ? "1" : "0");
+  }
+  function toggleSection(k) {
+    SELECTED = SELECTED.includes(k) ? SELECTED.filter(x => x !== k) : SELECTED.concat([k]);
+    renderPanes();
+  }
+  function renderPanes() {
+    const available = panes().filter(p => !(p.dataset.pane === "lake" && $("#lake-card").hidden))
+                             .map(p => p.dataset.pane);
+    SELECTED = SELECTED.filter(k => available.includes(k));
+    if (!SELECTED.length) SELECTED = [available[0]];
+    panes().forEach(p => { p.hidden = !SELECTED.includes(p.dataset.pane); });
+    const box = $("#panes");
+    box.classList.toggle("multi", SELECTED.length > 1);
+    box.style.setProperty("--cols", String(Math.min(SELECTED.length, 3)));
+    $$("#nav-list .nav-item").forEach(li => {
+      const k = li.dataset.pane, on = SELECTED.includes(k);
+      li.hidden = !available.includes(k);
+      li.classList.toggle("on", on);
+      $("input", li).checked = on;
+      $(".nav-link", li).setAttribute("aria-current", on ? "page" : "false");
+    });
+    store.set("pfs.sections", JSON.stringify(SELECTED));
+  }
+
   async function refresh() {
     const d = await api("/api/dashboard");
     $("#t-subs").textContent = d.n_submissions;
@@ -63,8 +142,8 @@
     const byType = Object.entries(d.value_by_type).map(([k, v]) =>
       ({ label: (REPORT_TYPES[k] && REPORT_TYPES[k].label) || k, value: v }));
     const byEntity = Object.entries(d.value_by_entity).map(([k, v]) => ({ label: k, value: v }));
-    window.Charts.barChart($("#chart-type"), byType, { title: "Value by report type" });
-    window.Charts.barChart($("#chart-entity"), byEntity, { title: "Value by entity" });
+    CHARTS.byType = byType;
+    CHARTS.byEntity = byEntity;
 
     const s = await api("/api/submissions");
     renderSubs(s.submissions);
@@ -77,8 +156,8 @@
     await loadDirectInvestments(DIF ? DIF.year : null);
     await loadPortfolio(PF ? PF.as_of : null);
 
-    const ts = await api("/api/timeseries");
-    window.Charts.lineChart($("#chart-time"), ts, { title: "Portfolio value over time" });
+    CHARTS.ts = await api("/api/timeseries");
+    drawCharts();
 
     const lg = await api("/api/ledger");
     LEDGER = lg.rows;
@@ -339,7 +418,7 @@
     $("#pf-committed").textContent = tot(t.committed);
     $("#pf-net").textContent = tot(t.net_cash_flow);
     $$(".pf-open").forEach(a => a.addEventListener("click", e => { e.preventDefault(); openPortfolioEntity(a.dataset.entity); }));
-    loadSummary(PF.as_of);
+    if (PF.summary) renderSummary(PF.summary); else loadSummary(PF.as_of);
     renderAttention("#pf-attention", PF.funds.concat(PF.companies).flatMap(r =>
       (r.issues || []).map(i => Object.assign({ who: r.investment_name, entity: r.entity }, i))),
       i => openPortfolioEntity(i.entity));
@@ -356,18 +435,24 @@
     return psMoney(v);
   }
   async function loadSummary(asOf) {
-    const S = await api("/api/portfolio/summary" + (asOf ? "?as_of=" + asOf : ""));
+    renderSummary(await api("/api/portfolio/summary" + (asOf ? "?as_of=" + asOf : "")));
+  }
+  function renderSummary(S) {
     $("#ps-asof").textContent = "As of " + S.as_of_label;
-    const first = S.columns.filter(c => c.key !== "dpi" && c.key !== "aum");
-    const render = (head, body, rows, cols) => {
-      $(head).innerHTML = '<th class="lbl"></th>' + cols.map(c => `<th>${esc(c.label)}</th>`).join("");
-      $(body).innerHTML = rows.map(r => `<tr class="${r.kind === "total" ? "ps-total" : ""}">` +
-        `<td class="lbl">${esc(r.label)}</td>` +
-        cols.map(c => `<td class="num ${c.key !== "gain_pct" && Number(r[c.key]) < 0 ? "is-neg" : ""}">${psCell(c.key, r[c.key])}</td>`).join("") +
-        "</tr>").join("");
-    };
-    render("#ps-head", "#ps-body", S.rows, first);
-    render("#ps-head2", "#ps-body2", S.totals, S.columns);
+    // one table, two blocks: the columns they share line up, and the first block has no DPI / AUM
+    const all = S.columns.map(c => c.key);
+    const first = all.filter(k => k !== "dpi" && k !== "aum");
+    const head = (keys, cls) => `<tr class="${cls}"><th class="lbl"></th>` + S.columns.map(c =>
+      // headings wrap after a slash ("Gain/ (Loss)") but never at the hyphen of "Paid-in"
+      keys.includes(c.key) ? `<th>${esc(c.label).replace(/-/g, "‑").replace(/\//g, "/​")}</th>`
+                           : '<th class="blank"></th>').join("") + "</tr>";
+    const body = (rows, keys) => rows.map(r => `<tr class="${r.kind === "total" ? "ps-total" : ""}">` +
+      `<td class="lbl">${esc(r.label)}</td>` + S.columns.map(c => !keys.includes(c.key) ? '<td class="blank"></td>' :
+        `<td class="num ${c.key !== "gain_pct" && Number(r[c.key]) < 0 ? "is-neg" : ""}">${psCell(c.key, r[c.key])}</td>`).join("") +
+      "</tr>").join("");
+    $("#ps-table").innerHTML = `<thead>${head(first, "")}</thead><tbody>${body(S.rows, first)}</tbody>` +
+      `<tbody class="ps-mid"><tr class="ps-gap"><td colspan="${all.length + 1}"></td></tr>${head(all, "ps-subhead")}</tbody>` +
+      `<tbody>${body(S.totals, all)}</tbody>`;
     $("#ps-notes").innerHTML = S.notes.length
       ? "Not in the totals or valued differently: " + S.notes.map(n => `<b>${esc(n.name)}</b> — ${esc(n.message)}`).join(" · ")
       : "";
@@ -838,7 +923,9 @@
   async function loadLake() {
     const st = await api("/api/lake/status");
     const card = $("#lake-card");
+    const was = card.hidden;
     card.hidden = !st.enabled;
+    if (was !== card.hidden) renderPanes();     // the menu lists Data lake only when it's on
     if (!st.enabled) return;
     $("#lake-where").textContent = `— ${st.backend} · ${st.location}`;
     $("#lake-stages").innerHTML = LAKE_STAGES.map(([stage, table, what]) => {

@@ -13,6 +13,7 @@ Design choices for confidential financial data:
 from __future__ import annotations
 
 import json
+from contextvars import ContextVar
 from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Any, Optional
@@ -980,9 +981,34 @@ def approved_statuses() -> tuple[str, ...]:
     return ("auto", "confirmed") if settings.publish_auto_accepted else ("confirmed",)
 
 
+# A read-only request (GET) reuses what it has already read: the dashboard's
+# reports would otherwise re-read every approved value and rebuild the
+# roll-forward several times per page. Writes never use it (see main.py).
+_REQUEST_CACHE: ContextVar[Optional[dict]] = ContextVar("pfs_request_cache", default=None)
+
+
+def request_cache_scope(enabled: bool):
+    """Set the per-request cache on (for a read-only request) or off; returns
+    the token for `_REQUEST_CACHE.reset`."""
+    return _REQUEST_CACHE.set({} if enabled else None)
+
+
+def _cached(key: str, compute):
+    cache = _REQUEST_CACHE.get()
+    if cache is None:
+        return compute()
+    if key not in cache:
+        cache[key] = compute()
+    return cache[key]
+
+
 def trusted_facts() -> list[dict[str, Any]]:
     """Published (Gold) values — what dashboards, exports and the lake's Gold
     layer are built from. Values waiting for review never appear here."""
+    return _cached("trusted_facts", _trusted_facts)
+
+
+def _trusted_facts() -> list[dict[str, Any]]:
     eng = get_engine()
     with eng.connect() as conn:
         rows = conn.execute(
@@ -1260,6 +1286,10 @@ def timeseries() -> dict[str, Any]:
 
 def get_investments() -> dict[str, Any]:
     """Return the investment read-model (rebuilt from trusted facts)."""
+    return _cached("investments", _get_investments)
+
+
+def _get_investments() -> dict[str, Any]:
     rebuild_investment_views()
     eng = get_engine()
     with eng.connect() as conn:

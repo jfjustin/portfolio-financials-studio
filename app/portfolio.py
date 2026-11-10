@@ -684,7 +684,7 @@ def _aggregate(label: str, lines: list[dict], kind: str) -> dict:
     return out
 
 
-def summary(as_of: Optional[str] = None) -> dict[str, Any]:
+def summary(as_of: Optional[str] = None, rep: Optional[dict] = None) -> dict[str, Any]:
     """Every investment's cost, value, book value, impairment, proceeds and
     gains — direct investments by status (current / impaired / exited), funds,
     and all of them together by portfolio group — with TVPI, DPI and AUM.
@@ -696,8 +696,9 @@ def summary(as_of: Optional[str] = None) -> dict[str, Any]:
       every row         total gain = realized + unrealized; gain % = total ÷ cost;
                         TVPI = value ÷ cost; DPI = proceeds ÷ cost
     Amounts are in USD: an entity reporting in another currency needs its USD
-    rate, and is left out (with a note) until it has one."""
-    rep = report(as_of)
+    rate, and is left out (with a note) until it has one. Pass `rep` (a
+    report() result) to summarise it without reading everything again."""
+    rep = rep or report(as_of)
     lines: list[dict] = []
     notes: list[dict] = []
     for row, maker in ([(c, _company_line) for c in rep["companies"]]
@@ -922,7 +923,7 @@ def workbook(as_of: Optional[str] = None) -> tuple[bytes, str]:
             ws.column_dimensions[c].width = 18
 
     _summary(cash_flows, rep, names)
-    _dashboard(wb, summary(rep["as_of"]))
+    _dashboard(wb, summary(rep=rep))
     wb.calculation.fullCalcOnLoad = True          # Excel computes the summary's references
     buf = io.BytesIO()
     wb.save(buf)

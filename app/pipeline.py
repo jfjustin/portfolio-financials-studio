@@ -15,7 +15,7 @@ from typing import Any, Optional
 from . import carry_forward, db, lake, storage
 from .config import settings
 from .extractors.registry import extract_file
-from .validate import validate_facts
+from .validate import scale_checks, validate_facts
 
 
 def process_path(path: Path, *, save_copy: bool = True,
@@ -41,6 +41,7 @@ def process_path(path: Path, *, save_copy: bool = True,
 
     # run validation (mutates fact flags/status in place)
     checks = validate_facts(result.detected_report_type, result.facts)
+    checks += scale_checks(result.detected_report_type, result.entity_name, result.facts)
 
     # optionally keep an immutable copy of the source (local dir or Azure Blob)
     if save_copy:
@@ -102,6 +103,7 @@ def reprocess_submission(sub_id: int, user: str = "local") -> dict[str, Any]:
     result = extract_file(path, original_name=sub["filename"])
     carry_forward.apply_to_result(result)
     checks = validate_facts(result.detected_report_type, result.facts)
+    checks += scale_checks(result.detected_report_type, result.entity_name, result.facts)
     counts = db.replace_extraction(sub_id, result, user=user)
     _after_save(result, sub_id)
     lake.record_extraction(sub_id, result, path,

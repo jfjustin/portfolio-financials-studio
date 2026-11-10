@@ -8,286 +8,321 @@
 </head>
 <body>
   <header class="top">
-    <span class="brand-mark">PF</span>
-    <h1>Portfolio Financials Studio</h1>
-    <span class="sub">human-in-the-loop · pluggable model</span>
-    <span class="confidential">Confidential · Internal Use</span>
-    <span class="spacer"></span>
-    <span id="llm-badge" class="badge">…</span>
-    {% if auth_mode != "none" and user %}
-      <span class="user-chip"><span class="dot"></span>{{ user }}</span>
-      <a class="btn sm" href="/logout">Sign out</a>
-    {% endif %}
-    <a class="btn sm" href="/api/export.csv">Export trusted CSV</a>
-    <button id="clear-btn" class="btn sm danger"
-            title="Delete all uploaded submissions and extracted values (a backup is kept)">Clear data</button>
+    <div class="top-inner">
+      <span class="brand-mark">PF</span>
+      <h1>Portfolio Financials Studio</h1>
+      <span class="sub">human-in-the-loop · pluggable model</span>
+      <span class="confidential">Confidential · Internal Use</span>
+      <span class="spacer"></span>
+      <span id="llm-badge" class="badge">…</span>
+      {% if auth_mode != "none" and user %}
+        <span class="user-chip"><span class="dot"></span>{{ user }}</span>
+        <a class="btn sm" href="/logout">Sign out</a>
+      {% endif %}
+      <a class="btn sm" href="/api/export.csv">Export trusted CSV</a>
+      <button id="clear-btn" class="btn sm danger"
+              title="Delete all uploaded submissions and extracted values (a backup is kept)">Clear data</button>
+    </div>
   </header>
 
-  <div class="wrap grid" style="gap:20px">
-
-    <!-- KPIs -->
-    <section class="grid cols-4">
-      <div class="card tile"><div class="n" id="t-subs">0</div><div class="l">Files ingested</div></div>
-      <div class="card tile"><div class="n" id="t-facts">0</div><div class="l">Trusted data points</div></div>
-      <div class="card tile"><div class="n" id="t-entities">0</div><div class="l">Entities</div></div>
-      <div class="card tile"><div class="n" id="t-review">0</div><div class="l">Values to review</div></div>
-    </section>
-
-    <!-- Lam Capital overall performance -->
-    <section class="report-card">
-      <div class="report-head">
-        <h3 class="report-title">Lam Capital Overall Performance</h3>
-        <span class="small muted" id="perf-asof"></span>
+  <div class="shell" id="shell">
+    <aside class="nav" id="nav" aria-label="Sections">
+      <div class="nav-head">
+        <button class="nav-toggle" id="nav-toggle" type="button" aria-expanded="true"
+          aria-controls="nav-list" title="Hide the section menu">‹</button>
+        <span class="nav-title">Sections</span>
       </div>
-      <p class="report-sub">TVPI, DPI, and a money-weighted IRR across all fund investments — computed
-        from confirmed funding, distributions, and NAV.</p>
-      <div class="perf-strip">
-        <div class="perf-tile"><div class="pv" id="perf-tvpi">—</div><div class="pl">TVPI</div></div>
-        <div class="perf-tile"><div class="pv" id="perf-dpi">—</div><div class="pl">DPI</div></div>
-        <div class="perf-tile"><div class="pv" id="perf-irr">—</div><div class="pl">IRR</div></div>
-        <div class="perf-tile"><div class="pv" id="perf-nav">—</div><div class="pl">Current NAV</div></div>
-      </div>
-    </section>
+      <ul class="nav-list" id="nav-list"></ul>
+      <p class="nav-foot small muted">Click a section to open it. Tick others to see them side by side.</p>
+    </aside>
 
-    <!-- Portfolio Summary — the team's dashboard table -->
-    <section class="report-card" id="ps-card">
-      <div class="report-head">
-        <h3 class="report-title">Portfolio Summary</h3>
-        <span class="small muted" id="ps-asof"></span>
-      </div>
-      <p class="report-sub">In $M (USD), approved values only. Total gain = realized + unrealized ·
-        Gain % = total gain ÷ cost · TVPI = total value ÷ cost · DPI = proceeds ÷ cost · AUM = value still
-        held. Impairment, book value and portfolio group come from each company's details.</p>
-      <div class="scroll"><table class="tbl-report tbl-ps"><thead><tr id="ps-head"></tr></thead>
-        <tbody id="ps-body"></tbody></table></div>
-      <div class="scroll" style="margin-top:14px"><table class="tbl-report tbl-ps"><thead><tr id="ps-head2"></tr></thead>
-        <tbody id="ps-body2"></tbody></table></div>
-      <div id="ps-notes" class="small muted ps-notes"></div>
-    </section>
-
-    <!-- Direct Investments — Lam report format -->
-    <section class="report-card">
-      <div class="report-head">
-        <h3 class="report-title">Direct Investments</h3>
-        <span class="small muted">As of latest confirmed period per company</span>
-      </div>
-      <div class="scroll"><table class="tbl-report">
-        <thead><tr><th class="lbl">Company</th><th>As of</th><th>Investment Cost</th>
-          <th>Estimated FMV</th><th>Book Value</th><th>Unrealized Gain / (Loss)</th>
-          <th>MOIC</th><th>Ownership</th></tr></thead>
-        <tbody id="direct-inv-body"></tbody>
-      </table></div>
-    </section>
-
-    <!-- Direct Investment Financials — Lam's quarterly report (Budget | Actual) -->
-    <section class="report-card" id="dif-card">
-      <div class="report-head">
-        <h3 class="report-title">Direct Investment Financials</h3>
-        <div class="dif-controls">
-          <label class="small muted">Year <select id="dif-year" aria-label="Report year"></select></label>
-          <label class="small muted">Period <select id="dif-period" aria-label="Report period"></select></label>
-          <a class="btn sm primary" id="dif-export" href="/api/exports/direct-investment-financials.xlsx">Download xlsx</a>
+    <main class="panes" id="panes">
+    <div class="pane" data-pane="overview" data-title="Overview">
+      <!-- KPIs -->
+      <section class="grid cols-4">
+        <div class="card tile"><div class="n" id="t-subs">0</div><div class="l">Files ingested</div></div>
+        <div class="card tile"><div class="n" id="t-facts">0</div><div class="l">Trusted data points</div></div>
+        <div class="card tile"><div class="n" id="t-entities">0</div><div class="l">Entities</div></div>
+        <div class="card tile"><div class="n" id="t-review">0</div><div class="l">Values to review</div></div>
+      </section>
+      <!-- Lam Capital overall performance -->
+      <section class="report-card">
+        <div class="report-head">
+          <h3 class="report-title">Lam Capital Overall Performance</h3>
+          <span class="small muted" id="perf-asof"></span>
         </div>
-      </div>
-      <p class="report-sub">Each portfolio company's own P&amp;L, balance sheet and cash-flow figures,
-        in $000 — approved values only. Burn and runway are computed: Gross Monthly Burn = Operating
-        Expense ÷ months · Net Monthly Burn = −(Operating Cash Flow + CapEx) ÷ months · Runway =
-        Ending Cash ÷ monthly burn. Type budgets (in $000) into the Budget rows.</p>
-      <div class="scroll"><table class="tbl-report tbl-dif">
-        <thead><tr><th class="lbl">Company</th><th class="lbl"></th><th>Revenue</th>
-          <th>Operating Cash Flow</th><th>CapEx</th><th>Ending Cash</th><th>Operating Expense</th>
-          <th>Gross Monthly Burn</th><th>Gross Runway</th><th>Net Monthly Burn</th>
-          <th>Net Runway</th></tr></thead>
-        <tbody id="dif-body"></tbody>
-      </table></div>
-      <div id="dif-attention" class="attention"></div>
-      <details class="manual-entry">
-        <summary>Enter a figure by hand — a statement that's empty, unreadable or missing it</summary>
-        <form id="dif-manual" class="manual-form">
-          <label>Company<input name="entity" list="dif-companies" required placeholder="Company X"></label>
-          <datalist id="dif-companies"></datalist>
-          <label>Quarter<select name="period" id="dif-manual-q"></select></label>
-          <label>Figure<select name="metric">
-            <option value="revenue">Revenue</option><option value="operating_cash_flow">Operating Cash Flow</option>
-            <option value="capex">CapEx</option><option value="ending_cash">Ending Cash</option>
-            <option value="operating_expense">Operating Expense</option></select></label>
-          <label>Value ($000)<input name="value" required inputmode="decimal" placeholder="e.g. (1,209)"></label>
-          <label class="wide">Where it came from<input name="note" placeholder="e.g. CFO email of 4 May, page 3 of the scan"></label>
-          <button class="btn sm primary" type="submit">Save figure</button>
-        </form>
-        <p class="small muted">Saved as entered by you — confirmed, marked ✎, and in the audit trail.
-          Typing a figure in a highlighted Actual cell does the same.</p>
-      </details>
-    </section>
-
-    <!-- Investment Portfolio — Lam's quarterly report (funds + direct investments) -->
-    <section class="report-card" id="pf-card">
-      <div class="report-head">
-        <h3 class="report-title">Investment Portfolio</h3>
-        <div class="dif-controls">
-          <label class="small muted">As of <select id="pf-asof" aria-label="Report quarter"></select></label>
-          <a class="btn sm primary" id="pf-export" href="/api/exports/investment-portfolio.xlsx">Download xlsx</a>
+        <p class="report-sub">TVPI, DPI, and a money-weighted IRR across all fund investments — computed
+          from confirmed funding, distributions, and NAV.</p>
+        <div class="perf-strip">
+          <div class="perf-tile"><div class="pv" id="perf-tvpi">—</div><div class="pl">TVPI</div></div>
+          <div class="perf-tile"><div class="pv" id="perf-dpi">—</div><div class="pl">DPI</div></div>
+          <div class="perf-tile"><div class="pv" id="perf-irr">—</div><div class="pl">IRR</div></div>
+          <div class="perf-tile"><div class="pv" id="perf-nav">—</div><div class="pl">Current NAV</div></div>
         </div>
-      </div>
-      <p class="report-sub">In $M, approved values only. Investment Balance is the roll-forward's ending
-        balance; Drawn, Distribution and Future Draw come from the statements (else the quarters on
-        file); Latest Stats from the fund's schedule of investments. Click a name to enter its details —
-        type, vintage, fund size, region / sector, accounting data and dated calls.</p>
-      <h4 class="pf-sub">Fund investments</h4>
-      <div class="scroll"><table class="tbl-report tbl-pf">
-        <thead><tr><th class="lbl">Fund</th><th class="lbl">Type</th><th class="lbl">Region / Sector</th>
-          <th>Vintage</th><th>Fund Size</th><th>Commitment</th><th>Drawn to Date</th>
-          <th>Future Draw</th><th>Distribution</th><th>Drawn / Commit</th><th>Investment Balance</th>
-          <th>Latest Stats</th></tr></thead>
-        <tbody id="pf-funds"></tbody>
-      </table></div>
-      <h4 class="pf-sub">Direct investments</h4>
-      <div class="scroll"><table class="tbl-report tbl-pf">
-        <thead><tr><th class="lbl">Company</th><th class="lbl">Theme</th><th class="lbl">Round</th>
-          <th>Most Recent Investment</th><th>Total Invested</th><th>Projected</th>
-          <th>Total Value</th><th class="lbl">Status</th></tr></thead>
-        <tbody id="pf-companies"></tbody>
-      </table></div>
-      <div class="perf-strip">
-        <div class="perf-tile"><div class="pv" id="pf-inflow">—</div><div class="pl">Cash inflow</div></div>
-        <div class="perf-tile"><div class="pv" id="pf-outflow">—</div><div class="pl">Actual cash outflow</div></div>
-        <div class="perf-tile"><div class="pv" id="pf-committed">—</div><div class="pl">Committed investments</div></div>
-        <div class="perf-tile"><div class="pv" id="pf-net">—</div><div class="pl">Total net cash flow</div></div>
-      </div>
-      <div id="pf-attention" class="attention"></div>
-      <form id="pf-add" class="manual-form inline">
-        <label>Add a fund or direct investment no file covers yet<input name="name" required placeholder="Fund 12 / Company Q"></label>
-        <label>Kind<select name="kind"><option value="fund">Fund</option>
-          <option value="direct_investment">Direct investment</option></select></label>
-        <button class="btn sm" type="submit">Add</button>
-      </form>
-    </section>
+      </section>
+    </div>
 
-    <!-- Portfolio value over time (the grand-ledger trend) -->
-    <section class="card">
-      <div class="sec-head">
-        <h2>Portfolio value over time</h2>
-        <span class="small muted">Total investment balance per period · thin lines = entities</span>
-      </div>
-      <div id="chart-time"></div>
-    </section>
+    <div class="pane" data-pane="summary" data-title="Portfolio Summary">
+      <!-- Portfolio Summary — the team's dashboard table -->
+      <section class="report-card" id="ps-card">
+        <div class="report-head">
+          <h3 class="report-title">Portfolio Summary</h3>
+          <span class="small muted" id="ps-asof"></span>
+        </div>
+        <p class="report-sub">In $M (USD), approved values only. Total gain = realized + unrealized ·
+          Gain % = total gain ÷ cost · TVPI = total value ÷ cost · DPI = proceeds ÷ cost · AUM = value still
+          held. Impairment, book value and portfolio group come from each company's details.</p>
+        <!-- one table in two blocks, so the columns they share line up -->
+        <div class="scroll"><table class="tbl-report tbl-ps" id="ps-table"></table></div>
+        <div id="ps-notes" class="small muted ps-notes"></div>
+      </section>
+    </div>
 
-    <!-- Upload -->
-    <section class="card">
-      <h2>Upload reports (PDF · XLSX · XLSM · XLS · CSV)</h2>
-      <div class="drop" id="drop">
-        <div style="font-size:15px;font-weight:600">Drop files here or click to browse</div>
-        <div class="small">Fund financials · Joint venture · JV equity income · Direct investment</div>
-        <input type="file" id="file-input" multiple accept=".pdf,.xlsx,.xlsm,.xls,.csv">
-      </div>
-      <div id="upload-status" class="small muted" style="margin-top:8px"></div>
-      <div id="upload-results"></div>
-    </section>
-
-    <!-- Charts -->
-    <section class="grid cols-2">
-      <div class="card"><h2>Value by report type</h2><div id="chart-type"></div>
-        <div class="legend">Sums NAV / fair value / carrying value / JV equity of confirmed data.</div></div>
-      <div class="card"><h2>Value by entity (top 12)</h2><div id="chart-entity"></div></div>
-    </section>
-
-    <!-- Investments (ported investment_entities / investment_quarters model) -->
-    <section class="card">
-      <div class="sec-head">
-        <h2>Investment portfolio</h2>
-        <span class="small muted" id="inv-count"></span>
-      </div>
-      <table class="tbl-tight">
-        <thead><tr>
-          <th>Entity</th><th>Type</th><th class="num">Investment balance</th>
-          <th class="num">Equity income / (loss)</th><th class="num">Return of capital</th>
-          <th class="num">Ownership</th><th>Latest period</th>
-        </tr></thead>
-        <tbody id="inv-entities"></tbody>
-      </table>
-
-      <h2 style="margin:18px 0 8px">Quarterly roll-forward
-        <span class="small muted" id="rf-scope"></span></h2>
-      <div style="overflow-x:auto">
-      <table class="tbl-tight rf">
-        <thead><tr>
-          <th>Entity</th><th>Period</th>
-          <th class="num">Beginning</th><th class="num">Funding</th>
-          <th class="num">Equity inc/(loss)</th><th class="num">Return of cap.</th>
-          <th class="num">Dividends</th><th class="num">MTM</th><th class="num">Other</th>
-          <th class="num">Change</th><th class="num">Ending</th>
-        </tr></thead>
-        <tbody id="inv-quarters"></tbody>
-      </table>
-      </div>
-    </section>
-
-    <!-- Grand ledger: every company's report, one consolidated ledger -->
-    <section class="card">
-      <div class="sec-head">
-        <h2>Grand ledger</h2>
-        <span class="small muted">
-          <span id="ledger-count"></span>
-          &nbsp;·&nbsp; <a href="/api/ledger.csv">Export ledger CSV</a>
-          &nbsp;·&nbsp; <a href="/api/fabric/fact_financial_metric.parquet" title="Versioned fact table for Microsoft Fabric / Power BI">Export Fabric (Parquet)</a>
-          &nbsp;·&nbsp; <a href="/api/fabric/schema" target="_blank" title="Column dictionary + grain for the Fabric export contract">Fabric schema</a>
-        </span>
-      </div>
-      <input id="ledger-filter" class="ledger-filter" placeholder="Filter by company, metric, or period…">
-      <div class="scroll" style="max-height:420px;overflow-y:auto">
-      <table class="tbl-tight">
-        <thead><tr><th>Period</th><th>Company / entity</th><th>Section</th>
-          <th>Metric</th><th class="num">Value</th><th>Cur.</th><th>Source</th></tr></thead>
-        <tbody id="ledger-body"></tbody>
-      </table>
-      </div>
-    </section>
-
-    <!-- Submissions -->
-    <section class="card">
-      <h2>Submissions</h2>
-      <table>
-        <thead><tr><th>#</th><th>File</th><th>Type</th><th>Entity</th><th>Period</th>
-          <th class="num">Facts</th><th>Status</th></tr></thead>
-        <tbody id="subs-body"></tbody>
-      </table>
-    </section>
-
-    <!-- Data lake (medallion flow) -->
-    <section class="card" id="lake-card" hidden>
-      <h2 style="margin:0 0 6px">Data lake <span class="small muted" id="lake-where"></span></h2>
-      <p class="small muted" style="margin:0 0 8px">Originals land as received; every extraction is kept in
-        Bronze; Silver holds every value; <b>Gold holds published values only</b> — never values waiting for
-        review — the tables Power BI and Fabric build on. Writes follow each change automatically.</p>
-      <div class="lake-stages" id="lake-stages"></div>
-      <div class="small muted" id="lake-sync-line" style="margin-top:8px"></div>
-      <div style="margin-top:8px"><button class="btn sm" id="lake-sync">Sync now</button></div>
-    </section>
-
-    <!-- Statement terms (format memory) -->
-    <section class="card" id="terms-card">
-      <details>
-        <summary><h2 style="display:inline">Statement terms</h2>
-          <span class="small muted" id="terms-count"></span></summary>
-        <p class="small muted">How statement lines map to fields. <b>Preset</b> wording ships with the app;
-          <b>taught</b> wording comes from reviewers (here or from a file's unrecognised lines). Each fund's
-          confirmed values also teach the app that fund's wording automatically. Quarters, years, dates and
-          gain/loss wording are matched loosely, so a term taught for Q1 also covers Q2.</p>
-        <form class="terms-form" id="term-form">
-          <input id="t-section" placeholder="Heading above the line (optional)">
-          <input id="t-label" placeholder="Line label, e.g. Called in Q1, 2026" required>
-          <select id="t-metric"></select>
-          <select id="t-scope"><option value="">All funds</option></select>
-          <button class="btn sm primary" type="submit">Add term</button>
+    <div class="pane" data-pane="portfolio" data-title="Investment Portfolio">
+      <!-- Investment Portfolio — Lam's quarterly report (funds + direct investments) -->
+      <section class="report-card" id="pf-card">
+        <div class="report-head">
+          <h3 class="report-title">Investment Portfolio</h3>
+          <div class="dif-controls">
+            <label class="small muted">As of <select id="pf-asof" aria-label="Report quarter"></select></label>
+            <a class="btn sm primary" id="pf-export" href="/api/exports/investment-portfolio.xlsx">Download xlsx</a>
+          </div>
+        </div>
+        <p class="report-sub">In $M, approved values only. Investment Balance is the roll-forward's ending
+          balance; Drawn, Distribution and Future Draw come from the statements (else the quarters on
+          file); Latest Stats from the fund's schedule of investments. Click a name to enter its details —
+          type, vintage, fund size, region / sector, accounting data and dated calls.</p>
+        <h4 class="pf-sub">Fund investments</h4>
+        <div class="scroll"><table class="tbl-report tbl-pf">
+          <thead><tr><th class="lbl">Fund</th><th class="lbl">Type</th><th class="lbl">Region / Sector</th>
+            <th>Vintage</th><th>Fund Size</th><th>Commitment</th><th>Drawn to Date</th>
+            <th>Future Draw</th><th>Distribution</th><th>Drawn / Commit</th><th>Investment Balance</th>
+            <th>Latest Stats</th></tr></thead>
+          <tbody id="pf-funds"></tbody>
+        </table></div>
+        <h4 class="pf-sub">Direct investments</h4>
+        <div class="scroll"><table class="tbl-report tbl-pf">
+          <thead><tr><th class="lbl">Company</th><th class="lbl">Theme</th><th class="lbl">Round</th>
+            <th>Most Recent Investment</th><th>Total Invested</th><th>Projected</th>
+            <th>Total Value</th><th class="lbl">Status</th></tr></thead>
+          <tbody id="pf-companies"></tbody>
+        </table></div>
+        <div class="perf-strip">
+          <div class="perf-tile"><div class="pv" id="pf-inflow">—</div><div class="pl">Cash inflow</div></div>
+          <div class="perf-tile"><div class="pv" id="pf-outflow">—</div><div class="pl">Actual cash outflow</div></div>
+          <div class="perf-tile"><div class="pv" id="pf-committed">—</div><div class="pl">Committed investments</div></div>
+          <div class="perf-tile"><div class="pv" id="pf-net">—</div><div class="pl">Total net cash flow</div></div>
+        </div>
+        <div id="pf-attention" class="attention"></div>
+        <form id="pf-add" class="manual-form inline">
+          <label>Add a fund or direct investment no file covers yet<input name="name" required placeholder="Fund 12 / Company Q"></label>
+          <label>Kind<select name="kind"><option value="fund">Fund</option>
+            <option value="direct_investment">Direct investment</option></select></label>
+          <button class="btn sm" type="submit">Add</button>
         </form>
-        <div style="overflow-x:auto">
+      </section>
+    </div>
+
+    <div class="pane" data-pane="dif" data-title="Direct Investment Financials">
+      <!-- Direct Investment Financials — Lam's quarterly report (Budget | Actual) -->
+      <section class="report-card" id="dif-card">
+        <div class="report-head">
+          <h3 class="report-title">Direct Investment Financials</h3>
+          <div class="dif-controls">
+            <label class="small muted">Year <select id="dif-year" aria-label="Report year"></select></label>
+            <label class="small muted">Period <select id="dif-period" aria-label="Report period"></select></label>
+            <a class="btn sm primary" id="dif-export" href="/api/exports/direct-investment-financials.xlsx">Download xlsx</a>
+          </div>
+        </div>
+        <p class="report-sub">Each portfolio company's own P&amp;L, balance sheet and cash-flow figures,
+          in $000 — approved values only. Burn and runway are computed: Gross Monthly Burn = Operating
+          Expense ÷ months · Net Monthly Burn = −(Operating Cash Flow + CapEx) ÷ months · Runway =
+          Ending Cash ÷ monthly burn. Type budgets (in $000) into the Budget rows.</p>
+        <div class="scroll"><table class="tbl-report tbl-dif">
+          <thead><tr><th class="lbl">Company</th><th class="lbl"></th><th>Revenue</th>
+            <th>Operating Cash Flow</th><th>CapEx</th><th>Ending Cash</th><th>Operating Expense</th>
+            <th>Gross Monthly Burn</th><th>Gross Runway</th><th>Net Monthly Burn</th>
+            <th>Net Runway</th></tr></thead>
+          <tbody id="dif-body"></tbody>
+        </table></div>
+        <div id="dif-attention" class="attention"></div>
+        <details class="manual-entry">
+          <summary>Enter a figure by hand — a statement that's empty, unreadable or missing it</summary>
+          <form id="dif-manual" class="manual-form">
+            <label>Company<input name="entity" list="dif-companies" required placeholder="Company X"></label>
+            <datalist id="dif-companies"></datalist>
+            <label>Quarter<select name="period" id="dif-manual-q"></select></label>
+            <label>Figure<select name="metric">
+              <option value="revenue">Revenue</option><option value="operating_cash_flow">Operating Cash Flow</option>
+              <option value="capex">CapEx</option><option value="ending_cash">Ending Cash</option>
+              <option value="operating_expense">Operating Expense</option></select></label>
+            <label>Value ($000)<input name="value" required inputmode="decimal" placeholder="e.g. (1,209)"></label>
+            <label class="wide">Where it came from<input name="note" placeholder="e.g. CFO email of 4 May, page 3 of the scan"></label>
+            <button class="btn sm primary" type="submit">Save figure</button>
+          </form>
+          <p class="small muted">Saved as entered by you — confirmed, marked ✎, and in the audit trail.
+            Typing a figure in a highlighted Actual cell does the same.</p>
+        </details>
+      </section>
+    </div>
+
+    <div class="pane" data-pane="direct" data-title="Direct Investments">
+      <!-- Direct Investments — Lam report format -->
+      <section class="report-card">
+        <div class="report-head">
+          <h3 class="report-title">Direct Investments</h3>
+          <span class="small muted">As of latest confirmed period per company</span>
+        </div>
+        <div class="scroll"><table class="tbl-report">
+          <thead><tr><th class="lbl">Company</th><th>As of</th><th>Investment Cost</th>
+            <th>Estimated FMV</th><th>Book Value</th><th>Unrealized Gain / (Loss)</th>
+            <th>MOIC</th><th>Ownership</th></tr></thead>
+          <tbody id="direct-inv-body"></tbody>
+        </table></div>
+      </section>
+    </div>
+
+    <div class="pane" data-pane="rollforward" data-title="Roll-forward">
+      <!-- Investments (ported investment_entities / investment_quarters model) -->
+      <section class="card">
+        <div class="sec-head">
+          <h2>Investment portfolio</h2>
+          <span class="small muted" id="inv-count"></span>
+        </div>
+        <div class="scroll">
         <table class="tbl-tight">
-          <thead><tr><th>Scope</th><th>Heading</th><th>Line label</th><th>Field</th><th>Source</th><th></th></tr></thead>
-          <tbody id="terms-body"></tbody>
+          <thead><tr>
+            <th>Entity</th><th>Type</th><th class="num">Investment balance</th>
+            <th class="num">Equity income / (loss)</th><th class="num">Return of capital</th>
+            <th class="num">Ownership</th><th>Latest period</th>
+          </tr></thead>
+          <tbody id="inv-entities"></tbody>
         </table>
         </div>
-      </details>
-    </section>
+
+        <h2 style="margin:18px 0 8px">Quarterly roll-forward
+          <span class="small muted" id="rf-scope"></span></h2>
+        <div class="scroll">
+        <table class="tbl-tight rf">
+          <thead><tr>
+            <th>Entity</th><th>Period</th>
+            <th class="num">Beginning</th><th class="num">Funding</th>
+            <th class="num">Equity inc/(loss)</th><th class="num">Return of cap.</th>
+            <th class="num">Dividends</th><th class="num">MTM</th><th class="num">Other</th>
+            <th class="num">Change</th><th class="num">Ending</th>
+          </tr></thead>
+          <tbody id="inv-quarters"></tbody>
+        </table>
+        </div>
+      </section>
+    </div>
+
+    <div class="pane" data-pane="charts" data-title="Charts">
+      <!-- Portfolio value over time (the grand-ledger trend) -->
+      <section class="card">
+        <div class="sec-head">
+          <h2>Portfolio value over time</h2>
+          <span class="small muted">Total investment balance per period · thin lines = entities</span>
+        </div>
+        <div id="chart-time"></div>
+      </section>
+      <!-- Charts -->
+      <section class="grid cols-2">
+        <div class="card"><h2>Value by report type</h2><div id="chart-type"></div>
+          <div class="legend">Sums NAV / fair value / carrying value / JV equity of confirmed data.</div></div>
+        <div class="card"><h2>Value by entity (top 12)</h2><div id="chart-entity"></div></div>
+      </section>
+    </div>
+
+    <div class="pane" data-pane="upload" data-title="Upload &amp; files">
+      <!-- Upload -->
+      <section class="card">
+        <h2>Upload reports (PDF · XLSX · XLSM · XLS · CSV)</h2>
+        <div class="drop" id="drop">
+          <div style="font-size:15px;font-weight:600">Drop files here or click to browse</div>
+          <div class="small">Fund financials · Joint venture · JV equity income · Direct investment</div>
+          <input type="file" id="file-input" multiple accept=".pdf,.xlsx,.xlsm,.xls,.csv">
+        </div>
+        <div id="upload-status" class="small muted" style="margin-top:8px"></div>
+        <div id="upload-results"></div>
+      </section>
+      <!-- Submissions -->
+      <section class="card">
+        <h2>Submissions</h2>
+        <div class="scroll">
+        <table>
+          <thead><tr><th>#</th><th>File</th><th>Type</th><th>Entity</th><th>Period</th>
+            <th class="num">Facts</th><th>Status</th></tr></thead>
+          <tbody id="subs-body"></tbody>
+        </table>
+        </div>
+      </section>
+    </div>
+
+    <div class="pane" data-pane="ledger" data-title="Grand ledger">
+      <!-- Grand ledger: every company's report, one consolidated ledger -->
+      <section class="card">
+        <div class="sec-head">
+          <h2>Grand ledger</h2>
+          <span class="small muted">
+            <span id="ledger-count"></span>
+            &nbsp;·&nbsp; <a href="/api/ledger.csv">Export ledger CSV</a>
+            &nbsp;·&nbsp; <a href="/api/fabric/fact_financial_metric.parquet" title="Versioned fact table for Microsoft Fabric / Power BI">Export Fabric (Parquet)</a>
+            &nbsp;·&nbsp; <a href="/api/fabric/schema" target="_blank" title="Column dictionary + grain for the Fabric export contract">Fabric schema</a>
+          </span>
+        </div>
+        <input id="ledger-filter" class="ledger-filter" placeholder="Filter by company, metric, or period…">
+        <div class="scroll" style="max-height:420px;overflow-y:auto">
+        <table class="tbl-tight">
+          <thead><tr><th>Period</th><th>Company / entity</th><th>Section</th>
+            <th>Metric</th><th class="num">Value</th><th>Cur.</th><th>Source</th></tr></thead>
+          <tbody id="ledger-body"></tbody>
+        </table>
+        </div>
+      </section>
+    </div>
+
+    <div class="pane" data-pane="terms" data-title="Statement terms">
+      <!-- Statement terms (format memory) -->
+      <section class="card" id="terms-card">
+        <details>
+          <summary><h2 style="display:inline">Statement terms</h2>
+            <span class="small muted" id="terms-count"></span></summary>
+          <p class="small muted">How statement lines map to fields. <b>Preset</b> wording ships with the app;
+            <b>taught</b> wording comes from reviewers (here or from a file's unrecognised lines). Each fund's
+            confirmed values also teach the app that fund's wording automatically. Quarters, years, dates and
+            gain/loss wording are matched loosely, so a term taught for Q1 also covers Q2.</p>
+          <form class="terms-form" id="term-form">
+            <input id="t-section" placeholder="Heading above the line (optional)">
+            <input id="t-label" placeholder="Line label, e.g. Called in Q1, 2026" required>
+            <select id="t-metric"></select>
+            <select id="t-scope"><option value="">All funds</option></select>
+            <button class="btn sm primary" type="submit">Add term</button>
+          </form>
+          <div style="overflow-x:auto">
+          <table class="tbl-tight">
+            <thead><tr><th>Scope</th><th>Heading</th><th>Line label</th><th>Field</th><th>Source</th><th></th></tr></thead>
+            <tbody id="terms-body"></tbody>
+          </table>
+          </div>
+        </details>
+      </section>
+    </div>
+
+    <div class="pane" data-pane="lake" data-title="Data lake">
+      <!-- Data lake (medallion flow) -->
+      <section class="card" id="lake-card" hidden>
+        <h2 style="margin:0 0 6px">Data lake <span class="small muted" id="lake-where"></span></h2>
+        <p class="small muted" style="margin:0 0 8px">Originals land as received; every extraction is kept in
+          Bronze; Silver holds every value; <b>Gold holds published values only</b> — never values waiting for
+          review — the tables Power BI and Fabric build on. Writes follow each change automatically.</p>
+        <div class="lake-stages" id="lake-stages"></div>
+        <div class="small muted" id="lake-sync-line" style="margin-top:8px"></div>
+        <div style="margin-top:8px"><button class="btn sm" id="lake-sync">Sync now</button></div>
+      </section>
+    </div>
+
+    </main>
   </div>
 
   <!-- Investment Portfolio: an entity's details and dated calls -->

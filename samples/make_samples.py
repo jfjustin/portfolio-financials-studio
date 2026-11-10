@@ -539,6 +539,54 @@ def portfolio_fund_pdfs():
     print("wrote", out.name)
 
 
+def comparative_columns_pdf():
+    """Fund 84 LP report (made-up): this quarter beside last year-end under stacked
+    column headers, note references in brackets, and — as some redacted or
+    re-saved PDFs carry — a stray space lying on the first digit of the
+    comparative figures, which plain text extraction reads as "8 8,450,000"."""
+    from fpdf import FPDF
+    pdf = FPDF()
+    pdf.add_page()
+    pdf.set_font("helvetica", "B", 12)
+    pdf.cell(0, 7, "Example Opportunity Fund IV, L.P.", ln=True)
+    pdf.cell(0, 7, "Combined Statement of Financial Position", ln=True)
+    pdf.set_font("helvetica", "", 10)
+    pdf.cell(0, 6, "As at", ln=True)
+    pdf.cell(0, 6, "[Expressed in United States dollars]", ln=True)
+    y = pdf.get_y() + 6
+
+    def right(x_end: float, text: str, split: bool = False) -> None:
+        x = x_end - pdf.get_string_width(text)
+        if not split:
+            pdf.text(x, y, text)
+            return
+        pdf.text(x, y, text[0])
+        pdf.text(x, y, " ")                          # the stray space, on top of the digit
+        pdf.text(x + pdf.get_string_width(text[0]), y, text[1:])
+
+    for a, b in (("March 31,", "December 31,"), ("2026", "2025"), ("$", "$")):
+        right(150, a)
+        right(190, b)
+        y += 6
+    for label, now, before in (
+            ("ASSETS", None, None),
+            ("Cash", "1,250,000", "2,100,000"),
+            ("Investments [notes 5 and 9]", "90,050,000", "86,350,000"),
+            ("Total assets", "91,300,000", "88,450,000"),
+            ("LIABILITIES", None, None),
+            ("Accounts payable and accrued liabilities [note 8]", "120,000", "95,000"),
+            ("Total liabilities", "120,000", "95,000"),
+            ("Partners' Capital [note 6]", "91,180,000", "88,355,000")):
+        pdf.text(15, y, label)
+        if now:
+            right(150, now)
+            right(190, before, split=label != "Total liabilities")
+        y += 6
+    out = OUT / "Fund 84_Q1 2026 LP Report.pdf"
+    pdf.output(str(out))
+    print("wrote", out.name)
+
+
 if __name__ == "__main__":
     fund_financials()
     jv_holdings()
@@ -555,4 +603,5 @@ if __name__ == "__main__":
     company_scanned_pdf()
     direct_investment_financials_csv()
     portfolio_fund_pdfs()
+    comparative_columns_pdf()
     print("\nSample files ready in", OUT)

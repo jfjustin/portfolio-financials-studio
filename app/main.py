@@ -75,6 +75,16 @@ async def lake_follows_changes(request: Request, call_next):
 
 
 @app.middleware("http")
+async def read_once_per_request(request: Request, call_next):
+    """A GET computes each shared read (approved values, the roll-forward) once."""
+    token = db.request_cache_scope(request.method == "GET")
+    try:
+        return await call_next(request)
+    finally:
+        db._REQUEST_CACHE.reset(token)
+
+
+@app.middleware("http")
 async def cache_headers(request: Request, call_next):
     response = await call_next(request)
     path = request.url.path
@@ -359,7 +369,9 @@ def portfolio_report(as_of: Optional[str] = None):
     """Lam's "Investment Portfolio": funds and direct investments as of a quarter."""
     if as_of and not re.fullmatch(r"20\d{2}-Q[1-4]", as_of):
         raise HTTPException(400, "as_of must be a quarter, e.g. 2026-Q2")
-    return portfolio.report(as_of)
+    rep = portfolio.report(as_of)
+    rep["summary"] = portfolio.summary(rep=rep)      # same reading, no second pass
+    return rep
 
 
 def _parse_date(raw: str) -> Optional[str]:

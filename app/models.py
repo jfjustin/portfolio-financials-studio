@@ -25,6 +25,10 @@ class RawItem(BaseModel):
     provenance: str = ""     # e.g. "p3 table2 r5c2" or "Sheet1!B7"
     section: str = ""        # nearest heading above the line ("Unrealised Capital Gains")
     statement: str = ""      # balance_sheet | income_statement | cash_flow, when titled
+    # PDF text lines under dated column headers: every figure column as
+    # {"header": "March 31, 2026", "value": "1,234"}, so the reporting period's
+    # column can be taken once the period is known (value_raw is the right-most)
+    columns: list[dict[str, str]] = Field(default_factory=list)
 
 
 class FinancialFact(BaseModel):

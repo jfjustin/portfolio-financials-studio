@@ -26,8 +26,8 @@ from .base import (classify_document, detect_statement_dates, file_sha256,
                    quarter_label)
 from .csv_native import extract_csv
 from .excel import extract_excel
-from .pdf_native import (ScannedPdfError, extract_pdf, parse_statement_lines,
-                         pdf_pages, render_page_png)
+from .pdf_native import (ScannedPdfError, choose_period_columns, extract_pdf,
+                         parse_statement_lines, pdf_pages, render_page_png)
 
 EXCEL_EXT = {".xlsx", ".xlsm", ".xls"}
 PDF_EXT = {".pdf"}
@@ -95,6 +95,7 @@ def assemble(raw_items: list[RawItem], text_blob: str, filename: str,
     else:
         period = normalize_period(text_blob) or normalize_period(filename) or "UNKNOWN"
     currency = detect_currency(text_blob) or "USD"
+    choose_period_columns(raw_items, period)
     if rt_key == "company_financials":
         return _company_result(raw_items, text_blob, filename, file_hash, extractor, rt_conf,
                                entity, period, dates, currency, dc)

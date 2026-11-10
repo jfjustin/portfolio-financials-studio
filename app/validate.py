@@ -9,6 +9,8 @@ from __future__ import annotations
 from decimal import Decimal
 from typing import Optional
 
+from sqlalchemy import select
+
 from .config import settings
 from .models import FactStatus, FinancialFact
 
@@ -177,4 +179,104 @@ def validate_facts(report_type: str, facts: list[FinancialFact]) -> list[Check]:
                             f"{len(llm_facts)} value(s) suggested by local LLM — "
                             "confirm against source.", "warn"))
 
+    return checks
+
+
+# --------------------------------------------------------------------------
+# Scale: a fund's own totals against one investor's share of it
+# --------------------------------------------------------------------------
+def scale_checks(report_type: str, entity: str, facts: list[FinancialFact]) -> list[Check]:
+    """A misread column or unit ("in thousands", last year's comparative) shows
+    up when the fund's totals are set against what is already on file for the
+    same fund: the whole fund is never smaller than one investor's balance, an
+    investor's balance never larger than the fund, and the investor's share of
+    net assets stays near its share of commitments. Anything out of line is
+    flagged for a person — never corrected here."""
+    from . import db
+    if report_type not in ("fund_financials", "investment_roll_forward"):
+        return []
+    m = _by_key(facts)
+    checks: list[Check] = []
+
+    def flag(keys: list[str], name: str, detail: str) -> None:
+        checks.append(Check(name, False, detail + " — a column or unit may have been misread",
+                            "warn"))
+        _flag(facts, keys, name)
+
+    if report_type == "fund_financials" and {"total_assets", "nav"} <= set(m) \
+            and 0 < m["total_assets"].value < m["nav"].value:
+        flag(["total_assets", "nav"], "assets_below_net_assets",
+             f"Total assets {m['total_assets'].value:,.0f} is smaller than net assets "
+             f"{m['nav'].value:,.0f}")
+
+    # the newest value on file per metric for this fund, from the other kind of document
+    on_file: dict[tuple[str, str], dict] = {}
+    for f in db.get_facts():
+        if f["entity_name"] != entity or f["status"] == "rejected" or f["value"] is None \
+                or "pro_rata" in f["flags"]:
+            continue
+        key = (f["report_type"], f["metric_key"])
+        if key not in on_file or db._period_order(f["period"] or "") >= \
+                db._period_order(on_file[key]["period"] or ""):
+            on_file[key] = f
+
+    def filed(rt: str, metric: str, currency: str) -> Optional[Decimal]:
+        f = on_file.get((rt, metric))
+        if f is None or (f["currency"] or "USD") != (currency or "USD"):
+            return None
+        return abs(Decimal(f["value"]))
+
+    fund_keys = ("nav", "total_assets")
+    own = fund_total = None
+    if report_type == "fund_financials":
+        present = [k for k in fund_keys if k in m]
+        currency = m[present[0]].currency if present else "USD"
+        own = filed("investment_roll_forward", "ending_balance", currency)
+        small = [k for k in present if own is not None and abs(m[k].value) < own]
+        if small:
+            flag(small, "below_investor_balance",
+                 ", ".join(f"{m[k].metric_label} {abs(m[k].value):,.0f}" for k in small)
+                 + f": smaller than the investor's own balance in the fund ({own:,.0f})")
+        fund_total = abs(m["nav"].value) if "nav" in m else None
+        doc_keys = ["nav"]
+    else:
+        if "ending_balance" not in m or any("pro_rata" in f.flags for f in facts):
+            return checks
+        currency = m["ending_balance"].currency
+        own = abs(m["ending_balance"].value)
+        fund_total = filed("fund_financials", "nav", currency)
+        largest = fund_total if fund_total is not None else filed(
+            "fund_financials", "total_assets", currency)
+        if largest is not None and own > largest:
+            flag(["ending_balance"], "above_fund_total",
+                 f"Ending balance {own:,.0f} is larger than the whole fund on file ({largest:,.0f})")
+        doc_keys = ["ending_balance"]
+
+    # the investor's share of net assets against its share of commitments
+    det = db.get_details(entity)
+    with db.get_engine().connect() as conn:
+        prof = conn.execute(select(db.fund_profiles.c.commitment).where(
+            db.fund_profiles.c.entity_name == entity)).scalar_one_or_none()
+
+    def number(*candidates) -> Optional[Decimal]:
+        for v in candidates:
+            try:
+                if v not in (None, "") and Decimal(str(v)) > 0:
+                    return Decimal(str(v))
+            except Exception:
+                continue
+        return None
+
+    commitment = number(prof, m["commitment"].value if "commitment" in m else None,
+                        filed("investment_roll_forward", "commitment", currency))
+    fund_size = number(det.get("fund_size"), m["fund_size"].value if "fund_size" in m else None,
+                       filed("fund_financials", "fund_size", currency),
+                       filed("investment_roll_forward", "fund_size", currency))
+    if None not in (own, fund_total, commitment, fund_size) and own and fund_total \
+            and not any(c.name in ("below_investor_balance", "above_fund_total") for c in checks):
+        expected, actual = commitment / fund_size, own / fund_total
+        if actual > expected * 3 or actual < expected / 3:
+            flag(doc_keys, "share_out_of_line",
+                 f"The investor's balance is {actual:.1%} of the fund's net assets, but its "
+                 f"commitment is {expected:.1%} of the fund's size")
     return checks
