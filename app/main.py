@@ -13,10 +13,11 @@ import re
 import io
 import json
 import secrets
-from decimal import Decimal
+from datetime import date
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Optional
-from urllib.parse import urlsplit
+from urllib.parse import parse_qs, urlsplit
 
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import (HTMLResponse, JSONResponse, RedirectResponse,
@@ -116,7 +117,9 @@ def portfolio_dashboard(request: Request):
     snapshot_path = settings.data_dir / "portfolio-dashboard.json"
     snapshot = None
     comparison = []
+    charts = []
     source = None
+    period = None
     try:
         snapshot = json.loads(snapshot_path.read_text(encoding="utf-8"))
         rows = snapshot["sections"][1]["rows"]
@@ -128,25 +131,84 @@ def portfolio_dashboard(request: Request):
         scale = max(Decimal(1), *(abs(value) for pair in amounts for value in pair))
         comparison = [
             (name, [
-                (label, row[column], round(abs(amount) * 100 / scale, 2), style)
-                for label, column, amount, style in zip(
-                    ("Paid-in capital", "Total value"), (2, 3), pair, ("capital", "value")
-                )
+                (index, label, row[column], round(abs(amount) * 100 / scale, 2), False)
+                for index, (label, column, amount) in enumerate(zip(
+                    ("Paid-in capital", "Total value"), (2, 3), pair
+                ))
             ])
             for (name, row), pair in zip(categories, amounts)
         ]
+        direct = snapshot["sections"][0]["rows"]
+        investments = [row for row in direct if not row[0].startswith("Total")]
+        charts = [
+            _snapshot_chart("Capital by investment type", "USD millions", investments,
+                            [(2, "Investment cost")]),
+            _snapshot_chart("Realized and unrealized gains", "USD millions", investments,
+                            [(7, "Realized"), (8, "Unrealized")]),
+            _snapshot_chart("Portfolio multiples by category", "Multiple of paid-in capital", rows[1:],
+                            [(11, "TVPI"), (12, "DPI")]),
+            _snapshot_chart("Capital allocation by category", "Percent of capital", rows[1:],
+                            [(14, "Capital allocation")], maximum=Decimal(100), donut=True),
+            _snapshot_chart("Impairment by category", "USD millions",
+                            [row for _, row in categories], [(5, "Impairment")]),
+        ]
         url = urlsplit(snapshot.get("source", ""))
+        period = snapshot.get("period")
         if url.scheme == "https" and url.hostname:
             source = url.geturl()
+            source_month, *_ = parse_qs(url.query).get("asOf", [""])
+            if re.fullmatch(r"\d{4}-\d{2}", source_month):
+                try:
+                    period = date.fromisoformat(f"{source_month}-01").strftime("%B %Y")
+                except ValueError:
+                    pass
     except FileNotFoundError:
         pass
     return templates.TemplateResponse(request, "portfolio_dashboard.html", {
         "snapshot": snapshot,
         "comparison": comparison,
+        "charts": charts,
         "source": source,
+        "period": period,
         "auth_mode": settings.auth_mode,
         "user": auth.current_user(request) or "",
     }, headers={"Cache-Control": "private, no-store"})
+
+
+def _snapshot_chart(title, unit, rows, series, maximum=None, donut=False):
+    """Keep the source labels and use numeric values only for chart geometry."""
+    groups = []
+    for row in rows:
+        marks = []
+        for index, (column, label) in enumerate(series):
+            if column >= len(row):
+                continue
+            display = str(row[column])
+            try:
+                value = Decimal(display.translate(str.maketrans("", "", "$M,%x")))
+            except InvalidOperation:
+                continue
+            if value.is_finite():
+                marks.append((index, label, display, value))
+        if marks:
+            groups.append((row[0], marks))
+
+    values = [mark[3] for _, marks in groups for mark in marks]
+    signed = any(value < 0 for value in values)
+    scale = max(Decimal(1), maximum or Decimal(0), *(abs(value) for value in values))
+    return {
+        "title": title,
+        "unit": unit,
+        "series": [label for _, label in series],
+        "signed": signed,
+        "donut_split": values[0] if donut and len(values) == 2 and not signed
+        and sum(values) == 100 else None,
+        "groups": [
+            (name, [(index, label, display, round(abs(value) * (50 if signed else 100) / scale, 2),
+                     value < 0) for index, label, display, value in marks])
+            for name, marks in groups
+        ],
+    }
 
 
 # --------------------------------------------------------------------------

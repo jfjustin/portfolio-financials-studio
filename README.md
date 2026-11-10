@@ -440,4 +440,7 @@ section holds direct and fund investments. The second holds Total Investments,
 Life Sciences, and Core, in that order, with the category, company count,
 paid-in capital, and total value as the first four columns. Supply the two
 amounts as dollar values in millions (for example, `"$12.3M"`). Replace the
-snapshot file to update the dashboard.
+snapshot file to update the dashboard. When the source URL includes
+`asOf=YYYY-MM`, both date labels use that report month. For links without a
+report month, both labels use `period`. Update the figures and report month
+together when replacing the snapshot.
