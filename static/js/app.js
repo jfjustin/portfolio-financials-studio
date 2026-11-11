@@ -42,6 +42,8 @@
     setupNav();
     $("#ledger-filter").addEventListener("input", renderLedger);
     $("#dif-year").addEventListener("change", e => loadDirectInvestments(+e.target.value));
+    $("#irr-asof").addEventListener("change", e => loadIrr(e.target.value));
+    $$(".irr-split .btn").forEach(b => b.addEventListener("click", () => { IRR_SPLIT = b.dataset.split; renderIrr(); }));
     $("#dif-period").addEventListener("change", renderDif);
     $("#pf-asof").addEventListener("change", e => loadPortfolio(e.target.value));
     wirePortfolioModal();
@@ -171,6 +173,7 @@
     renderPerformance(perf);
     await loadDirectInvestments(DIF ? DIF.year : null);
     await loadPortfolio(PF ? PF.as_of : null);
+    await loadIrr(IRR ? IRR.as_of : null);
 
     CHARTS.ts = await api("/api/timeseries");
     drawCharts();
@@ -438,6 +441,48 @@
     renderAttention("#pf-attention", PF.funds.concat(PF.companies).flatMap(r =>
       (r.issues || []).map(i => Object.assign({ who: r.investment_name, entity: r.entity }, i))),
       i => openPortfolioEntity(i.entity));
+  }
+
+  // ---------------- IRR (the workbook's IRR tab) ----------------
+  let IRR = null, IRR_SPLIT = "all";
+  const irrPct = (v, est) => v == null ? '<span class="muted">—</span>'
+    : `<span class="${v < 0 ? "is-neg" : "is-pos"}">${v.toFixed(1)}%</span>` + (est ? EST_MARK : "");
+  async function loadIrr(asOf) {
+    IRR = await api("/api/irr" + (asOf ? "?as_of=" + asOf : ""));
+    $("#irr-asof").innerHTML = IRR.quarters.slice().reverse().map(q =>
+      `<option value="${q}" ${q === IRR.as_of ? "selected" : ""}>${q}</option>`).join("");
+    renderIrr();
+  }
+  function renderIrr() {
+    if (!IRR) return;
+    $$(".irr-split .btn").forEach(b => b.classList.toggle("on", b.dataset.split === IRR_SPLIT));
+    const keys = IRR.splits[IRR_SPLIT];
+    $("#irr-tiles").innerHTML = keys.map(k => { const g = IRR.groups[k]; return `<div class="perf-tile">
+        <div class="pv">${irrPct(g.irr_pct, g.estimated)}</div>
+        <div class="pl">${esc(g.label)} · ${g.n} · invested ${psMoney(g.invested)} · returned ${psMoney(g.returned)} · held ${psMoney(g.value)}</div></div>`; }).join("")
+      + (IRR_SPLIT === "all" ? "" : `<div class="perf-tile"><div class="pv">${irrPct(IRR.groups.all.irr_pct, IRR.groups.all.estimated)}</div><div class="pl">All investments · ${IRR.groups.all.n}</div></div>`);
+    const show = IRR.entities.filter(e => IRR_SPLIT === "all" || keys.some(k => IRR.groups[k].members.includes(e.entity)));
+    const tb = $("#irr-body"); tb.innerHTML = "";
+    if (!show.length) tb.innerHTML = '<tr><td colspan="9" class="muted" style="text-align:left">No dated investments yet — enter or import each investment\'s calls, or confirm roll-forward quarters.</td></tr>';
+    show.forEach(e => {
+      const mult = e.invested ? ((e.returned + e.value) / e.invested) : null;
+      const tr = document.createElement("tr");
+      tr.className = "irr-row";
+      tr.innerHTML = `<td class="lbl">${esc(e.name)}${e.name !== e.entity ? `<div class="small muted">${esc(e.entity)}</div>` : ""}</td>
+        <td class="lbl">${e.kind === "fund" ? "Fund" : "Direct"}${e.status === "exited" ? ' <span class="small muted">· exited</span>' : ""}</td>
+        <td class="lbl">${esc(e.group)}</td><td>${esc(e.first_date)}</td>
+        <td>${psMoney(e.invested)}</td><td>${psMoney(e.returned)}</td><td>${psMoney(e.value)}</td>
+        <td>${mult == null ? "—" : mult.toFixed(2) + "x"}</td><td>${irrPct(e.irr_pct, e.estimated)}</td>`;
+      const fl = document.createElement("tr");
+      fl.className = "irr-flows"; fl.hidden = true;
+      fl.innerHTML = `<td colspan="9"><table class="flows"><thead><tr><th>Date</th><th>Flow</th><th>Amount (USD)</th><th>Source</th></tr></thead><tbody>` +
+        e.flows.map(f => `<tr><td>${esc(f.date)}</td><td>${esc(f.kind)}</td><td class="${f.amount < 0 ? "out" : "in"}">${(f.amount < 0 ? "-" : "+") + "$" + Math.abs(f.amount).toLocaleString("en-US", { maximumFractionDigits: 0 })}</td><td>${esc(f.source)}${f.estimated ? " (estimate)" : ""}</td></tr>`).join("") +
+        `</tbody></table>${e.notes.length ? `<div class="small warn-text" style="margin-top:6px">${e.notes.map(esc).join(" · ")}</div>` : ""}</td>`;
+      tr.onclick = () => { fl.hidden = !fl.hidden; };
+      tb.appendChild(tr); tb.appendChild(fl);
+    });
+    $("#irr-notes").innerHTML = IRR.left_out.length
+      ? "Not included: " + IRR.left_out.map(x => `<b>${esc(x.name)}</b> — ${esc(x.why)}`).join(" · ") : "";
   }
 
   // ---------------- Portfolio Summary (direct by status, funds, all by group) ----------------

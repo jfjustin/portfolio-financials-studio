@@ -23,7 +23,7 @@ from fastapi.staticfiles import StaticFiles
 from starlette.concurrency import run_in_threadpool
 from fastapi.templating import Jinja2Templates
 
-from . import (auth, carry_forward, db, direct_investments, fabric_export, lake, performance,
+from . import (auth, carry_forward, db, direct_investments, fabric_export, irr, lake, performance,
                portfolio, terms)
 from .config import settings
 from .llm import get_provider
@@ -395,6 +395,15 @@ def portfolio_report(as_of: Optional[str] = None):
 
 def _parse_date(raw: str) -> Optional[str]:
     return portfolio.parse_date(raw)
+
+
+@app.get("/api/irr")
+def irr_report(as_of: Optional[str] = None):
+    """IRR as of a quarter: the whole portfolio, Core vs Life Sciences, direct vs
+    funds, and every entity — with the dated flows behind each figure."""
+    if as_of and not re.fullmatch(r"20\d{2}-Q[1-4]", as_of):
+        raise HTTPException(400, "as_of must be a quarter, e.g. 2026-Q2")
+    return irr.report(as_of)
 
 
 @app.get("/api/portfolio/summary")

@@ -79,6 +79,35 @@
       </section>
     </div>
 
+    <div class="pane" data-pane="irr" data-title="IRR">
+      <!-- IRR — the workbook's IRR tab: portfolio, Core vs Life Sciences, Direct vs Funds, each entity -->
+      <section class="report-card" id="irr-card">
+        <div class="report-head">
+          <h3 class="report-title">IRR</h3>
+          <div class="dif-controls">
+            <label class="small muted">As of <select id="irr-asof" aria-label="IRR quarter"></select></label>
+            <span class="irr-split" role="group" aria-label="Split">
+              <button type="button" class="btn sm on" data-split="all">Portfolio</button>
+              <button type="button" class="btn sm" data-split="group">Core vs Life Sciences</button>
+              <button type="button" class="btn sm" data-split="kind">Direct vs Funds</button>
+            </span>
+          </div>
+        </div>
+        <p class="report-sub">Money-weighted (XIRR) returns from dated cash flows, in USD: capital calls
+          and investments out; distributions and exit proceeds in; what is still held as a final inflow
+          at the quarter end. * marks a figure resting on an undated estimate. Click a row for the flows
+          behind it.</p>
+        <div class="perf-strip" id="irr-tiles"></div>
+        <div class="scroll"><table class="tbl-report tbl-irr">
+          <thead><tr><th class="lbl">Investment</th><th class="lbl">Kind</th><th class="lbl">Group</th>
+            <th>First investment</th><th>Invested</th><th>Returned</th><th>Value held</th>
+            <th>Multiple</th><th>IRR</th></tr></thead>
+          <tbody id="irr-body"></tbody>
+        </table></div>
+        <div id="irr-notes" class="small muted ps-notes"></div>
+      </section>
+    </div>
+
     <div class="pane" data-pane="portfolio" data-title="Investment Portfolio">
       <!-- Investment Portfolio — Lam's quarterly report (funds + direct investments) -->
       <section class="report-card" id="pf-card">

@@ -343,6 +343,16 @@ closed investments as exits), and the backup tab behind each entity adds the acc
 capital calls or securities bought. The "Other" block, converted notes and tabs with no row in
 the summary are left out and named in the result; its date cell sets the quarter.
 
+**IRR** (its own section — the workbook's IRR tab)
+Money-weighted (XIRR) returns as of a quarter, from dated cash flows in USD: capital calls and
+investments out (the dated calls entered or imported; failing those a fund's quarterly funding
+from the roll-forward; failing that the total invested on the initial investment date);
+distributions by quarter and exit proceeds in; what is still held (a fund's balance, a held
+company's value) as a final inflow at the quarter end. Shown for the whole portfolio, **Core vs
+Life Sciences**, **Direct vs Funds**, and every entity; click a row for the flows behind the
+figure. A `*` marks a figure resting on an undated estimate (its note says which). Entities with
+no investment on file are listed as left out.
+
 **Holdings sheet** (Investment Portfolio → Direct investments)
 A company's own statements never show what the stake cost or is worth. Instead of typing each
 company's details, **Download holdings sheet**, fill it in — or import the team's own

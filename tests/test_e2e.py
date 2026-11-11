@@ -102,6 +102,7 @@ def main() -> int:
     password_gate()
     master_workbook()
     equity_investments_workbook()
+    irr_section()
     deletes_and_odd_names()
     clear_data(samples)
 
@@ -1555,6 +1556,47 @@ def equity_investments_workbook() -> None:
     check(line["Closed 9Q"]["status"] == "exited" and near(line["Closed 9Q"]["realized"], 797_000)
           and line["Company 98B"]["status"] == "impaired" and near(line["Company 98B"]["book"], 599_994),
           "the summary places them: a closed position's realized gain, an impaired position's book value")
+
+
+def irr_section() -> None:
+    """IRR from dated flows: an exit with a known answer, a fund from its
+    calls, distributions and balance, the splits, and what is left out."""
+    from fastapi.testclient import TestClient
+
+    from app.main import app
+
+    client = TestClient(app)
+    P = "/api/portfolio/"
+    client.post(P + "Company 96B/details", json={"kind": "direct_investment", "total_invested": "1m",
+                                                 "exit_date": "2024-01-01", "exit_proceeds": "2m",
+                                                 "exit_value": "2m", "portfolio_group": "Life Sciences"})
+    client.post(P + "Company 96B/calls", json={"date": "2021-01-01", "description": "Series A", "amount": "1000000"})
+    client.post(P + "Fund 96/details", json={"kind": "fund", "drawn_to_date": "4m", "distribution_to_date": "1m",
+                                             "investment_balance": "5m", "initial_investment_date": "2020-01-01"})
+    client.post(P + "Company 96C/details", json={"kind": "direct_investment", "theme": "no money in yet"})
+    R = client.get("/api/irr?as_of=2026-Q2").json()
+    ents = {e["entity"]: e for e in R["entities"]}
+    b, f = ents.get("Company 96B"), ents.get("Fund 96")
+    check(b is not None and abs(b["irr_pct"] - 26.0) < 0.3 and not b["estimated"] and b["status"] == "exited"
+          and [x["kind"] for x in b["flows"]] == ["call", "proceeds"] and b["group"] == "Life Sciences",
+          "an exit: $1M in on 2021-01-01, $2M out on 2024-01-01 → 26% IRR, from two dated flows")
+    check(f is not None and f["estimated"] and f["irr_pct"] is not None and f["irr_pct"] > 0
+          and {x["kind"] for x in f["flows"]} == {"call", "distribution", "value"}
+          and any("initial investment date" in n for n in f["notes"]),
+          "a fund with no dated calls: total invested placed on its initial date, undated distributions "
+          "and the balance at the quarter end — marked as an estimate, with the reason")
+    g = R["groups"]
+    check(g["life_sciences"]["n"] >= 1 and "Company 96B" in g["life_sciences"]["members"]
+          and "Fund 96" in g["funds"]["members"] and "Company 96B" in g["direct"]["members"]
+          and g["all"]["n"] == len(R["entities"]) and g["all"]["irr_pct"] is not None
+          and set(R["splits"]) == {"all", "group", "kind"}
+          and g["core"]["n"] + g["life_sciences"]["n"] == g["all"]["n"]
+          and g["direct"]["n"] + g["funds"]["n"] == g["all"]["n"],
+          "groups: Core + Life Sciences = all = Direct + Funds, each with its own IRR")
+    check(any(x["entity"] == "Company 96C" for x in R["left_out"]) and "Company 96C" not in ents,
+          "an entity with no investment on file is listed as left out, not given a figure")
+    bad = client.get("/api/irr?as_of=2026")
+    check(bad.status_code == 400, "the quarter is validated")
 
 
 def deletes_and_odd_names() -> None:

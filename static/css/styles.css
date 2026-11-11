@@ -402,3 +402,14 @@ sup.man { color: var(--brand); margin-left: 2px; cursor: help; }
   .nav { position: static; max-height: none; }
   .panes.multi { grid-template-columns: minmax(0, 1fr); }
 }
+
+/* IRR section */
+.irr-split { display: inline-flex; gap: 4px; }
+.irr-split .btn.on { background: var(--brand); color: var(--brand-ink); border-color: var(--brand); }
+#irr-tiles { margin: 0 0 16px; }
+.tbl-irr td { white-space: nowrap; }
+.tbl-irr tr.irr-row { cursor: pointer; }
+.tbl-irr tr.irr-flows td { background: var(--chip); white-space: normal; padding: 8px 12px 10px; }
+.tbl-irr .flows { width: auto; font-size: 12px; }
+.tbl-irr .flows td, .tbl-irr .flows th { padding: 3px 10px; border: 0; background: none; }
+.tbl-irr .flows .in { color: var(--ok); } .tbl-irr .flows .out { color: var(--err); }
