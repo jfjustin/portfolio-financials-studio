@@ -432,6 +432,7 @@
     if (v == null) return '<span class="muted">—</span>';
     if (k === "count") return String(v);
     if (k === "gain_pct") return `<span class="${v < 0 ? "is-neg" : "is-pos"}">${v.toFixed(1)}%</span>`;
+    if (k === "alloc_pct") return v.toFixed(1) + "%";
     if (k === "tvpi" || k === "dpi") return v.toFixed(2) + "x";
     return psMoney(v);
   }
@@ -449,7 +450,7 @@
                            : '<th class="blank"></th>').join("") + "</tr>";
     const body = (rows, keys) => rows.map(r => `<tr class="${r.kind === "total" ? "ps-total" : ""}">` +
       `<td class="lbl">${esc(r.label)}</td>` + S.columns.map(c => !keys.includes(c.key) ? '<td class="blank"></td>' :
-        `<td class="num ${c.key !== "gain_pct" && Number(r[c.key]) < 0 ? "is-neg" : ""}">${psCell(c.key, r[c.key])}` +
+        `<td class="num ${c.key !== "gain_pct" && c.key !== "alloc_pct" && Number(r[c.key]) < 0 ? "is-neg" : ""}">${psCell(c.key, r[c.key])}` +
         `${r[c.key] != null && (r.estimated || []).includes(c.key) ? EST_MARK : ""}</td>`).join("") +
       "</tr>").join("");
     $("#ps-table").innerHTML = `<thead>${head(first, "")}</thead><tbody>${body(S.rows, first)}</tbody>` +
@@ -529,7 +530,8 @@
       const r = await res.json();
       const out = $("#pf-holdings-result");
       if (!res.ok) { out.innerHTML = `<span class="warn-text">Not imported: ${esc(r.detail)}</span>`; return; }
-      out.innerHTML = `${r.updated} compan${r.updated === 1 ? "y" : "ies"} updated from ${esc(file.name)}` +
+      out.innerHTML = `${r.updated} record${r.updated === 1 ? "" : "s"} updated from ${esc(file.name)}` +
+        (r.notes || []).map(n => ` · ${esc(n)}`).join("") +
         (r.ignored_columns.length ? ` · columns not used: ${r.ignored_columns.map(esc).join(", ")}` : "") +
         r.errors.map(x => `<div class="warn-text">Row ${x.row} (${esc(x.company)}) skipped — ${esc(x.message)}</div>`).join("");
       await loadPortfolio(PF.as_of);

@@ -321,12 +321,19 @@ net burn $360K/month (10 months).
 
 **Holdings sheet** (Investment Portfolio → Direct investments)
 A company's own statements never show what the stake cost or is worth. Instead of typing each
-company's details, **Download holdings sheet**, fill it in (or use your own sheet with a
-*Company* column) and **Import holdings sheet** (.xlsx or .csv):
+company's details, **Download holdings sheet**, fill it in — or import the team's own
+*Summary – Portfolio Value* sheet as it is — and **Import holdings sheet** (.xlsx or .csv):
+- The sheet holds a block headed **Fund** (type, vintage, # and $ invested, fair market value,
+  draw, the latest quarter's NAV, distribution) and/or one headed **Company**; each block ends
+  at its *Total* row. Cell-reference rows (`$B$2`) and the dashboard block are ignored.
 - Recognised columns: cost / total investment to date, fair value / total value, round, theme,
   last investment date, projected investment, impairment, book value, status, group, exit date /
   value / proceeds / escrow, USD rate.
-- A column headed `($M)` or `($000)` is scaled. An empty cell keeps what is on file.
+- A column headed `($M)` or `($000)` is scaled; a sheet whose amounts carry no unit and are all
+  small is read as $M, and the result says so. Empty and `NA` cells keep what is on file.
+- *Current / Impaired / Exit* sets each company's block in the Portfolio Summary; an exit's
+  *Estimated FMV* is its value at exit. **% Capital Allocation** on the block and group rows
+  is each block's cost as a share of all capital invested.
 - A row that can't be read is listed with its row number and skipped; the rest are applied.
   Every change is in the audit trail.
 

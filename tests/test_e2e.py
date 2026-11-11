@@ -1186,7 +1186,7 @@ def portfolio_summary() -> None:
           "imported holdings feed the summary: cost and value in $M, group, impairment")
     wb = openpyxl.Workbook()
     ws = wb.active
-    ws.append(["Investment", "Total Investment to Date", "Total Value"])
+    ws.append(["Company", "Total Investment to Date", "Total Value"])
     ws.append(["company 91d", 2_600_000, None])
     buf = io.BytesIO()
     wb.save(buf)
@@ -1199,6 +1199,54 @@ def portfolio_summary() -> None:
                           files={"file": ("x.csv", b"a,b\n1,2\n")}).status_code == 400,
           "an xlsx sheet updates a company by name, empty cells keep what is on file; "
           "a sheet without a Company column is refused")
+
+    # the team's own Summary sheet: a fund block and a company block, $M without a
+    # unit, "NA" cells, cell-reference rows, each block closed by its Total row,
+    # the dashboard block underneath (made-up figures)
+    sheet = ("Cell References,,$B$2,$B$3,$B$5,$D$15,$E$15,$F$15,$B$13,$B$11,$B$11,$F$13\n"
+             "Worksheet Reference,,Fund,Type,Vintage,#,$,Fair Market Value,Draw,Q4'25 NAV,Q1'26 NAV,Distribution\n"
+             "Fund 94,,Fund 94,LP,2019,12 ,$150.0M,$210.0M,$6.0M,$5.0M,$5.5M,$1.0M\n"
+             "Fund 95,,Fund 95,LP,2021,8 ,$80.0M,$90.0M,$2.0M,$1.8M,$1.9M,$0.0M\n"
+             ",,Total,,,,$230.0M,$300.0M,$8.0M,$6.8M,$7.4M,$1.0M\n"
+             "Cell References,,$B$2,$B$10,,,,$B$9,$B$8,$F$14,$G$14,$E$14\n"
+             ",,,,,,,,,,Lam's Total,Lam's\n"
+             "Worksheet Reference,,Company,Theme,Operating Status,Current/Impaired/Exit,Impairment Date,"
+             "Round,Investment Date,Pre-Money Val,Investment,Ownership,Estimated FMV,Gain (%),Book Value,Proceeds,Impairment\n"
+             "Company 94A,,Company 94A,Semi,Active,Current,,Seed,Sep 2022,$30.0,$2.0,6.82%,$3.0,50.0%,$2.0,,\n"
+             "Company 94B,,Company 94B,Life Science,Active,Impaired,2025,Series A,Oct 2017,NA,$2.0,0.45%,$0.6,-70.0%,$0.6,,$1.4\n"
+             "Company 94C,,Company 94C,I4.0,Inactive,Exit,,Series A,Jun 2021,$440.0,$7.0,4.48%,$19.7,181.8%,$12.6,$0.0,\n"
+             "Company 94D,,Company 94D,Semi,Inactive,Exit,,Seed,Jul 2021,$0.0,$4.0,0.00%,$5.0,NA,$0.0,$5.0,\n"
+             ",,Total Direct,,,,,,,,$15.0,,$28.3,,$15.2,$5.0,$1.4\n"
+             ",Dashboard needed,,,,,,,,,,,,,,,\n"
+             ",,Current Direct Investment,,1,$2.0M,$3.0M,$2.0M,$0.0M,$0.0M,$0.0M,$1.0M\n"
+             ",,Total Direct Investment,,4,$15.0M,$28.3M,$15.2M,-$1.4M,$5.0M,-$10.0M,$13.3M\n")
+    r = client.post("/api/portfolio/holdings", files={"file": ("summary.csv", sheet.encode())})
+    res = r.json()
+    S = client.get("/api/portfolio/summary").json()
+    line = {ln["entity"]: ln for ln in S["lines"]}
+    rep = client.get("/api/portfolio").json()
+    f94 = {x["entity"]: x for x in rep["funds"]}.get("Fund 94")
+    check(r.status_code == 200 and res["updated"] == 6 and not res["errors"]
+          and len(res["notes"]) == 1 and "$B$2" not in line and "Current Direct Investment" not in line,
+          "the team's Summary sheet: fund and company blocks read, each closed by its Total row, "
+          "cell references and the dashboard rows ignored")
+    check(f94 is not None and near(f94["drawn_to_date"], 6_000_000) and near(f94["investment_balance"], 5_500_000)
+          and near(f94["distribution_to_date"], 1_000_000) and f94["vintage"] == 2019
+          and f94["stats"]["count"] == 12 and near(f94["stats"]["cost"], 150_000_000),
+          "fund block: draw, the latest quarter's NAV, distribution, vintage and latest stats")
+    a, b, c, d = (line.get(k) for k in ("Company 94A", "Company 94B", "Company 94C", "Company 94D"))
+    check(a and near(a["paid_in"], 2_000_000) and near(a["value"], 3_000_000) and a["status"] == "current"
+          and b and b["status"] == "impaired" and near(b["impairment"], -1_400_000) and b["group"] == "Life Sciences"
+          and c and c["status"] == "exited" and near(c["value"], 19_700_000) and near(c["book"], 12_600_000)
+          and near(c["realized"], -7_000_000) and near(c["unrealized"], 19_700_000)
+          and d and near(d["realized"], 1_000_000) and near(d["aum"], 0),
+          "company block: $M amounts, NA skipped, Current / Impaired / Exit status, an exit valued at its FMV")
+    rows = {r["label"]: r for r in S["rows"]}
+    tot = {r["label"]: r for r in S["totals"]}
+    check(near(rows["Total Direct Investments"]["alloc_pct"] + rows["Fund Investments"]["alloc_pct"], 100)
+          and near(tot["Total Investments"]["alloc_pct"], 100)
+          and rows["Current Direct Investments"]["alloc_pct"] is None,
+          "% capital allocation: direct + funds = 100%, shown on the block and group rows only")
 
 
 def pdf_reading(samples: Path) -> None:

@@ -95,6 +95,9 @@ COMPANY_FIELDS = (
     ("impairment", "Impairment to date (write-down)", "money"),
     ("book_value", "Book Value (carrying value)", "money"),
     ("operating_status", "Operating Status", "choice:Active,Inactive"),
+    ("holding_status", "Current / Impaired / Exit", "choice:Current,Impaired,Exit"),
+    ("impairment_date", "Impairment date (year)", "text"),
+    ("ownership_pct", "% Ownership", "percent"),
     ("exit_date", "Date of Exit", "date"),
     ("exit_value", "Exit — Total Value", "money"),
     ("exit_proceeds", "Exit — Total Received Proceeds", "money"),
@@ -116,8 +119,14 @@ def _d(v) -> Optional[Decimal]:
 
 
 def _iso(v) -> Optional[date]:
+    """A date; a month ("2022-09") counts from its first day, a bare year from Jan 1."""
+    t = str(v or "").strip()
     try:
-        return date.fromisoformat(str(v)[:10]) if v else None
+        if re.fullmatch(r"\d{4}", t):
+            return date(int(t), 1, 1)
+        if re.fullmatch(r"\d{4}-\d{2}", t):
+            return date(int(t[:4]), int(t[5:]), 1)
+        return date.fromisoformat(t[:10]) if t else None
     except ValueError:
         return None
 
@@ -134,7 +143,13 @@ def parse_date(raw: str) -> Optional[str]:
         except ValueError:
             return None
     p = normalize_period(raw)
-    return p if p and re.fullmatch(r"\d{4}-\d{2}-\d{2}", p) else None
+    if p and re.fullmatch(r"\d{4}-\d{2}-\d{2}", p):
+        return p
+    # a month ("Sep 2022") or a year is as much as some records give
+    m = re.fullmatch(r"([A-Za-z]{3,9})\.?\s+(\d{4})", raw)
+    if m and p and re.fullmatch(r"\d{4}-\d{2}", p):
+        return p
+    return raw if re.fullmatch(r"(?:19|20)\d{2}", raw) else None
 
 
 _RATE_PAIR = re.compile(r"(20\d{2})\s*-?\s*Q([1-4])\s*[=:]\s*([0-9][0-9.,]*)", re.I)
@@ -642,7 +657,7 @@ def _company(name: str, det: dict, facts: dict, calls: list[dict], until: int,
     if value is None and (name, "fair_value") in facts:
         value = abs(facts[(name, "fair_value")]["value"])
         src["total_value"] = _src(facts[(name, "fair_value")])
-    exited = bool(det.get("exit_date"))
+    exited = bool(det.get("exit_date")) or det.get("holding_status") == "Exit"
     last = det.get("last_investment_date") or (invested[-1]["date"] if invested else None)
     return {
         "entity": name, "kind": "direct_investment",
@@ -698,7 +713,8 @@ SUMMARY_COLUMNS = (("count", "#"), ("paid_in", "Investment Cost / Paid-in"),
                    ("value", "Total Value"), ("book", "Book Value"), ("impairment", "Impairment"),
                    ("proceeds", "Proceeds & Distributions"), ("realized", "Realized Gain/(Loss)"),
                    ("unrealized", "Unrealized Gain/(Loss)"), ("total_gain", "Total Gain/(Loss)"),
-                   ("gain_pct", "Gain/(Loss) %"), ("tvpi", "TVPI"), ("dpi", "DPI"), ("aum", "AUM"))
+                   ("gain_pct", "Gain/(Loss) %"), ("tvpi", "TVPI"), ("dpi", "DPI"), ("aum", "AUM"),
+                   ("alloc_pct", "% Capital Allocation"))
 _SUM_KEYS = ("paid_in", "value", "book", "impairment", "proceeds", "realized", "unrealized", "aum")
 _LIFE_SCIENCES = re.compile(r"life\s*sci|genomic|biotech|pharma|health|medic", re.I)
 
@@ -744,12 +760,17 @@ def _company_line(co: dict) -> tuple[Optional[dict], str]:
     if co["exited"]:
         status = "exited"
         proceeds = co["exit"]["proceeds"] or Decimal(0)
-        value = co["exit"]["value"] if co["exit"]["value"] is not None else (
-            proceeds + (co["exit"]["escrow"] or Decimal(0)))
+        if co["exit"]["value"] is not None:
+            value = co["exit"]["value"]
+        elif co["total_value"] is not None:
+            value = co["total_value"]            # its value as recorded at the exit
+        else:
+            value = proceeds + (co["exit"]["escrow"] or Decimal(0))
         book = book_entered if book_entered is not None else Decimal(0)
         realized, unrealized, aum = proceeds - cost, value - proceeds, Decimal(0)
     else:
-        status = "impaired" if impairment < 0 else "current"
+        status = ("impaired" if det.get("holding_status") == "Impaired" or impairment < 0
+                  else "current")
         proceeds = Decimal(0)
         book = book_entered if book_entered is not None else cost + impairment
         value = co["total_value"]
@@ -857,6 +878,11 @@ def summary(as_of: Optional[str] = None, rep: Optional[dict] = None) -> dict[str
     totals = [_aggregate("Total Investments", lines, "total")] + [
         _aggregate(f"{g} Investments", [ln for ln in lines if ln["group"] == g], "group")
         for g in groups]
+    # % capital allocation: each block's cost as a share of all capital invested
+    everything = totals[0]["paid_in"]
+    for r in rows + totals:
+        r["alloc_pct"] = (float(r["paid_in"] / everything * 100)
+                          if everything and r["kind"] in ("total", "fund", "group") else None)
     return {"as_of": rep["as_of"], "as_of_label": rep["as_of_label"], "quarters": rep["quarters"],
             "columns": [{"key": k, "label": l} for k, l in SUMMARY_COLUMNS],
             "rows": rows, "totals": totals, "lines": lines, "notes": notes}
@@ -1085,7 +1111,7 @@ def _dashboard(wb, summ: dict) -> None:
                     continue
                 if k == "count":
                     c.value = int(v)
-                elif k == "gain_pct":
+                elif k in ("gain_pct", "alloc_pct"):
                     c.value, c.number_format = v / 100, pct
                 elif k in ("tvpi", "dpi"):
                     c.value, c.number_format = v, ratio
@@ -1251,20 +1277,42 @@ def _summary(ws, rep: dict, names: dict[str, str]) -> None:
 # A company's own statements never show what the stake cost or is worth, so
 # these come from the team's records: one row per company, one column per field.
 _HOLDING_ALIASES = {
-    "company": "name", "name": "name", "investment": "name", "portfolio company": "name",
-    "entity": "name", "cost": "total_invested", "investment cost": "total_invested",
-    "cost basis": "total_invested", "total invested": "total_invested",
+    "company": "name", "portfolio company": "name", "entity": "name", "name": "name",
+    "cost": "total_invested", "investment cost": "total_invested", "cost basis": "total_invested",
+    "total invested": "total_invested", "investment": "total_invested",
+    "total investment": "total_invested", "lam s total investment": "total_invested",
     "fair value": "total_value", "fmv": "total_value", "value": "total_value",
-    "latest fmv": "total_value", "round": "current_round", "current round": "current_round",
-    "status": "operating_status", "group": "portfolio_group", "portfolio": "portfolio_group",
+    "latest fmv": "total_value", "estimated fmv": "total_value",
+    "round": "current_round", "current round": "current_round",
+    "most recent round": "current_round", "investment date": "last_investment_date",
+    "last investment date": "last_investment_date", "status": "operating_status",
+    "current impaired exit": "holding_status", "impairment date": "impairment_date",
+    "ownership": "ownership_pct", "lam s ownership": "ownership_pct",
+    "group": "portfolio_group", "portfolio": "portfolio_group",
     "impairment": "impairment", "book value": "book_value", "type": "investment_type",
-    "last investment date": "last_investment_date", "projected": "projected_investment",
-    "exit date": "exit_date", "exit value": "exit_value", "exit proceeds": "exit_proceeds",
-    "proceeds": "exit_proceeds", "escrow": "exit_escrow", "usd rate": "usd_rate",
-    "security": "security", "display name": "display_name",
+    "projected": "projected_investment", "exit date": "exit_date", "exit value": "exit_value",
+    "exit proceeds": "exit_proceeds", "proceeds": "exit_proceeds", "escrow": "exit_escrow",
+    "usd rate": "usd_rate", "security": "security", "display name": "display_name",
 }
+# the fund block of the team's Summary sheet: Fund | Type | Vintage | # | $ | Fair
+# Market Value | ... | Draw | Q4'25 NAV | Q1'26 NAV | ... | Distribution | ... | Partnership%
+_FUND_ALIASES = {
+    "fund": "name", "type": "investment_type", "vintage": "vintage",
+    "of investments": "stats_count", "investments to date": "stats_cost",
+    "cost": "stats_cost", "fair market value": "stats_value", "fair value": "stats_value",
+    "draw": "drawn_to_date", "drawn": "drawn_to_date", "drawn to date": "drawn_to_date",
+    "paid in": "drawn_to_date", "distribution": "distribution_to_date",
+    "distributions": "distribution_to_date", "distribution to date": "distribution_to_date",
+    "nav": "investment_balance", "investment balance": "investment_balance",
+    "partnership": "ownership_pct", "ownership": "ownership_pct",
+    "commitment": "commitment", "fund size": "fund_size", "region sector": "region_sector",
+    "group": "portfolio_group", "usd rate": "usd_rate", "returned capital": "returned_capital",
+}
+_NAV_QUARTER = re.compile(r"q([1-4])\s*'?\s*(\d{2}|\d{4})\s*nav", re.I)
 _IN_MILLIONS = re.compile(r"\(\s*\$?\s*(?:m|mm|mn|millions?)\s*\)|\$\s*(?:m|mm)\b|in millions", re.I)
 _IN_THOUSANDS = re.compile(r"\$\s*000|\(\s*\$?\s*(?:k|000s?|thousands?)\s*\)|\$\s*k\b|in thousands", re.I)
+_NOT_A_VALUE = re.compile(r"^(?:n/?a|none|tbd|-|–|—)$", re.I)
+_PLAIN_AMOUNT = re.compile(r"^[\s$€£(),.\-\d]+$")
 
 
 def _holding_key(text: str) -> str:
@@ -1272,7 +1320,13 @@ def _holding_key(text: str) -> str:
     return re.sub(r"[^a-z0-9]+", " ", t.lower()).strip()
 
 
-def _holding_columns() -> dict[str, str]:
+def _holding_columns(kind: str) -> dict[str, str]:
+    if kind == "fund":
+        cols = dict(_FUND_ALIASES)
+        for key, label, _t in FUND_FIELDS:
+            cols[_holding_key(label)] = key
+            cols[_holding_key(key)] = key
+        return cols
     cols = dict(_HOLDING_ALIASES)
     for key, label, _t in COMPANY_FIELDS:
         cols[_holding_key(label)] = key
@@ -1291,73 +1345,135 @@ def _sheet_rows(data: bytes, filename: str) -> list[list[Any]]:
     return [row for row in csv.reader(io.StringIO(text))]
 
 
-def import_holdings(data: bytes, filename: str, user: str = "local") -> dict[str, Any]:
-    """Fill the direct investments' holding records from one sheet (xlsx or csv):
-    a "Company" column plus any of the holding fields — cost, value, round,
-    dates, impairment, book value, group, status, exit. A column headed "($M)"
-    or "($000)" is scaled; an empty cell leaves what is on file. A row that
-    can't be read is reported and skipped whole; nothing is half-applied."""
-    known = _holding_columns()
-    types = {k: t for k, _l, t in COMPANY_FIELDS}
-    labels = {k: l for k, l, _t in COMPANY_FIELDS}
-    rows = [r for r in _sheet_rows(data, filename) if any(c not in (None, "") for c in r)]
-    head = next((i for i, r in enumerate(rows[:15])
-                 if any(known.get(_holding_key(c)) == "name" for c in r)), None)
-    if head is None:
-        raise ValueError('no "Company" column found — the first row should name the columns '
-                         "(download the holdings sheet for the layout)")
+def _header_kind(row: list[Any]) -> Optional[str]:
+    """"fund" for a header row naming a Fund column, "direct_investment" for a
+    Company column, else None. A row of cell references ($B$2) is not one."""
+    keys = {_holding_key(c) for c in row if c not in (None, "")}
+    if any(re.fullmatch(r"\$?[a-z]+\$?\d+", k) for k in keys):
+        return None
+    if "company" in keys or "portfolio company" in keys:
+        return "direct_investment"
+    if "fund" in keys:
+        return "fund"
+    return None
+
+
+def _block_columns(header: list[Any], kind: str) -> tuple[dict[int, tuple[str, Decimal]], list[str]]:
+    known = _holding_columns(kind)
     columns: dict[int, tuple[str, Decimal]] = {}
     ignored: list[str] = []
-    for i, cell in enumerate(rows[head]):
+    nav_cols: dict[int, tuple[int, int]] = {}
+    for i, cell in enumerate(header):
         if cell in (None, ""):
             continue
-        key = known.get(_holding_key(cell))
-        if key is None or (key in columns_keys(columns)):
-            ignored.append(str(cell))
+        text = str(cell)
+        m = _NAV_QUARTER.search(text) if kind == "fund" else None
+        if m:
+            year = int(m.group(2)) + (2000 if len(m.group(2)) == 2 else 0)
+            nav_cols[i] = (year, int(m.group(1)))       # the latest quarter's NAV is the balance
             continue
-        scale = (Decimal(1_000_000) if _IN_MILLIONS.search(str(cell)) else
-                 Decimal(1000) if _IN_THOUSANDS.search(str(cell)) else Decimal(1))
+        key = known.get(_holding_key(text))
+        if kind == "fund" and text.strip() in ("#", "$"):        # Investments to Date: # | $
+            key = "stats_count" if text.strip() == "#" else "stats_cost"
+        if key is None or key in {k for k, _s in columns.values()}:
+            if _holding_key(text) not in ("worksheet reference", "cell references"):
+                ignored.append(text.strip())
+            continue
+        scale = (Decimal(1_000_000) if _IN_MILLIONS.search(text) else
+                 Decimal(1000) if _IN_THOUSANDS.search(text) else Decimal(1))
         columns[i] = (key, scale)
-    existing = {**{e.lower(): e for e in db.all_details()},
+    if nav_cols:
+        latest = max(nav_cols, key=lambda i: nav_cols[i])
+        columns[latest] = ("investment_balance", Decimal(1))
+        ignored += [str(header[i]).strip() for i in nav_cols if i != latest]
+    return columns, ignored
+
+
+def import_holdings(data: bytes, filename: str, user: str = "local") -> dict[str, Any]:
+    """Fill the holding records from one sheet (xlsx or csv): a block headed by
+    a "Company" column (cost, value, round, dates, impairment, book value,
+    group, status, exit), and/or one headed "Fund" (type, vintage, draw, NAV,
+    distribution, latest stats) — the team's own Summary sheet as it is.
+
+    A column headed "($M)" / "($000)" is scaled; a sheet whose amounts carry
+    no unit and are all small is read as $M, and the result says so. "NA" and
+    empty cells leave what is on file. A row that can't be read is reported
+    and skipped whole; nothing is half-applied."""
+    rows = [r for r in _sheet_rows(data, filename) if any(c not in (None, "") for c in r)]
+    blocks: list[tuple[str, int]] = [(k, i) for i, r in enumerate(rows)
+                                     if (k := _header_kind(r)) is not None]
+    if not blocks:
+        raise ValueError('no "Company" or "Fund" column found — the first row of a block names '
+                         "its columns (download the holdings sheet for the layout)")
+    types = {k: t for k, _l, t in FUND_FIELDS + COMPANY_FIELDS}
+    labels = {k: l for k, l, _t in FUND_FIELDS + COMPANY_FIELDS}
+    details = db.all_details()
+    existing = {**{e.lower(): e for e in details},
                 **{str(d.get("display_name", "")).lower(): e
-                   for e, d in db.all_details().items() if d.get("display_name")}}
+                   for e, d in details.items() if d.get("display_name")}}
     for f in db.get_facts():
         existing.setdefault(str(f["entity_name"]).lower(), f["entity_name"])
-    done, errors = [], []
-    for n, row in enumerate(rows[head + 1:], start=head + 2):
-        body: dict[str, Any] = {}
-        name = ""
-        for i, (key, scale) in columns.items():
-            cell = row[i] if i < len(row) else None
-            if cell in (None, ""):
+    done, errors, ignored, notes = [], [], [], []
+    for n_block, (kind, head) in enumerate(blocks):
+        end = blocks[n_block + 1][1] if n_block + 1 < len(blocks) else len(rows)
+        columns, ign = _block_columns(rows[head], kind)
+        ignored += [c for c in ign if c not in ignored]
+        body_rows = rows[head + 1:end]
+        # amounts with no unit anywhere, all small: the sheet is in $M
+        money_cols = [i for i, (k, sc) in columns.items() if types.get(k) == "money" and sc == 1]
+        plain = [str(r[i]).strip() for r in body_rows for i in money_cols
+                 if i < len(r) and r[i] not in (None, "") and _PLAIN_AMOUNT.match(str(r[i]))]
+        if plain and all(abs(v) < 100_000 for v in (parse_number(t)[0] for t in plain)
+                         if v is not None):
+            for i in money_cols:
+                columns[i] = (columns[i][0], Decimal(1_000_000))
+            notes.append(f"{'fund' if kind == 'fund' else 'company'} amounts read as $M "
+                         "(no unit in the headers, every amount under 100,000)")
+        for n, row in enumerate(body_rows, start=head + 2):
+            body: dict[str, Any] = {}
+            name = ""
+            for i, (key, scale) in columns.items():
+                cell = row[i] if i < len(row) else None
+                if cell in (None, ""):
+                    continue
+                if hasattr(cell, "isoformat"):
+                    cell = cell.isoformat()[:10]
+                text = str(cell).strip()
+                if key == "name":
+                    name = text
+                    continue
+                if _NOT_A_VALUE.match(text):
+                    continue
+                if types.get(key) == "money" and scale != 1 and _PLAIN_AMOUNT.match(text):
+                    v = parse_number(text)[0]
+                    if v is not None:
+                        text = str(v * scale)
+                body[key] = text
+            if re.match(r"total\b", name, re.I):
+                break                       # the block's own total row closes it
+            if not name or not body or re.fullmatch(r"\$?[A-Z]+\$?\d+", name):
+                continue                    # a blank, or a row of cell references ($B$2)
+            if kind == "direct_investment" and body.get("holding_status") == "Exit" \
+                    and "exit_value" not in body and "total_value" in body:
+                body["exit_value"] = body["total_value"]      # its value as recorded at the exit
+            commitment = body.pop("commitment", None)
+            try:
+                values = coerce_details(body)
+            except ValueError as e:
+                message = re.sub(r"^\w+", lambda m: labels.get(m.group(0), m.group(0)), str(e))
+                errors.append({"row": n, "company": name, "message": message})
                 continue
-            if hasattr(cell, "isoformat"):
-                cell = cell.isoformat()[:10]
-            text = str(cell).strip()
-            if key == "name":
-                name = text
-                continue
-            if types.get(key) == "money" and scale != 1:
-                v = parse_number(text)[0]
-                if v is not None and re.fullmatch(r"[\s$€£(),.\-\d]+", text):
-                    text = str(v * scale)
-            body[key] = text
-        if not name or re.match(r"total\b", name, re.I):
-            continue
-        try:
-            values = coerce_details(body)
-        except ValueError as e:
-            message = re.sub(r"^\w+", lambda m: labels.get(m.group(0), m.group(0)), str(e))
-            errors.append({"row": n, "company": name, "message": message})
-            continue
-        entity = existing.get(name.lower(), name)
-        db.set_details(entity, {**values, "kind": "direct_investment"}, user=user)
-        done.append({"company": entity, "fields": sorted(values)})
-    return {"updated": len(done), "rows": done, "errors": errors, "ignored_columns": ignored}
-
-
-def columns_keys(columns: dict[int, tuple[str, Decimal]]) -> set[str]:
-    return {k for k, _s in columns.values()}
+            entity = existing.get(name.lower(), name)
+            db.set_details(entity, {**values, "kind": kind}, user=user)
+            if commitment not in (None, "") and kind == "fund":
+                from . import terms
+                prof = terms.fund_profile(entity)
+                terms.set_fund_profile(entity, investor_aliases=prof.get("investor_aliases") or "",
+                                       notes=prof.get("notes") or "", commitment=str(commitment),
+                                       user=user)
+            done.append({"company": entity, "kind": kind, "fields": sorted(values)})
+    return {"updated": len(done), "rows": done, "errors": errors, "ignored_columns": ignored,
+            "notes": notes}
 
 
 def holdings_csv() -> str:
