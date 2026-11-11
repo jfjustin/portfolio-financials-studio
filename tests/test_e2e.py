@@ -98,6 +98,7 @@ def main() -> int:
     manual_entry(samples)
     portfolio_summary()
     pdf_reading(samples)
+    easy_auth_user()
     clear_data(samples)
 
     print()
@@ -1247,6 +1248,23 @@ def portfolio_summary() -> None:
           and near(tot["Total Investments"]["alloc_pct"], 100)
           and rows["Current Direct Investments"]["alloc_pct"] is None,
           "% capital allocation: direct + funds = 100%, shown on the block and group rows only")
+
+
+def easy_auth_user() -> None:
+    """Behind Azure App Service Authentication the audit trail names the
+    signed-in person; without it, entries stay "local"."""
+    from fastapi.testclient import TestClient
+
+    from app.main import app
+
+    client = TestClient(app)
+    client.post("/api/portfolio/Company 96A/details", json={"kind": "direct_investment", "theme": "Semi"},
+                headers={"X-MS-CLIENT-PRINCIPAL-NAME": "reviewer@example.com"})
+    client.post("/api/portfolio/Company 96A/details", json={"theme": "Devices"})
+    users = [a["user"] for a in db.get_audit(limit=20) if a["action"] == "entity_details"
+             and a["field"] == "Company 96A"]
+    check(users[:2] == ["local", "reviewer@example.com"],
+          "audit entries carry the Easy Auth user when the platform names one, else local")
 
 
 def pdf_reading(samples: Path) -> None:

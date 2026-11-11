@@ -71,9 +71,15 @@ def clear_session(resp: Response) -> None:
     resp.delete_cookie(COOKIE, path="/")
 
 
+# Set by Azure App Service Authentication (Easy Auth) on every request it lets
+# through; the platform strips any copy a client sends, so it can be trusted.
+_EASY_AUTH_USER = "x-ms-client-principal-name"
+
+
 def current_user(request: Request) -> Optional[str]:
     if settings.auth_mode == "none":
-        return "local"
+        # behind Easy Auth the signed-in person is named, so the audit trail is too
+        return request.headers.get(_EASY_AUTH_USER) or "local"
     tok = request.cookies.get(COOKIE)
     if not tok:
         return None
