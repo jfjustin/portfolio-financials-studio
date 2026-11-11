@@ -11,7 +11,7 @@ and delivered in the team's own workbooks.**
 ![Azure](https://img.shields.io/badge/Azure-App%20Service%20%C2%B7%20OpenAI%20%C2%B7%20ADLS-0078D4)
 ![Delta Lake](https://img.shields.io/badge/Delta%20Lake-medallion-00ADD4)
 ![Power BI](https://img.shields.io/badge/Power%20BI%20%2F%20Fabric-ready-F2C811)
-![Tests](https://img.shields.io/badge/end--to--end%20checks-204-2EA44F)
+![Tests](https://img.shields.io/badge/end--to--end%20checks-210-2EA44F)
 
 [See it in action](#-see-it-in-action) · [Highlights](#-highlights) · [Architecture](#%EF%B8%8F-architecture) ·
 [Quick start](#-quick-start) · [User guide](GUIDE.md) · [Architecture notes](docs/ARCHITECTURE.md)
@@ -52,7 +52,7 @@ deliverables the team sends.
   retraining.
 - 🏞️ **Lakehouse-ready** — Land → Bronze → Silver → Gold Delta tables on ADLS Gen2 or Fabric OneLake, plus
   versioned Parquet exports for Power BI.
-- 🚀 **Shipped to Azure** — GitHub Actions runs 204 end-to-end checks before every deploy to App Service;
+- 🚀 **Shipped to Azure** — GitHub Actions runs 210 end-to-end checks before every deploy to App Service;
   Entra ID SSO and keyless (managed identity) access to Azure services.
 
 ## 🎬 See it in action
@@ -162,7 +162,7 @@ per entity and period. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 | Data platform | Delta Lake (`deltalake`, PyArrow) on ADLS Gen2 or Microsoft Fabric OneLake · Parquet exports |
 | Frontend | Plain JavaScript with SVG charts — no external CDNs, fonts or scripts |
 | Cloud & DevOps | Azure App Service · GitHub Actions · Docker · Azure Container Apps · Entra ID · managed identity |
-| Testing | End-to-end suite of 204 checks on synthetic documents, run before every deploy |
+| Testing | End-to-end suite of 210 checks on synthetic documents, run before every deploy |
 
 ## 🚀 Quick start
 
@@ -402,7 +402,7 @@ app/
   db.py                     SQLAlchemy Core storage, append-only audit trail
   storage.py · auth.py · config.py
 templates/ · static/        dashboard — no external CDNs, SVG charts
-tests/test_e2e.py           204 end-to-end checks on synthetic documents
+tests/test_e2e.py           210 end-to-end checks on synthetic documents
 samples/                    synthetic document generator (made-up companies and funds)
 docs/                       architecture, BI integration spec, screenshots, demos
 deploy/ · Dockerfile        Azure Container Apps script and container image

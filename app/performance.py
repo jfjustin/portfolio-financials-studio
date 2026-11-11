@@ -63,52 +63,67 @@ def _period_end_date(period: str) -> Optional[date]:
 def xirr(cashflows: list[tuple[date, float]]) -> Optional[float]:
     """Annualized money-weighted return. None if it can't be solved.
 
-    Newton's method with a bisection fallback; pure Python, no numpy/scipy.
     Convention: outflows (capital calls) negative, inflows (distributions,
-    terminal value) positive.
+    terminal value) positive. Many interleaved calls and distributions can
+    give the NPV curve several roots; the rate nearest zero is the return
+    (a root near −100% is an artefact). Every sign change on a grid from
+    −99% to +1000% a year is bracketed and bisected, then polished.
     """
     if len(cashflows) < 2:
         return None
     if not any(cf < 0 for _d, cf in cashflows) or not any(cf > 0 for _d, cf in cashflows):
         return None  # needs at least one outflow and one inflow to be solvable
-    t0 = cashflows[0][0]
+    t0 = min(d for d, _cf in cashflows)
     years = [(d - t0).days / 365.0 for d, _cf in cashflows]
 
     def npv(rate: float) -> float:
         return sum(cf / ((1.0 + rate) ** t) for t, (_d, cf) in zip(years, cashflows))
 
-    def dnpv(rate: float) -> float:
-        return sum(-t * cf / ((1.0 + rate) ** (t + 1))
-                   for t, (_d, cf) in zip(years, cashflows) if t > 0)
-
-    rate = 0.1
-    for _ in range(100):
+    grid = ([-0.99, -0.97, -0.95, -0.9, -0.85, -0.8, -0.7, -0.6, -0.5, -0.4, -0.3, -0.2, -0.15,
+             -0.1, -0.05, -0.02, 0.0, 0.02, 0.05, 0.1, 0.15, 0.2, 0.3, 0.4, 0.5, 0.75, 1.0, 1.5,
+             2.0, 3.0, 5.0, 10.0])
+    values = []
+    for r in grid:
+        try:
+            values.append(npv(r))
+        except (OverflowError, ZeroDivisionError):
+            values.append(float("nan"))
+    roots: list[float] = []
+    for (r0, v0), (r1, v1) in zip(zip(grid, values), zip(grid[1:], values[1:])):
+        if v0 != v0 or v1 != v1:
+            continue
+        if v0 == 0:
+            roots.append(r0)
+            continue
+        if v0 * v1 < 0:
+            lo, hi, f_lo = r0, r1, v0
+            for _ in range(100):
+                mid = (lo + hi) / 2
+                f_mid = npv(mid)
+                if abs(f_mid) < 1e-9 or hi - lo < 1e-9:
+                    break
+                if f_lo * f_mid < 0:
+                    hi = mid
+                else:
+                    lo, f_lo = mid, f_mid
+            roots.append((lo + hi) / 2)
+    if not roots:
+        return None
+    rate = min(roots, key=abs)
+    # polish with a few Newton steps, kept within the bracket's neighbourhood
+    for _ in range(20):
         f = npv(rate)
-        df = dnpv(rate)
+        df = sum(-t * cf / ((1.0 + rate) ** (t + 1))
+                 for t, (_d, cf) in zip(years, cashflows) if t > 0)
         if abs(df) < 1e-12:
             break
-        new_rate = rate - f / df
-        if new_rate <= -0.9999:
-            new_rate = (rate - 0.9999) / 2  # keep (1+rate) positive
-        if abs(new_rate - rate) < 1e-7:
-            return round(new_rate, 5)
-        rate = new_rate
-
-    # bisection fallback over a wide bracket
-    lo, hi = -0.9999, 10.0
-    f_lo, f_hi = npv(lo), npv(hi)
-    if f_lo * f_hi > 0:
-        return None  # no sign change in bracket; can't solve robustly
-    for _ in range(200):
-        mid = (lo + hi) / 2
-        f_mid = npv(mid)
-        if abs(f_mid) < 1e-6:
-            return round(mid, 5)
-        if f_lo * f_mid < 0:
-            hi, f_hi = mid, f_mid
-        else:
-            lo, f_lo = mid, f_mid
-    return round((lo + hi) / 2, 5)
+        step = f / df
+        if abs(step) > 0.01:
+            break
+        rate -= step
+        if abs(step) < 1e-9:
+            break
+    return round(rate, 5)
 
 
 # --------------------------------------------------------------------------

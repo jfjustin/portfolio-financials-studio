@@ -239,8 +239,12 @@ def _latest(metrics: set[str], until: int) -> dict[tuple[str, str], dict]:
 
 
 def quarters_on_file() -> list[str]:
+    """The quarters the reports can be shown as of: roll-forward quarters, and
+    the quarters of master workbooks and entered values on file."""
     qs = {q["period_label"] for q in db.get_investments()["quarters"]
           if re.fullmatch(r"20\d{2}-Q[1-4]", q["period_label"] or "")}
+    qs |= {s["period"] for s in db.list_submissions()
+           if re.fullmatch(r"20\d{2}-Q[1-4]", s.get("period") or "")}
     return sorted(qs)
 
 

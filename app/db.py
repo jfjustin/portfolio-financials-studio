@@ -568,7 +568,9 @@ def set_submission_period(sub_id: int, period: str, user: str = "local") -> str:
 
 
 def clear_data(user: str = "local", keep_backups: int = 5) -> dict[str, Any]:
-    """Delete every submission, fact and investment view row ("start over").
+    """Delete every submission, fact and investment view row, and every fund's
+    and company's details, parameters, dated investments and budgets ("start
+    over"). Taught statement wording is knowledge, not data, and stays.
 
     The audit trail is append-only and is kept; a `clear_data` row records who
     cleared what. With SQLite, a snapshot of the database is saved first under
@@ -594,13 +596,16 @@ def clear_data(user: str = "local", keep_backups: int = 5) -> dict[str, Any]:
     with eng.begin() as conn:
         n_subs = conn.execute(select(func.count()).select_from(submissions)).scalar_one()
         n_facts = conn.execute(select(func.count()).select_from(facts)).scalar_one()
-        for table in (facts, submissions, investment_quarters, investment_entities):
+        n_entities = conn.execute(select(func.count()).select_from(fund_profiles)).scalar_one()
+        for table in (facts, submissions, investment_quarters, investment_entities,
+                      fund_profiles, capital_calls, budgets):
             conn.execute(table.delete())
         conn.execute(insert(audit).values(
             ts=_now(), action="clear_data", user=user,
-            note=(f"cleared {n_subs} submissions, {n_facts} facts"
+            note=(f"cleared {n_subs} submissions, {n_facts} facts, {n_entities} entities' details"
                   + (f"; backup {backup.name}" if backup else ""))))
     return {"cleared_submissions": int(n_subs), "cleared_facts": int(n_facts),
+            "cleared_entities": int(n_entities),
             "backup": backup.name if backup else None}
 
 

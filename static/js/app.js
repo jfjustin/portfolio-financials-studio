@@ -42,6 +42,20 @@
     setupNav();
     $("#ledger-filter").addEventListener("input", renderLedger);
     $("#dif-year").addEventListener("change", e => { DIF_RANGE = null; loadDirectInvestments(+e.target.value); });
+    $("#dif-preset").addEventListener("change", e => {
+      const v = e.target.value; if (!v) return;
+      const all = [...$("#dif-from").options].map(o => o.value).filter(Boolean);
+      const latest = DIF.latest_quarter || all[all.length - 1];
+      const qn = q => parseInt(q.slice(0, 4)) * 4 + parseInt(q.slice(-1)) - 1, qs = n => `${Math.floor(n / 4)}-Q${n % 4 + 1}`;
+      const fye = FYE_MONTH, n = qn(latest);          // fiscal year ends in month FYE_MONTH
+      const fyEndQ = Math.ceil(fye / 3), year = parseInt(latest.slice(0, 4)), q = parseInt(latest.slice(-1));
+      const fyEnd = q <= fyEndQ ? qn(`${year}-Q${fyEndQ}`) : qn(`${year + 1}-Q${fyEndQ}`);
+      const r = v === "trailing4" ? [qs(n - 3), latest] : v === "ytd" ? [`${year}-Q1`, latest]
+        : v === "fy" ? [qs(fyEnd - 3), qs(fyEnd)] : v === "fy_prev" ? [qs(fyEnd - 7), qs(fyEnd - 4)] : null;
+      e.target.value = "";
+      if (!r) return;
+      DIF_RANGE = { start: r[0], end: r[1] }; loadDirectInvestments(null);
+    });
     const pickRange = () => {
       const a = $("#dif-from").value, b = $("#dif-to").value;
       if (a && b) { DIF_RANGE = { start: a <= b ? a : b, end: a <= b ? b : a }; loadDirectInvestments(null); }
@@ -63,8 +77,9 @@
   // "Clear data": empty the database after an explicit typed confirmation
   async function clearData() {
     const typed = window.prompt(
-      "This deletes ALL uploaded submissions and extracted values for everyone " +
-      "using this site. The audit trail is kept and a backup snapshot is saved.\n\n" +
+      "This deletes ALL uploaded files and extracted values, and every fund's and company's " +
+      "details, commitments, dated investments and budgets, for everyone using this site. " +
+      "Taught statement wording stays. The audit trail is kept and a backup snapshot is saved.\n\n" +
       "Type CLEAR to confirm:");
     if (typed === null) return;
     if (typed.trim() !== "CLEAR") { toast("Not cleared — you must type CLEAR."); return; }
@@ -73,7 +88,7 @@
       body: JSON.stringify({ confirm: "CLEAR" }) });
     if (!res.ok) { toast("Clear failed: " + (await res.text())); return; }
     const r = await res.json();
-    toast(`Cleared ${r.cleared_submissions} submissions, ${r.cleared_facts} values` +
+    toast(`Cleared ${r.cleared_submissions} files, ${r.cleared_facts} values, ${r.cleared_entities} entities` +
           (r.backup ? ` · backup ${r.backup}` : ""));
     await refresh();
   }
@@ -235,6 +250,7 @@
         : '<span class="muted">—</span>');
 
   let DIF_RANGE = null;   // {start, end} when a run of quarters is chosen
+  const FYE_MONTH = Number(document.body.dataset.fye || 12);
   const qLabel = q => `Q${q.slice(-1)}'${q.slice(2, 4)}`;
   async function loadDirectInvestments(year) {
     const qs = [];

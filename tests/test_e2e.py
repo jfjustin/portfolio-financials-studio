@@ -102,6 +102,7 @@ def main() -> int:
     password_gate()
     master_workbook()
     equity_investments_workbook()
+    xirr_roots()
     irr_section()
     period_ranges()
     deletes_and_odd_names()
@@ -1609,6 +1610,31 @@ def period_ranges() -> None:
           "the workbook carries the range as a sixth Budget | Actual pair, in $000, named in the file")
 
 
+def xirr_roots() -> None:
+    """The solver returns the economically meaningful rate when the flows have
+    several roots, and the plain answer when they have one."""
+    from datetime import date as D
+
+    from app.performance import xirr
+
+    one = xirr([(D(2020, 1, 1), -100.0)] + [(D(2020 + k, 1, 1), 10.0) for k in range(1, 5)]
+               + [(D(2025, 1, 1), 110.0)])
+    two = xirr([(D(2020, 1, 1), -100.0), (D(2021, 1, 1), 230.0), (D(2022, 1, 1), -132.0)])
+    # years are days ÷ 365, so leap days move the answer a little from a round 10%
+    check(one is not None and abs(one - 0.10) < 5e-3, "a 10% bond-like flow solves to 10%")
+    check(two is not None and abs(two - 0.10) < 5e-3,
+          "flows with two roots (10% and 20%) give the one nearest zero, never a −99% artefact")
+    # many interleaved calls and distributions, each year's return modest: the
+    # combined answer must sit near the per-fund answers, not at −99%
+    flows = []
+    for k in range(12):
+        flows.append((D(2016 + k // 4, 1 + 3 * (k % 4), 1), -250_000.0))
+        flows.append((D(2017 + k // 4, 1 + 3 * (k % 4), 1), 90_000.0))
+    flows.append((D(2026, 6, 30), 2_600_000.0))
+    r = xirr(flows)
+    check(r is not None and -0.05 < r < 0.25, f"interleaved calls and distributions: {r} is a plausible rate")
+
+
 def irr_section() -> None:
     """IRR from dated flows: an exit with a known answer, a fund from its
     calls, distributions and balance, the splits, and what is left out."""
@@ -1646,6 +1672,11 @@ def irr_section() -> None:
           "groups: Core + Life Sciences = all = Direct + Funds, each with its own IRR")
     check(any(x["entity"] == "Company 96C" for x in R["left_out"]) and "Company 96C" not in ents,
           "an entity with no investment on file is listed as left out, not given a figure")
+    g2 = R["groups"]
+    ents_rates = [e["irr_pct"] for e in R["entities"] if e["irr_pct"] is not None]
+    check(g2["all"]["irr_pct"] > -50 and g2["funds"]["irr_pct"] is None or g2["funds"]["irr_pct"] > -50,
+          "group IRRs are not −99% artefacts when the members' own rates are ordinary")
+    check("2026-Q2" in R["quarters"], "the quarters on offer include those of entered values and workbooks")
     bad = client.get("/api/irr?as_of=2026")
     check(bad.status_code == 400, "the quarter is validated")
 
@@ -1765,6 +1796,9 @@ def clear_data(samples: Path) -> None:
     res = client.post("/api/admin/clear", json={"confirm": "CLEAR"})
     body = res.json()
     check(res.status_code == 200 and body["cleared_submissions"] > 0, "clear succeeds")
+    check(db.all_details() == {} and db.get_capital_calls() == [] and db.get_budgets() == {}
+          and body.get("cleared_entities", 0) >= 1,
+          "details, dated investments and budgets are cleared too — nothing 'default' remains")
     check(db.list_submissions() == [] and db.get_facts() == []
           and db.get_investments() == {"entities": [], "quarters": []},
           "submissions, facts and investment views are empty")

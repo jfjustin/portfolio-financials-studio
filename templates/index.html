@@ -6,7 +6,7 @@
   <title>Portfolio Financials Studio</title>
   <link rel="stylesheet" href="{{ asset_url('css/styles.css') }}">
 </head>
-<body>
+<body data-fye="{{ fiscal_year_end_month }}">
   <header class="top">
     <div class="top-inner">
       <span class="brand-mark">PF</span>
@@ -171,6 +171,9 @@
             <label class="small muted" title="Any run of quarters, across years: flows added up, cash as of the last quarter, burn over the months">
               Or from <select id="dif-from" aria-label="Range start quarter"><option value="">—</option></select></label>
             <label class="small muted">to <select id="dif-to" aria-label="Range end quarter"><option value="">—</option></select></label>
+            <label class="small muted">Preset <select id="dif-preset" aria-label="Range preset"><option value="">—</option>
+              <option value="trailing4">Trailing 4 quarters</option><option value="ytd">Calendar year to date</option>
+              <option value="fy">Fiscal year of the latest quarter</option><option value="fy_prev">Previous fiscal year</option></select></label>
             <a class="btn sm primary" id="dif-export" href="/api/exports/direct-investment-financials.xlsx">Download xlsx</a>
           </div>
         </div>
