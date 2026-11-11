@@ -20,7 +20,8 @@
     </p>
 
     {% if error %}
-    <div class="login-error">Incorrect password — try again.</div>
+    <div class="login-error">{% if error == "locked" %}Too many attempts from your connection —
+      wait 10 minutes, then try again.{% else %}Incorrect password — try again.{% endif %}</div>
     {% endif %}
 
     {% if auth_mode == "entra" %}

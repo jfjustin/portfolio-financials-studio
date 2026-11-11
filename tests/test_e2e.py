@@ -99,6 +99,7 @@ def main() -> int:
     portfolio_summary()
     pdf_reading(samples)
     easy_auth_user()
+    password_gate()
     clear_data(samples)
 
     print()
@@ -1265,6 +1266,53 @@ def easy_auth_user() -> None:
              and a["field"] == "Company 96A"]
     check(users[:2] == ["local", "reviewer@example.com"],
           "audit entries carry the Easy Auth user when the platform names one, else local")
+
+
+def password_gate() -> None:
+    """AUTH_MODE=password: every page and API call needs the session; the cookie
+    is HTTPS-only; wrong passwords are limited per address; a gated workspace
+    refuses to start on the repository's default session secret."""
+    from fastapi.testclient import TestClient
+
+    from app import auth
+    from app.main import app
+
+    saved = (settings.auth_mode, settings.app_password, settings.session_secret)
+    settings.auth_mode, settings.app_password = "password", "test-password-only"
+    try:
+        bad = None
+        try:
+            auth.check_configuration()
+        except RuntimeError as e:
+            bad = str(e)
+        settings.session_secret = "x" * 48
+        auth.check_configuration()
+        check(bad is not None and "SESSION_SECRET" in bad,
+              "a gated workspace refuses to start on the default session secret")
+        client = TestClient(app, follow_redirects=False)
+        home, api = client.get("/"), client.get("/api/portfolio")
+        check(home.status_code == 302 and home.headers["location"] == "/login"
+              and api.status_code == 401,
+              "without a session: pages redirect to login, the API answers 401")
+        auth._FAILURES.clear()
+        results = [client.post("/api/login", data={"password": "wrong"}).headers["location"]
+                   for _ in range(settings.login_max_failures)]
+        right_but_locked = client.post("/api/login", data={"password": "test-password-only"})
+        check(results[0] == "/login?error=1" and results[-1] == "/login?error=locked"
+              and right_but_locked.headers["location"] == "/login?error=locked",
+              f"{settings.login_max_failures} wrong passwords lock that address out, even for the right one")
+        auth._FAILURES.clear()
+        ok = client.post("/api/login", data={"password": "test-password-only"})
+        cookie = ok.headers.get("set-cookie", "")
+        check(ok.status_code == 302 and ok.headers["location"] == "/" and "Secure" in cookie
+              and "HttpOnly" in cookie,
+              "the right password opens a session: HttpOnly, HTTPS-only cookie")
+        check(client.get("/api/health").status_code == 200
+              and client.get("/", cookies={auth.COOKIE: cookie.split(";")[0].split("=", 1)[1]}).status_code == 200,
+              "with the session the workspace opens; the health check stays public")
+    finally:
+        settings.auth_mode, settings.app_password, settings.session_secret = saved
+        auth._FAILURES.clear()
 
 
 def pdf_reading(samples: Path) -> None:

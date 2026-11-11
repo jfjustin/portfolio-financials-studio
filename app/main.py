@@ -99,6 +99,7 @@ async def cache_headers(request: Request, call_next):
 
 @app.on_event("startup")
 def _startup() -> None:
+    auth.check_configuration()
     db.init_db()
 
 
@@ -130,11 +131,17 @@ def login_page(request: Request, error: str = ""):
 
 
 @app.post("/api/login")
-def login_submit(password: str = Form("")):
+def login_submit(request: Request, password: str = Form("")):
     if settings.auth_mode != "password":
         raise HTTPException(400, "password login is not enabled")
+    if auth.login_locked(request):
+        return RedirectResponse("/login?error=locked", status_code=302)
     if not auth.verify_password(password):
+        auth.record_login_failure(request)
+        if auth.login_locked(request):
+            return RedirectResponse("/login?error=locked", status_code=302)
         return RedirectResponse("/login?error=1", status_code=302)
+    auth.clear_login_failures(request)
     resp = RedirectResponse("/", status_code=302)
     auth.issue_session(resp, "workspace")
     return resp

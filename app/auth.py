@@ -60,11 +60,63 @@ _PUBLIC_EXACT = {"/login", "/api/login", "/logout", "/api/health",
                  settings.entra_redirect_path, "/auth/login"}
 
 
+_DEFAULT_SECRET = "change-me-in-production"
+
+
+def check_configuration() -> None:
+    """Refuse to run a gated workspace on the secret shipped in the public
+    repository (anyone could forge a session), or password mode with no
+    password. Raised at startup, so the misconfiguration is seen at once."""
+    if settings.auth_mode == "none":
+        return
+    if settings.session_secret == _DEFAULT_SECRET or len(settings.session_secret) < 32:
+        raise RuntimeError("AUTH_MODE is on but SESSION_SECRET is unset or short: set it to "
+                           "a random value of 32+ characters (openssl rand -hex 32)")
+    if settings.auth_mode == "password" and not settings.app_password:
+        raise RuntimeError("AUTH_MODE=password needs APP_PASSWORD")
+
+
 def issue_session(resp: Response, user: str) -> None:
     payload = json.dumps({"u": user, "t": int(time.time())}).encode()
     resp.set_cookie(COOKIE, _sign(payload), httponly=True, samesite="lax",
-                    secure=False, max_age=settings.session_ttl_hours * 3600,
-                    path="/")
+                    secure=settings.session_cookie_secure,
+                    max_age=settings.session_ttl_hours * 3600, path="/")
+
+
+# --------------------------------------------------------------------------
+# Password guessing: a few failures per address, then a pause
+# --------------------------------------------------------------------------
+_FAILURES: dict[str, list[float]] = {}
+
+
+def client_address(request: Request) -> str:
+    fwd = request.headers.get("x-forwarded-for", "")     # App Service puts the caller first
+    if fwd:
+        return fwd.split(",")[0].strip().rsplit(":", 1)[0]
+    return request.client.host if request.client else "?"
+
+
+def _recent_failures(addr: str) -> list[float]:
+    cutoff = time.time() - settings.login_lockout_minutes * 60
+    kept = [t for t in _FAILURES.get(addr, []) if t > cutoff]
+    if kept:
+        _FAILURES[addr] = kept
+    else:
+        _FAILURES.pop(addr, None)
+    return kept
+
+
+def login_locked(request: Request) -> bool:
+    return len(_recent_failures(client_address(request))) >= settings.login_max_failures
+
+
+def record_login_failure(request: Request) -> None:
+    addr = client_address(request)
+    _FAILURES[addr] = _recent_failures(addr) + [time.time()]
+
+
+def clear_login_failures(request: Request) -> None:
+    _FAILURES.pop(client_address(request), None)
 
 
 def clear_session(resp: Response) -> None:
