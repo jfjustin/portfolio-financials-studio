@@ -101,6 +101,7 @@ def main() -> int:
     easy_auth_user()
     password_gate()
     master_workbook()
+    deletes_and_odd_names()
     clear_data(samples)
 
     print()
@@ -1311,6 +1312,16 @@ def password_gate() -> None:
         check(client.get("/api/health").status_code == 200
               and client.get("/", cookies={auth.COOKIE: cookie.split(";")[0].split("=", 1)[1]}).status_code == 200,
               "with the session the workspace opens; the health check stays public")
+        token = cookie.split(";")[0].split("=", 1)[1]
+        check(api.json().get("detail", "").startswith("Your session has ended")
+              and client.get("/", cookies={auth.COOKIE: token}).headers.get("set-cookie") is None,
+              "a 401 says why in its detail; a fresh session is not re-issued")
+        import json as _json
+        old_payload = _json.dumps({"u": "workspace", "t": int(__import__("time").time()) - 7 * 3600}).encode()
+        aged = client.get("/api/health", cookies={auth.COOKIE: auth._sign(old_payload)})
+        aged = client.get("/", cookies={auth.COOKIE: auth._sign(old_payload)})
+        check(aged.status_code == 200 and auth.COOKIE in (aged.headers.get("set-cookie") or ""),
+              "a session past half its life is renewed on use, so a working day never ends in 'Not saved'")
     finally:
         settings.auth_mode, settings.app_password, settings.session_secret = saved
         auth._FAILURES.clear()
@@ -1413,6 +1424,49 @@ def master_workbook() -> None:
     check(guess_entity_name(["Follow-on 1 Company Q EU/ Devices H1 2026 1 25", "Planned H1 2026"],
                             "Investment Portfolio.xlsx") == "Investment Portfolio",
           "a planning line never becomes an entity name in the general reader either")
+
+
+def deletes_and_odd_names() -> None:
+    """One file or one fund / company can be deleted on its own (audited), and
+    an entity whose name holds a slash is still reachable."""
+    from fastapi.testclient import TestClient
+
+    from app.main import app
+
+    client = TestClient(app, raise_server_exceptions=False)
+    odd = "Follow-on 1 Company Q EU/ Devices H1 2026 1 25"
+    r = client.post(f"/api/portfolio/{odd}/details", json={"kind": "direct_investment", "theme": "x"})
+    fp = client.get(f"/api/portfolio/{odd}/footprint").json()
+    gone = client.delete(f"/api/portfolio/{odd}")
+    check(r.status_code == 200 and fp["details"] and gone.status_code == 200
+          and odd not in db.all_details(),
+          "an entity named with a slash can be edited, measured and deleted")
+    bad = client.post("/api/portfolio/Company 9/details", content=b"not json",
+                      headers={"Content-Type": "application/json"})
+    check(bad.status_code == 500 and "detail" in bad.json(),
+          "an unexpected server error still answers in JSON with a detail")
+    subs = client.get("/api/submissions").json()["submissions"]
+    victim = next(s for s in subs if s["report_type"] == "company_financials" and s["n_facts"])
+    before = client.get("/api/dashboard").json()["n_facts"]
+    r = client.delete(f"/api/submissions/{victim['id']}")
+    after = client.get("/api/dashboard").json()
+    still = [s["id"] for s in client.get("/api/submissions").json()["submissions"]]
+    check(r.status_code == 200 and r.json()["deleted"]["deleted_facts"] >= 1
+          and victim["id"] not in still and after["n_facts"] < before
+          and client.delete(f"/api/submissions/{victim['id']}").status_code == 404
+          and any(a["action"] == "delete_submission" and a["submission_id"] == victim["id"]
+                  for a in db.get_audit(limit=10)),
+          "one uploaded file is deleted with its values, once, and the audit trail says so")
+    fund = next(s["entity_name"] for s in subs if s["entity_name"].startswith("Fund ")
+                and s["n_facts"] and s.get("extractor") != "manual")
+    fp = client.get(f"/api/portfolio/{fund}/footprint").json()
+    r = client.delete(f"/api/portfolio/{fund}")
+    left = [s for s in client.get("/api/submissions").json()["submissions"] if s["entity_name"] == fund]
+    inv = client.get("/api/investments").json()
+    check(r.status_code == 200 and fp["files"] and not left
+          and fund not in {e["entity_name"] for e in inv["entities"]}
+          and fund not in db.all_details() and not db.get_capital_calls(fund),
+          f"deleting {fund} takes its files, values, details and investments; the roll-forward is rebuilt")
 
 
 def pdf_reading(samples: Path) -> None:

@@ -147,6 +147,16 @@ def current_user(request: Request) -> Optional[str]:
     return data.get("u")
 
 
+def session_age(request: Request) -> int:
+    """Seconds since the session cookie was issued (0 when there is none)."""
+    tok = request.cookies.get(COOKIE)
+    payload = _unsign(tok) if tok else None
+    try:
+        return int(time.time()) - int(json.loads(payload).get("t", 0)) if payload else 0
+    except Exception:
+        return 0
+
+
 def verify_password(candidate: str) -> bool:
     import hmac
     expected = settings.app_password or ""
@@ -164,12 +174,20 @@ class AuthMiddleware(BaseHTTPMiddleware):
         path = request.url.path
         if path in _PUBLIC_EXACT or path.startswith(_PUBLIC_PREFIXES):
             return await call_next(request)
-        if current_user(request):
-            return await call_next(request)
+        user = current_user(request)
+        if user:
+            response = await call_next(request)
+            # a session in use is renewed once it is past half its life, so a
+            # working day never ends in "Not saved" half-way through an edit
+            if session_age(request) > settings.session_ttl_hours * 1800:
+                issue_session(response, user)
+            return response
         # unauthenticated
         if path.startswith("/api/"):
-            return JSONResponse({"error": "unauthorized"}, status_code=401)
-        return RedirectResponse("/login", status_code=302)
+            return JSONResponse({"detail": "Your session has ended — sign in again",
+                                 "error": "unauthorized"}, status_code=401)
+        return RedirectResponse("/login?expired=1" if request.cookies.get(COOKIE) else "/login",
+                                status_code=302)
 
 
 # --------------------------------------------------------------------------

@@ -812,6 +812,70 @@ def delete_capital_call(call_id: int, user: str = "local") -> bool:
     return True
 
 
+def delete_submission(sub_id: int, user: str = "local") -> Optional[dict[str, Any]]:
+    """Remove one uploaded file and every value read from it; the roll-forward
+    is rebuilt without it. The audit trail keeps a `delete_submission` row.
+    Returns what was removed, or None when there is no such submission."""
+    with get_engine().begin() as conn:
+        sub = conn.execute(select(submissions).where(submissions.c.id == sub_id)).mappings().first()
+        if sub is None:
+            return None
+        n_facts = conn.execute(select(func.count()).select_from(facts)
+                               .where(facts.c.submission_id == sub_id)).scalar_one()
+        conn.execute(facts.delete().where(facts.c.submission_id == sub_id))
+        conn.execute(submissions.delete().where(submissions.c.id == sub_id))
+        conn.execute(insert(audit).values(
+            ts=_now(), submission_id=sub_id, action="delete_submission", user=user,
+            field=sub["entity_name"],
+            note=f"deleted {sub['filename']} ({sub['report_type']}, {sub['period']}) and "
+                 f"{n_facts} value(s)"))
+    rebuild_investment_views()
+    return {"submission_id": sub_id, "filename": sub["filename"], "entity": sub["entity_name"],
+            "deleted_facts": int(n_facts)}
+
+
+def entity_footprint(entity: str) -> dict[str, Any]:
+    """What deleting a fund / company would take with it."""
+    with get_engine().connect() as conn:
+        subs = conn.execute(select(submissions.c.id, submissions.c.filename, submissions.c.extractor)
+                            .where(submissions.c.entity_name == entity)).all()
+        n_facts = conn.execute(select(func.count()).select_from(facts)
+                               .where(facts.c.entity_name == entity)).scalar_one()
+        n_calls = conn.execute(select(func.count()).select_from(capital_calls)
+                               .where(capital_calls.c.entity_name == entity)).scalar_one()
+        n_budgets = conn.execute(select(func.count()).select_from(budgets)
+                                 .where(budgets.c.entity_name == entity)).scalar_one()
+        has_details = conn.execute(select(fund_profiles.c.entity_name)
+                                   .where(fund_profiles.c.entity_name == entity)).first() is not None
+    return {"entity": entity, "files": [{"id": r.id, "filename": r.filename}
+                                        for r in subs if r.extractor != MANUAL],
+            "manual_entries": sum(1 for r in subs if r.extractor == MANUAL),
+            "values": int(n_facts), "calls": int(n_calls), "budgets": int(n_budgets),
+            "details": has_details}
+
+
+def delete_entity(entity: str, user: str = "local") -> dict[str, Any]:
+    """Remove a fund / company altogether: its details and parameters, dated
+    investments, budgets, and every file and value filed under its name. The
+    audit trail keeps a `delete_entity` row with what went."""
+    fp = entity_footprint(entity)
+    with get_engine().begin() as conn:
+        sub_ids = [r[0] for r in conn.execute(select(submissions.c.id)
+                                              .where(submissions.c.entity_name == entity))]
+        if sub_ids:
+            conn.execute(facts.delete().where(facts.c.submission_id.in_(sub_ids)))
+            conn.execute(submissions.delete().where(submissions.c.id.in_(sub_ids)))
+        conn.execute(facts.delete().where(facts.c.entity_name == entity))
+        conn.execute(capital_calls.delete().where(capital_calls.c.entity_name == entity))
+        conn.execute(budgets.delete().where(budgets.c.entity_name == entity))
+        conn.execute(fund_profiles.delete().where(fund_profiles.c.entity_name == entity))
+        conn.execute(insert(audit).values(
+            ts=_now(), action="delete_entity", user=user, field=entity,
+            note=json.dumps(fp, sort_keys=True)))
+    rebuild_investment_views()
+    return fp
+
+
 def mark_submission_reviewed(sub_id: int, user: str = "local") -> None:
     eng = get_engine()
     with eng.begin() as conn:

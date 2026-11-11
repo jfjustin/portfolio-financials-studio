@@ -19,6 +19,10 @@
       workbook summaries.
     </p>
 
+    {% if expired %}
+    <div class="login-error">Your session ended — sign in to continue. Anything you were typing
+      wasn't saved.</div>
+    {% endif %}
     {% if error %}
     <div class="login-error">{% if error == "locked" %}Too many attempts from your connection —
       wait 10 minutes, then try again.{% else %}Incorrect password — try again.{% endif %}</div>

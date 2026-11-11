@@ -97,6 +97,17 @@ async def cache_headers(request: Request, call_next):
     return response
 
 
+@app.exception_handler(Exception)
+async def _unexpected(request: Request, exc: Exception):
+    """An unexpected failure answers in JSON like every other error, so the
+    page can say what happened instead of "undefined"."""
+    import logging
+    logging.getLogger("pfs").exception("unhandled error on %s %s", request.method, request.url.path)
+    return JSONResponse({"detail": f"The server hit an unexpected error ({type(exc).__name__}) — "
+                                   "try again; if it keeps happening, send the audit log entry"},
+                        status_code=500)
+
+
 @app.on_event("startup")
 def _startup() -> None:
     auth.check_configuration()
@@ -122,11 +133,11 @@ def index(request: Request):
 # Auth pages / routes (active only when AUTH_MODE != none)
 # --------------------------------------------------------------------------
 @app.get("/login", response_class=HTMLResponse)
-def login_page(request: Request, error: str = ""):
+def login_page(request: Request, error: str = "", expired: str = ""):
     if auth.current_user(request):
         return RedirectResponse("/", status_code=302)
     return templates.TemplateResponse(request, "login.html", {
-        "auth_mode": settings.auth_mode, "error": error,
+        "auth_mode": settings.auth_mode, "error": error, "expired": expired,
     })
 
 
@@ -418,7 +429,7 @@ async def import_holdings(request: Request, file: UploadFile = File(...)):
         raise HTTPException(400, "this file couldn't be read as a sheet")
 
 
-@app.post("/api/portfolio/{entity}/details")
+@app.post("/api/portfolio/{entity:path}/details")
 async def set_portfolio_details(entity: str, request: Request):
     """Master data for a fund or direct investment (type, vintage, fund size,
     region / sector, accounting details, theme, round, status, exit...)."""
@@ -440,7 +451,7 @@ async def set_portfolio_details(entity: str, request: Request):
     return {"entity": entity, "details": details}
 
 
-@app.post("/api/portfolio/{entity}/calls")
+@app.post("/api/portfolio/{entity:path}/calls")
 async def add_portfolio_calls(entity: str, request: Request):
     """Add dated capital calls / investments: one {date, description, amount}, or
     pasted lines "date <tab> description <tab> amount" (scale 1000000 for $M)."""
@@ -468,6 +479,23 @@ async def add_portfolio_calls(entity: str, request: Request):
         rows.append((date_iso, str(body.get("description") or ""), amount))
     ids = [db.add_capital_call(entity, d, abs(a) * scale, desc, user=user) for d, desc, a in rows]
     return {"added": len(ids), "ids": ids}
+
+
+@app.get("/api/portfolio/{entity:path}/footprint")
+def portfolio_entity_footprint(entity: str):
+    """What deleting this fund / company would take with it."""
+    return db.entity_footprint(entity)
+
+
+@app.delete("/api/portfolio/{entity:path}")
+def delete_portfolio_entity(entity: str, request: Request):
+    """Delete a fund / company: details, parameters, dated investments, budgets,
+    and every file and value filed under its name (audited)."""
+    fp = db.entity_footprint(entity)
+    if not (fp["files"] or fp["manual_entries"] or fp["values"] or fp["calls"] or fp["budgets"]
+            or fp["details"]):
+        raise HTTPException(404, f"nothing on file for '{entity}'")
+    return {"deleted": db.delete_entity(entity, user=auth.current_user(request) or "local")}
 
 
 @app.delete("/api/portfolio/calls/{call_id}")
@@ -559,6 +587,15 @@ def submissions():
     return {"submissions": db.list_submissions()}
 
 
+@app.delete("/api/submissions/{sub_id}")
+def delete_submission(sub_id: int, request: Request):
+    """Delete one uploaded file and every value read from it (audited)."""
+    gone = db.delete_submission(sub_id, user=auth.current_user(request) or "local")
+    if gone is None:
+        raise HTTPException(404, "submission not found")
+    return {"deleted": gone}
+
+
 @app.get("/api/submissions/{sub_id}")
 def submission_detail(sub_id: int):
     sub = db.get_submission(sub_id)
@@ -635,7 +672,7 @@ def delete_term(term_id: int, request: Request):
     return {"status": "ok"}
 
 
-@app.get("/api/funds/{entity}/memory")
+@app.get("/api/funds/{entity:path}/memory")
 def fund_memory(entity: str, report_type: str = carry_forward.RF):
     mem = terms.fund_memory(entity, report_type)
     if mem["last_quarter"]:
@@ -643,7 +680,7 @@ def fund_memory(entity: str, report_type: str = carry_forward.RF):
     return mem
 
 
-@app.post("/api/funds/{entity}/profile")
+@app.post("/api/funds/{entity:path}/profile")
 async def set_fund_profile(entity: str, request: Request):
     body = await request.json()
     commitment = str(body.get("commitment") or "").strip()

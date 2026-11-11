@@ -2,7 +2,23 @@
 (function () {
   const $ = (s, r) => (r || document).querySelector(s);
   const $$ = (s, r) => Array.from((r || document).querySelectorAll(s));
-  const api = (p, o) => fetch(p, o).then(r => r.json());
+  const api = (p, o) => fetch(p, o).then(r => { if (r.status === 401) sessionEnded(); return r.json(); });
+  // the session ended (the gate was turned on, or 12 hours passed): sign in again
+  function sessionEnded() {
+    if (sessionEnded.done) return; sessionEnded.done = true;
+    toast("Your session has ended — signing in again");
+    setTimeout(() => { location.href = "/login?expired=1"; }, 900);
+  }
+  // why a request failed, in words: the server's detail, else its status
+  async function failText(res) {
+    if (res.status === 401) { sessionEnded(); return "your session has ended — sign in again"; }
+    let body = null;
+    try { body = await res.json(); } catch (e) { /* not JSON */ }
+    const d = body && body.detail;
+    if (typeof d === "string" && d) return d;
+    if (Array.isArray(d)) return d.map(x => (x.loc || []).slice(-1)[0] + ": " + x.msg).join("; ");
+    return `HTTP ${res.status}${res.statusText ? " " + res.statusText : ""}`;
+  }
   let REPORT_TYPES = {};
 
   function toast(msg) {
@@ -300,7 +316,7 @@
     const res = await fetch("/api/manual-values", {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify(Object.assign({ report_type: "company_financials", scale: 1000 }, body)) });
-    if (!res.ok) { toast("Not saved: " + (await res.json()).detail); return false; }
+    if (!res.ok) { toast("Not saved: " + (await failText(res))); return false; }
     toast(String(body.value || "").trim() ? "Figure saved — entered by hand, audited" : "Entered figure withdrawn");
     await loadDirectInvestments(DIF.year);
     return true;
@@ -487,7 +503,7 @@
       return `<label>${esc(f.label)}<input name="${f.key}" value="${esc(val(f))}" placeholder="${esc(ph)}"></label>`;
     }).join("");
     renderCalls(row);
-    $("#pf-m-remove").hidden = !row.removable;
+    $("#pf-m-remove").textContent = row.removable ? "Remove from report" : "Delete…";
     $("#pf-modal").classList.add("show");
     $("#pf-modal-bg").classList.add("show");
   }
@@ -544,7 +560,7 @@
       const res = await fetch(`/api/portfolio/${encodeURIComponent(name)}/details`, {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ kind: field("kind").value }) });
-      if (!res.ok) { toast("Not added: " + (await res.json()).detail); return; }
+      if (!res.ok) { toast("Not added: " + (await failText(res))); return; }
       f.reset();
       await loadPortfolio(PF.as_of);
       openPortfolioEntity(name);
@@ -556,7 +572,7 @@
       const res = await fetch(`/api/submissions/${sid}/facts`, {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ metric: field("metric").value, value: field("value").value }) });
-      if (!res.ok) { toast("Not added: " + (await res.json()).detail); return; }
+      if (!res.ok) { toast("Not added: " + (await failText(res))); return; }
       toast("Value added — entered by you, audited");
       f.reset();
       await openSub(sid);
@@ -573,7 +589,7 @@
       if (PF_ENTITY.kind) body.kind = PF_ENTITY.kind;
       const res = await fetch(`/api/portfolio/${encodeURIComponent(PF_ENTITY.entity)}/details`, {
         method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
-      if (!res.ok) { toast("Not saved: " + (await res.json()).detail); return; }
+      if (!res.ok) { toast("Not saved: " + (await failText(res))); return; }
       toast("Details saved (audit recorded)");
       const lamShare = (PF_ENTITY.fund_level_ids || []);
       if (body.commitment && lamShare.length) {
@@ -586,13 +602,22 @@
       await reopenPortfolio();
     };
     $("#pf-m-remove").onclick = async () => {
-      if (!window.confirm(`Take "${PF_ENTITY.investment_name}" off the report? Nothing on file uses it.`)) return;
-      const res = await fetch(`/api/portfolio/${encodeURIComponent(PF_ENTITY.entity)}/details`, {
-        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ kind: "" }) });
-      if (!res.ok) { toast("Not removed: " + (await res.json()).detail); return; }
+      const fp = await api(`/api/portfolio/${encodeURIComponent(PF_ENTITY.entity)}/footprint`);
+      const goes = [fp.files.length ? `${fp.files.length} uploaded file${fp.files.length === 1 ? "" : "s"} (${fp.files.map(f => f.filename).join(", ")})` : "",
+        fp.values ? `${fp.values} value${fp.values === 1 ? "" : "s"}` : "", fp.calls ? `${fp.calls} dated investment${fp.calls === 1 ? "" : "s"}` : "",
+        fp.budgets ? `${fp.budgets} budget figure${fp.budgets === 1 ? "" : "s"}` : "", fp.details ? "its details" : ""].filter(Boolean);
+      const msg = goes.length
+        ? `Delete "${PF_ENTITY.investment_name}" (${PF_ENTITY.entity})?\n\nThis removes ${goes.join(", ")}. The audit trail keeps a record. This can't be undone.`
+        : `Take "${PF_ENTITY.investment_name}" off the report? Nothing on file uses it.`;
+      if (!window.confirm(msg)) return;
+      const res = goes.length
+        ? await fetch(`/api/portfolio/${encodeURIComponent(PF_ENTITY.entity)}`, { method: "DELETE" })
+        : await fetch(`/api/portfolio/${encodeURIComponent(PF_ENTITY.entity)}/details`, {
+            method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ kind: "" }) });
+      if (!res.ok) { toast("Not deleted: " + (await failText(res))); return; }
       $("#pf-modal").classList.remove("show"); $("#pf-modal-bg").classList.remove("show");
-      toast("Removed from the report");
-      await loadPortfolio(PF.as_of);
+      toast(goes.length ? "Deleted (audit recorded)" : "Removed from the report");
+      await refresh();
     };
     $("#pf-m-add").onclick = async () => {
       const lines = $("#pf-m-lines").value;
@@ -600,7 +625,7 @@
       const res = await fetch(`/api/portfolio/${encodeURIComponent(PF_ENTITY.entity)}/calls`, {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ lines, scale: Number($("#pf-m-scale").value) }) });
-      if (!res.ok) { toast("Not added: " + (await res.json()).detail); return; }
+      if (!res.ok) { toast("Not added: " + (await failText(res))); return; }
       $("#pf-m-lines").value = "";
       toast(`Added ${(await res.json()).added} row(s)`);
       await reopenPortfolio();
@@ -737,8 +762,16 @@
       tr.innerHTML = `<td>#${s.id}</td><td>${esc(s.filename)}</td><td>${esc(rt)}</td>
         <td>${esc(s.entity_name || "")}</td>
         <td>${esc(s.period || "")}${s.fiscal_label ? `<div class="small muted fy">${esc(s.fiscal_label)}</div>` : ""}</td>
-        <td class="num">${s.n_facts}</td><td>${status}</td>`;
+        <td class="num">${s.n_facts}</td><td>${status} <button class="btn sm danger sub-del" data-id="${s.id}" data-name="${esc(s.filename)}" title="Delete this file and its values" aria-label="Delete ${esc(s.filename)}">×</button></td>`;
       tr.onclick = () => openSub(s.id);
+      $(".sub-del", tr).onclick = async e => {
+        e.stopPropagation();
+        if (!window.confirm(`Delete "${s.filename}" and the ${s.n_facts} value${s.n_facts === 1 ? "" : "s"} read from it? The audit trail keeps a record.`)) return;
+        const res = await fetch(`/api/submissions/${s.id}`, { method: "DELETE" });
+        if (!res.ok) { toast("Not deleted: " + (await failText(res))); return; }
+        toast("File deleted (audit recorded)");
+        await refresh();
+      };
       tb.appendChild(tr);
     });
   }
@@ -888,7 +921,7 @@
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ investor_aliases: $("#mf-aliases").value,
                                commitment: $("#mf-commitment").value, notes: $("#mf-notes").value }) });
-      if (!res.ok) { toast("Not saved: " + (await res.text())); return false; }
+      if (!res.ok) { toast("Not saved: " + (await failText(res))); return false; }
       return true;
     };
     $("#mf-save").onclick = async () => {
@@ -1171,6 +1204,16 @@
   function wireModal() {
     $("#modal-bg").onclick = () => showModal(false);
     $("#m-close").onclick = () => showModal(false);
+    $("#m-delete").onclick = async () => {
+      if (!CURRENT_SUB) return;
+      const sub = CURRENT_SUB.submission, n = (CURRENT_SUB.facts || []).length;
+      if (!window.confirm(`Delete "${sub.filename}" and the ${n} value${n === 1 ? "" : "s"} read from it?\n\nThe roll-forward is rebuilt without it; the audit trail keeps a record. This can't be undone.`)) return;
+      const res = await fetch(`/api/submissions/${sub.id}`, { method: "DELETE" });
+      if (!res.ok) { toast("Not deleted: " + (await failText(res))); return; }
+      showModal(false);
+      toast("File deleted (audit recorded)");
+      await refresh();
+    };
     $("#m-reread").onclick = async () => {
       if (!CURRENT_SUB) return;
       const id = CURRENT_SUB.submission.id;
