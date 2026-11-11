@@ -319,6 +319,22 @@ net burn $360K/month (10 months).
   (`2026-Q1=1.08; 2026-Q2=1.10`): the report's quarter uses its own rate, else the latest
   earlier one (noted under the table).
 
+**Master workbooks** (Upload & files)
+Drop the team's **Investment Portfolio** workbook or the accounting team's **Equity Investments
+Summary** on the upload area like any other file. The app recognises a workbook whose sheets are
+laid out like the team's (one sheet per fund or company — *Investment Name*, *Investment Type*,
+*Total Investment to Date*, *Total Value*, *Commitment*, *Drawn to Date*…, the *Latest Stats*
+row, the *Invested* rows, and the *Equity Investments Summary* block beside them) or that holds
+a *Summary-Portfolio Value* sheet, and:
+- fills every fund's and company's details from its sheet ($M figures scaled; the accounting
+  block read in whole units), sets each fund's commitment, and adds the dated investments it
+  lists (a re-read adds no duplicates);
+- records no quarterly figures from it — it is master data, not a statement — and keeps the file
+  under Submissions as a *Master workbook*, so it can be re-read after an update;
+- leaves other tabs alone (an *Investments-AOP* planning tab, notes) and never creates an entity
+  from a stray heading; the upload result names the tabs it did not read.
+Each entity's own sheet wins over the summary tab for a field both carry.
+
 **Holdings sheet** (Investment Portfolio → Direct investments)
 A company's own statements never show what the stake cost or is worth. Instead of typing each
 company's details, **Download holdings sheet**, fill it in — or import the team's own

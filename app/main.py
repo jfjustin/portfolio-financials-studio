@@ -218,16 +218,17 @@ def report_types():
 
 
 @app.post("/api/upload")
-async def upload(files: list[UploadFile] = File(...),
+async def upload(request: Request, files: list[UploadFile] = File(...),
                  allow_duplicate: bool = Form(False)):
     results = []
+    user = auth.current_user(request) or "local"
     for f in files:
         raw = await f.read()
         try:
             # model calls take a while: keep them off the event loop so the rest
             # of the app stays responsive during an upload
             res = await run_in_threadpool(process_upload, f.filename, raw,
-                                          allow_duplicate=allow_duplicate)
+                                          allow_duplicate=allow_duplicate, user=user)
         except Exception as e:  # never crash the whole batch on one bad file
             res = {"status": "error", "filename": f.filename, "message": str(e)}
         results.append(res)

@@ -375,6 +375,19 @@ def extract_file(path: Path, original_name: Optional[str] = None) -> ExtractionR
     name = original_name or path.name
 
     if ext in EXCEL_EXT:
+        from .master import period_from_name, read_master
+        reading = read_master(path)
+        if reading:
+            n_funds = sum(1 for r in reading["records"] if r["kind"] == "fund")
+            n_cos = len(reading["records"]) - n_funds
+            return ExtractionResult(
+                filename=name, file_hash=file_hash, detected_report_type="master_workbook",
+                report_type_confidence=1.0,
+                entity_name=f"{n_funds} fund(s), {n_cos} direct investment(s)",
+                period=period_from_name(name) or "", extractor="master", facts=[],
+                warnings=([f"Sheets not read (not an entity or summary sheet): "
+                           + ", ".join(reading["skipped"])] if reading["skipped"] else []),
+                master=reading)
         raw_items, text = extract_excel(path)
         return _with_schedule_totals(_with_model(path, raw_items, text, name, file_hash, "excel"),
                                      text)

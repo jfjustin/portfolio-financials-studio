@@ -1389,17 +1389,15 @@ def _block_columns(header: list[Any], kind: str) -> tuple[dict[int, tuple[str, D
     return columns, ignored
 
 
-def import_holdings(data: bytes, filename: str, user: str = "local") -> dict[str, Any]:
-    """Fill the holding records from one sheet (xlsx or csv): a block headed by
-    a "Company" column (cost, value, round, dates, impairment, book value,
-    group, status, exit), and/or one headed "Fund" (type, vintage, draw, NAV,
-    distribution, latest stats) — the team's own Summary sheet as it is.
-
-    A column headed "($M)" / "($000)" is scaled; a sheet whose amounts carry
-    no unit and are all small is read as $M, and the result says so. "NA" and
-    empty cells leave what is on file. A row that can't be read is reported
-    and skipped whole; nothing is half-applied."""
-    rows = [r for r in _sheet_rows(data, filename) if any(c not in (None, "") for c in r)]
+def read_holdings(rows: list[list[Any]]) -> dict[str, Any]:
+    """The holding records a sheet holds, without writing anything: a block
+    headed by a "Company" column (cost, value, round, dates, impairment, book
+    value, group, status, exit) and/or one headed "Fund" (type, vintage, draw,
+    NAV, distribution, latest stats) — the team's own Summary sheet as it is.
+    Each block ends at its Total row; cell-reference rows and "NA" cells are
+    skipped. Returns {"records": [{name, kind, body, commitment}], "errors",
+    "ignored_columns", "notes"}."""
+    rows = [r for r in rows if any(c not in (None, "") for c in r)]
     blocks: list[tuple[str, int]] = [(k, i) for i, r in enumerate(rows)
                                      if (k := _header_kind(r)) is not None]
     if not blocks:
@@ -1407,13 +1405,7 @@ def import_holdings(data: bytes, filename: str, user: str = "local") -> dict[str
                          "its columns (download the holdings sheet for the layout)")
     types = {k: t for k, _l, t in FUND_FIELDS + COMPANY_FIELDS}
     labels = {k: l for k, l, _t in FUND_FIELDS + COMPANY_FIELDS}
-    details = db.all_details()
-    existing = {**{e.lower(): e for e in details},
-                **{str(d.get("display_name", "")).lower(): e
-                   for e, d in details.items() if d.get("display_name")}}
-    for f in db.get_facts():
-        existing.setdefault(str(f["entity_name"]).lower(), f["entity_name"])
-    done, errors, ignored, notes = [], [], [], []
+    records, errors, ignored, notes = [], [], [], []
     for n_block, (kind, head) in enumerate(blocks):
         end = blocks[n_block + 1][1] if n_block + 1 < len(blocks) else len(rows)
         columns, ign = _block_columns(rows[head], kind)
@@ -1458,22 +1450,45 @@ def import_holdings(data: bytes, filename: str, user: str = "local") -> dict[str
                 body["exit_value"] = body["total_value"]      # its value as recorded at the exit
             commitment = body.pop("commitment", None)
             try:
-                values = coerce_details(body)
+                coerce_details(body)        # readable? the row is reported and skipped if not
             except ValueError as e:
                 message = re.sub(r"^\w+", lambda m: labels.get(m.group(0), m.group(0)), str(e))
                 errors.append({"row": n, "company": name, "message": message})
                 continue
-            entity = existing.get(name.lower(), name)
-            db.set_details(entity, {**values, "kind": kind}, user=user)
-            if commitment not in (None, "") and kind == "fund":
-                from . import terms
-                prof = terms.fund_profile(entity)
-                terms.set_fund_profile(entity, investor_aliases=prof.get("investor_aliases") or "",
-                                       notes=prof.get("notes") or "", commitment=str(commitment),
-                                       user=user)
-            done.append({"company": entity, "kind": kind, "fields": sorted(values)})
-    return {"updated": len(done), "rows": done, "errors": errors, "ignored_columns": ignored,
-            "notes": notes}
+            records.append({"name": name, "kind": kind, "body": body, "commitment": commitment,
+                            "row": n})
+    return {"records": records, "errors": errors, "ignored_columns": ignored, "notes": notes}
+
+
+def apply_holdings(reading: dict[str, Any], user: str = "local") -> list[dict[str, Any]]:
+    """Write the records read_holdings() found; every change is audited."""
+    details = db.all_details()
+    existing = {**{e.lower(): e for e in details},
+                **{str(d.get("display_name", "")).lower(): e
+                   for e, d in details.items() if d.get("display_name")}}
+    for f in db.get_facts():
+        existing.setdefault(str(f["entity_name"]).lower(), f["entity_name"])
+    done = []
+    for rec in reading["records"]:
+        values = coerce_details(rec["body"])
+        entity = existing.get(rec["name"].lower(), rec["name"])
+        db.set_details(entity, {**values, "kind": rec["kind"]}, user=user)
+        if rec.get("commitment") not in (None, "") and rec["kind"] == "fund":
+            from . import terms
+            prof = terms.fund_profile(entity)
+            terms.set_fund_profile(entity, investor_aliases=prof.get("investor_aliases") or "",
+                                   notes=prof.get("notes") or "", commitment=str(rec["commitment"]),
+                                   user=user)
+        done.append({"company": entity, "kind": rec["kind"], "fields": sorted(values)})
+    return done
+
+
+def import_holdings(data: bytes, filename: str, user: str = "local") -> dict[str, Any]:
+    """Fill the holding records from one sheet (xlsx or csv) — see read_holdings()."""
+    reading = read_holdings(_sheet_rows(data, filename))
+    done = apply_holdings(reading, user=user)
+    return {"updated": len(done), "rows": done, "errors": reading["errors"],
+            "ignored_columns": reading["ignored_columns"], "notes": reading["notes"]}
 
 
 def holdings_csv() -> str:

@@ -100,6 +100,7 @@ def main() -> int:
     pdf_reading(samples)
     easy_auth_user()
     password_gate()
+    master_workbook()
     clear_data(samples)
 
     print()
@@ -1313,6 +1314,105 @@ def password_gate() -> None:
     finally:
         settings.auth_mode, settings.app_password, settings.session_secret = saved
         auth._FAILURES.clear()
+
+
+def master_workbook() -> None:
+    """The team's Investment Portfolio workbook (one sheet per fund / company
+    in its layout, the accounting block beside, a Summary-Portfolio Value tab
+    and a planning tab) fills every entity in one upload; nothing is invented
+    from a stray heading; a re-read adds no duplicate investments."""
+    import io
+
+    import openpyxl
+    from fastapi.testclient import TestClient
+
+    from app.extractors.base import guess_entity_name
+    from app.main import app
+    from app.pipeline import reprocess_submission
+
+    client = TestClient(app)
+    wb = openpyxl.Workbook()
+    aop = wb.active
+    aop.title = "Investments-AOP"
+    aop.append(["Follow-on 1 Company Q EU/ Devices H1 2026 1 25"])
+    aop.append(["Planned", "H1 2026", 1.0])
+    f = wb.create_sheet("Fund 97")
+    for r, label, value in ((2, "Investment Name", "Example Partners III"), (3, "Investment Type", "LP"),
+                            (4, "Current / Most Recent Round", "-"), (5, "Vintage", 2019),
+                            (6, "Fund Size", 150.0), (7, "Commitment", 5.0), (9, "Future Draw", 1.0),
+                            (10, "Region / Sector Focus", "US/Software"), (11, "Investment Balance", 4.2),
+                            (13, "Drawn to Date", 4.0)):
+        f.cell(r, 1, label); f.cell(r, 2, value)
+    f.cell(13, 5, "Distribution to Date"); f.cell(13, 6, -1.0)
+    for c, h in zip("BCDEF", ("Date", "# of investments", "Cost Basis", "Value", "Gain / (Loss) %")):
+        f[f"{c}14"] = h
+    f["A15"] = "Latest Stats"; f["B15"] = "2026-03-31"; f["C15"] = 14; f["D15"] = 40.0; f["E15"] = 55.0
+    for c, h in zip("BCDEF", ("Date", "Current Round", "Amount Invested", "Total Raise", "Pre Money Valuation")):
+        f[f"{c}16"] = h
+    f.append([]); f["A17"] = "Invested"; f["B17"] = "2019-04-14"; f["C17"] = "Drawdown #1"; f["D17"] = 0.5
+    f["A18"] = "Invested"; f["B18"] = "2026-02-10"; f["C18"] = "Drawdown #9"; f["D18"] = 0.5
+    f["H2"] = "Equity Investments Summary"
+    for r, label, value in ((3, "Entity Type", "Limited Partnership"), (4, "Method of Accounting", "Equity Method"),
+                            (5, "GL Account", "1234"), (6, "Company Code", "C9"), (7, "% Ownership", 0.025),
+                            (8, "Initial Investment Date", "2019-04-14"), (9, "Terms", "10 years"),
+                            (10, "Total Commitment", 5_000_000), (11, "Remaining Commitment", 1_000_000),
+                            (12, "Total Funding", 4_000_000), (13, "Total Equity Income/(Loss)", 1_200_000),
+                            (14, "Total Distributions", -1_000_000), (15, "Investment Balance", 4_200_000)):
+        f.cell(r, 8, label); f.cell(r, 9, value)
+    co = wb.create_sheet("Company 97A")
+    for r, label, value in ((2, "Investment Name", "Example Robotics Inc."), (3, "Investment Type", "Direct"),
+                            (4, "Current / Most Recent Round", "Series A"), (5, "Most Recent Investment Date", "2026-03-01"),
+                            (6, "Total Investment to Date", 2.0), (7, "Projected Future Investments", 1.0),
+                            (9, "Investments", "Series A Preferred"), (10, "Theme", "Robotics"),
+                            (11, "Total Value", 3.0), (12, "Operating Status", "Active")):
+        co.cell(r, 1, label); co.cell(r, 2, value)
+    for c, h in zip("BCDEF", ("Date", "Current Round", "Amount Invested", "Total Raise", "Pre Money Valuation")):
+        co[f"{c}16"] = h
+    co["A17"] = "Invested"; co["B17"] = "2024-06-01"; co["C17"] = "Seed"; co["D17"] = 0.5; co["E17"] = 4.0; co["F17"] = 12.0
+    co["A18"] = "Invested"; co["B18"] = "2026-03-01"; co["C18"] = "Series A"; co["D18"] = 1.5; co["E18"] = 20.0; co["F18"] = 60.0
+    sv = wb.create_sheet("Summary-Portfolio Value")
+    sv.append(["Worksheet Reference", None, "Company", "Theme", "Operating Status", "Current/Impaired/Exit", "Book Value"])
+    sv.append(["Company 97A", None, "Company 97A", "Advanced robotics", "Active", "Current", 1.8])
+    sv.append([None, None, "Total Direct", None, None, None, 1.8])
+    buf = io.BytesIO()
+    wb.save(buf)
+    r = client.post("/api/upload", files={"files": ("Investment Portfolio Jun'26 (test).xlsx", buf.getvalue())})
+    res = r.json()["results"][0]
+    check(res["status"] == "ok" and res["report_type"] == "master_workbook" and res["period"] == "2026-Q2"
+          and {e["entity"] for e in res["entities"]} == {"Fund 97", "Company 97A"} and res["calls_added"] == 4
+          and any("Investments-AOP" in w for w in res["warnings"]),
+          "a master workbook is recognised: both entities filled, 4 dated investments, the planning tab named as not read")
+    rep = client.get("/api/portfolio?as_of=2026-Q2").json()
+    names = {x["entity"] for x in rep["funds"] + rep["companies"]}
+    check(not any(n.startswith("Follow-on") for n in names) and "Follow-on 1 Company Q" not in str(db.all_details()),
+          "no entity is invented from the planning tab's first line")
+    fund = {x["entity"]: x for x in rep["funds"]}["Fund 97"]
+    D = lambda x: Decimal(str(x)) if x is not None else None
+    check(fund["investment_name"] == "Example Partners III" and fund["investment_type"] == "LP"
+          and fund["vintage"] == 2019 and D(fund["fund_size"]) == 150_000_000
+          and D(fund["commitment"]) == 5_000_000 and D(fund["future_draw"]) == 1_000_000
+          and D(fund["investment_balance"]) == 4_200_000 and D(fund["drawn_to_date"]) == 4_000_000
+          and D(fund["distribution_to_date"]) == 1_000_000 and fund["region_sector"] == "US/Software"
+          and fund["stats"]["count"] == 14 and D(fund["stats"]["cost"]) == 40_000_000
+          and fund["accounting"]["gl_account"] == "1234" and D(fund["accounting"]["ownership_pct"]) == Decimal("2.5")
+          and len([c for c in fund["invested"] if c["source"] == "entered"]) == 2,
+          "fund sheet: $M figures, commitment, latest stats, accounting block (whole units, % ownership) and calls")
+    com = {x["entity"]: x for x in rep["companies"]}["Company 97A"]
+    det = com["details"]
+    check(com["investment_name"] == "Example Robotics Inc." and com["current_round"] == "Series A"
+          and com["security"] == "Series A Preferred" and D(com["total_invested"]) == 2_000_000
+          and D(com["total_value"]) == 3_000_000 and com["operating_status"] == "Active"
+          and com["theme"] == "Robotics" and D(det["book_value"]) == 1_800_000
+          and D(com["invested"][1]["total_raise"]) == 20_000_000 and D(com["invested"][1]["pre_money"]) == 60_000_000,
+          "company sheet: type, round, security, cost, value, status; the summary tab fills book value "
+          "without overriding the sheet's theme; rounds carry total raise and pre-money")
+    again = reprocess_submission(res["submission_id"])
+    rep = client.get("/api/portfolio?as_of=2026-Q2").json()
+    n_calls = len([c for c in {x["entity"]: x for x in rep["funds"]}["Fund 97"]["invested"] if c["source"] == "entered"])
+    check(again["status"] == "ok" and n_calls == 2, "re-reading the workbook adds no duplicate investments")
+    check(guess_entity_name(["Follow-on 1 Company Q EU/ Devices H1 2026 1 25", "Planned H1 2026"],
+                            "Investment Portfolio.xlsx") == "Investment Portfolio",
+          "a planning line never becomes an entity name in the general reader either")
 
 
 def pdf_reading(samples: Path) -> None:

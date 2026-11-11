@@ -79,6 +79,9 @@ class ExtractionResult(BaseModel):
     # model's reading as it answered (neither is stored in the app database)
     raw_items: list[RawItem] = Field(default_factory=list, exclude=True)
     model_reading: Optional[dict[str, Any]] = Field(default=None, exclude=True)
+    # a master workbook's records (every fund / company it names), applied after
+    # the submission is saved; never stored as facts
+    master: Optional[dict[str, Any]] = Field(default=None, exclude=True)
 
 
 # --------------------------------------------------------------------------

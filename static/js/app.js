@@ -791,7 +791,11 @@
         div.innerHTML = `<b>${esc(r.filename)}</b> → #${r.submission_id}
           · <span class="muted">${esc((REPORT_TYPES[r.report_type]||{}).label||r.report_type)}</span>
           · ${esc(r.entity_name)} · ${esc(r.period)}
-          <br><span class="small">${r.n_facts} facts — ${r.n_auto_accepted} auto, ${r.n_needs_review} to review, ${r.n_unmapped} unmapped</span>
+          <br><span class="small">${r.report_type === "master_workbook"
+            ? `${r.entities.filter(e => e.kind === "fund").length} fund(s), ${r.entities.filter(e => e.kind !== "fund").length} compan(ies) filled in from their sheets`
+              + (r.calls_added ? `, ${r.calls_added} dated investment${r.calls_added === 1 ? "" : "s"} added` : "")
+              + ` — ${r.entities.map(e => esc(e.entity)).join(", ")}`
+            : `${r.n_facts} facts — ${r.n_auto_accepted} auto, ${r.n_needs_review} to review, ${r.n_unmapped} unmapped`}</span>
           ${errs.map(c => `<div class="warn-line">⚠ ${esc(c.name)}: ${esc(c.detail)}</div>`).join("")}
           ${(r.warnings||[]).map(w => `<div class="warn-line">⚠ ${esc(w)}</div>`).join("")}
           <div style="margin-top:6px"><button class="btn sm" data-open="${r.submission_id}">Review →</button></div>`;
