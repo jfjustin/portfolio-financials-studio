@@ -101,6 +101,7 @@ def main() -> int:
     easy_auth_user()
     password_gate()
     master_workbook()
+    equity_investments_workbook()
     deletes_and_odd_names()
     clear_data(samples)
 
@@ -1424,6 +1425,136 @@ def master_workbook() -> None:
     check(guess_entity_name(["Follow-on 1 Company Q EU/ Devices H1 2026 1 25", "Planned H1 2026"],
                             "Investment Portfolio.xlsx") == "Investment Portfolio",
           "a planning line never becomes an entity name in the general reader either")
+
+
+def equity_investments_workbook() -> None:
+    """The accounting team's Equity Investments Summary workbook (made-up
+    figures): the Investments Summary table — open equity investments, funds,
+    notes, closed investments — plus a backup tab per entity with the
+    accounting labels and dated funding / securities tables."""
+    import datetime as dt
+    import io
+
+    import openpyxl
+    from fastapi.testclient import TestClient
+
+    from app.main import app
+
+    client = TestClient(app)
+    near = lambda a, b: a is not None and abs(float(a) - float(b)) < 0.01
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Investments Summary"
+    ws.append([None, "Equity Investments Summary Workbook", "Summarized presentation"])
+    ws.append([None, dt.datetime(2026, 6, 28)])
+    ws.append([])
+    head = [None, "Investment", "Investment Balance", "Gross Investment / Funding", "Equity Income/(Loss)",
+            "Return of Capital/Other Cash Proceeds", "MTM & Conversion Gain/(Loss)", "Acquisition Impact",
+            "Cumulative Impairment", "Total Commitment", "Remaining Commitment", "Ownership %", "Initial Investment Date"]
+    ws.append(head)
+    ws.append([None, "Equity Investments"])
+    ws.append(["Company 98A (2022)", "Company 98A", 2_979_349.49, 2_239_872.67, 0, 0, 739_476.82, 0, 0, 0, 0, 0.0682, dt.datetime(2022, 9, 21)])
+    ws.append(["Company 98B (2017)", "Company 98B", 599_994, 1_999_994, 0, 0, 0, 0, -1_400_000, 0, 0, "< 1%", dt.datetime(2017, 10, 5)])
+    ws.append(["Company 98G (Pre 2014)", "Company 98G", 0, 74_088, 0, 0, 0, 0, -74_088, 0, 0, "< 1%", "Pre 2014"])
+    ws.append([None, None, 3_579_343.49, 4_313_954.67])
+    ws.append([None, "Funds"])
+    ws.append(["Fund 98 (2016)", "Fund 98", 4_831_951.58, 5_000_000, -168_048.42, 0, 0, 0, 0, 5_000_000, 0, 0.07298, dt.datetime(2016, 12, 15)])
+    ws.append(["Fund 97 (2019)", "Fund 97", 5_623_205.10, 6_871_259, 91_307, -1_339_361, 0, 0, 0, 5_530_950, 0, 0.0192, dt.datetime(2019, 12, 20)])
+    ws.append([None, None, 10_455_156.68])
+    ws.append([None, "Note Receivable"])
+    ws.append([None, "Investment", "Investment Balance", "Gross Investment / Funding", "Accrued Interest", "Return of Capital",
+               "Note Conversion / Repayment", "Cumulative Impairment", None, "Initial Investment Date"])
+    ws.append(["Note 9B (2025)", "Note 9B", 1_000_000, 1_000_000, 0, 0, 0, 0, 0, dt.datetime(2025, 10, 17)])
+    ws.append([None, "Total Equity Investments", 15_034_500])
+    ws.append([None, "Check", 0])
+    ws.append([None, "CLOSED INVESTMENTS"])
+    ws.append(head)
+    ws.append([None, "Equity Investments"])
+    ws.append(["Closed 9Q (2018)", "Closed 9Q", 1.16e-10, 2_000_000, 0, -2_797_000, 797_000, 0, 0, 0, 0, None, None])
+    ws.append([None, "Other"])
+    ws.append([None, "Closed 9Z", 0, 59_021_700, 5_602_260, 0, 0, -64_624_000, 0, 0, 0, None, None])
+    ws.append([None, "Note Receivable"])
+    ws.append([None, "Investment", "Investment Balance", "Gross Investment / Funding", "Accrued Interest", "Return of Capital",
+               "Note Conversion / Repayment", "Cumulative Impairment"])
+    ws.append(["Company 98A (2021 Convertible Note)", "Company 98A", 0, 1_000_000, 21_041, 0, -1_021_041, 0])
+    f = wb.create_sheet("Fund 98")
+    for r in (["i"], [], ["Entity Type", "Exempted Limited Partnership"], ["Method of Accounting", "Equity Method"],
+              ["GL Account", 190645], ["Company Code", 1220], ["% Ownership", 0.07298, "Confirmed"],
+              ["Initial Investment Date", dt.datetime(2016, 12, 15)], ["Terms", "- $300K initial investment with $5M funding commitment"],
+              ["Total Commitment", 5_000_000], ["Remaining Commitment", 0], ["Funding", "Amount", "Investment Date"],
+              ["Initial Investment", 300_000, dt.datetime(2016, 12, 15)], ["Capital Call", 212_440, dt.datetime(2017, 11, 1)],
+              ["Capital Call", 4_487_560, dt.datetime(2019, 1, 15)], ["Total Funding", 5_000_000],
+              ["Equity Income/(Loss)", "Amount"], [dt.datetime(2017, 3, 31), -73_015.9], ["Total Equity Income/(Loss)", -168_048.42],
+              ["Investment Balance", 4_831_951.58]):
+        f.append(r)
+    co = wb.create_sheet("Company 98A")
+    for r in (["Company 98A"], [], ["Entity Type", "Corporation"], ["Method of Accounting", "Measurement Alternative"],
+              ["GL Account", 190645], ["Company Code", 1220], ["% Ownership - initial investment", 0.0778],
+              ["% Ownership - 6/30/2025", 0.074], ["% Ownership - 12/31/2025", 0.0682, "Cap table, October 2025"],
+              ["Investment", "Investment Value", "Cash Outlay", "MTM of Shares", "Investment Date", "# of Equity Shares", "Price", "Terms"],
+              ["Company 98A Series Seed-2 Preferred Shares", 1_097_254.9, 1_000_000, 97_254.9, dt.datetime(2022, 9, 21), 1_307_189, 0.765, "- Convertible"],
+              ["Company 98A Series Seed-2 Preferred Shares", 642_222, 0, 642_222, dt.datetime(2025, 12, 1), 1_307_189, 0.8394, "- marked up"],
+              ["Company 98A Series A Preferred Shares", 1_239_872.67, 1_239_872.67, None, dt.datetime(2025, 10, 7), 931_745, 1.3307, "- Convertible"],
+              [None, 2_979_349.49, 2_239_872.67, 739_476.82]):
+        co.append(r)
+    two = wb.create_sheet("Closed 9Q & 9R")
+    for r in (["Closed 9Q"], [], ["Entity Type", "Corporation"], ["Method of Accounting", "Measurement Alternative"],
+              ["GL Account", 190645], ["Company Code", 1220], ["% Ownership", 0.009, "Cap table"],
+              ["Investment", "Investment Balance", "Cash Outlay", "Return of Capital", "MTM Gain/(Loss)", "Investment Date"],
+              ["Closed 9Q Series B-1 Preferred Shares", 1_333_333, 1_333_333, None, None, dt.datetime(2018, 6, 26)],
+              ["Closed 9Q Series B-2 Preferred Shares", 666_667, 666_667, None, None, dt.datetime(2019, 3, 12)],
+              ["Acquisition", -2_000_000, 0, -2_797_000, 797_000, dt.datetime(2021, 9, 20)],
+              [None, 0, 2_000_000, -2_797_000, 797_000], [], [],
+              ["Closed 9R"], [], ["Entity Type", "Corporation"], ["Method of Accounting", "MTM each reporting period"],
+              ["GL Account", 190642], ["Company Code", 1220],
+              ["Investment", "Total Investment", "Cash Outlay/Cash Proceeds", "MTM of Shares", "Value", "Investment Date"],
+              ["Closed 9R Common Stock", 2_330_410, 0, 2_330_410, 2_330_410, dt.datetime(2021, 9, 20)],
+              ["Closed 9R sale of all shares", -2_411_500, 2_032_570, -378_931, None, dt.datetime(2021, 12, 9)]):
+        two.append(r)
+    sap = wb.create_sheet("SAP")
+    sap.append(["Update quarterly"]); sap.append(["Account", "P12 FY25", "P3 FY26"]); sap.append([190644, 13_353_400, 13_334_400])
+    buf = io.BytesIO()
+    wb.save(buf)
+    r = client.post("/api/upload", files={"files": ("Equity Investments Summary Workbook - Jun26 (test).xlsx", buf.getvalue())})
+    res = r.json()["results"][0]
+    names = {e["entity"] for e in res.get("entities", [])}
+    check(res["status"] == "ok" and res["report_type"] == "master_workbook" and res["period"] == "2026-Q2"
+          and names == {"Company 98A", "Company 98B", "Company 98G", "Fund 98", "Fund 97", "Note 9B", "Closed 9Q"}
+          and "Closed 9Z" not in names and "Closed 9R" not in names and "SAP" in " ".join(res["warnings"]),
+          "Equity Investments Summary: open positions, funds, notes and closed investments read; the "
+          "'Other' block, closed notes and tabs without a summary row left out; the period from the workbook date")
+    rep = client.get("/api/portfolio?as_of=2026-Q2").json()
+    funds = {x["entity"]: x for x in rep["funds"]}
+    cos = {x["entity"]: x for x in rep["companies"]}
+    D = lambda x: Decimal(str(x)) if x is not None else None
+    f98, f97 = funds["Fund 98"], funds["Fund 97"]
+    check(D(f98["drawn_to_date"]) == 5_000_000 and D(f98["commitment"]) == 5_000_000
+          and D(f98["investment_balance"]) == Decimal("4831951.58") and D(f98["future_draw"]) == 0
+          and D(f98["accounting"]["ownership_pct"]) == Decimal("7.298") and f98["accounting"]["gl_account"] == "190645"
+          and f98["accounting"]["initial_investment_date"] == "2016-12-15"
+          and len([c for c in f98["invested"] if c["source"] == "entered"]) == 3
+          and D(f97["distribution_to_date"]) == 1_339_361 and D(f97["drawn_to_date"]) == 6_871_259,
+          "funds: funding, commitment, balance, remaining commitment, distributions (sign dropped), ownership "
+          "from a fraction, dated capital calls from the tab named after the fund")
+    a, b, g, q = cos["Company 98A"], cos["Company 98B"], cos["Company 98G"], cos["Closed 9Q"]
+    da, db_, dq = a["details"], b["details"], q["details"]
+    check(D(a["total_invested"]) == Decimal("2239872.67") and D(da["book_value"]) == Decimal("2979349.49")
+          and da["holding_status"] == "Current" and D(da["ownership_pct"]) == Decimal("6.82")
+          and a["security"] == "Series A Preferred Shares" and da["accounting_method"] == "Measurement Alternative"
+          and len([c for c in a["invested"] if c["source"] == "entered"]) == 2
+          and db_["holding_status"] == "Impaired" and D(db_["impairment"]) == 1_400_000 and "ownership_pct" not in db_
+          and g["last_investment_date"] in (None, "") and "last_investment_date" not in g["details"],
+          "companies: cost from funding, balance as book value, impairment, the latest dated ownership, "
+          "the latest security, two real outlays as investments (a mark-up is not one), 'Pre 2014' is no date")
+    check(q["exited"] and dq["holding_status"] == "Exit" and D(q["exit"]["proceeds"]) == 2_797_000
+          and D(q["total_invested"]) == 2_000_000 and len([c for c in q["invested"] if c["source"] == "entered"]) == 2
+          and dq.get("operating_status") == "Inactive",
+          "a closed investment: exited with its proceeds, two outlays, the acquisition line not an investment")
+    S = client.get("/api/portfolio/summary?as_of=2026-Q2").json()
+    line = {ln["entity"]: ln for ln in S["lines"]}
+    check(line["Closed 9Q"]["status"] == "exited" and near(line["Closed 9Q"]["realized"], 797_000)
+          and line["Company 98B"]["status"] == "impaired" and near(line["Company 98B"]["book"], 599_994),
+          "the summary places them: a closed position's realized gain, an impaired position's book value")
 
 
 def deletes_and_odd_names() -> None:

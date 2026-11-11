@@ -335,6 +335,14 @@ a *Summary-Portfolio Value* sheet, and:
   from a stray heading; the upload result names the tabs it did not read.
 Each entity's own sheet wins over the summary tab for a field both carry.
 
+The **Equity Investments Summary** workbook is read the same way: its *Investments Summary*
+table gives each position (balance, funding, return of capital, impairment, commitment,
+remaining commitment, ownership, initial date — open equity investments, funds, notes, and
+closed investments as exits), and the backup tab behind each entity adds the accounting fields
+(entity type, method, GL account, company code, the latest dated ownership, terms) and the dated
+capital calls or securities bought. The "Other" block, converted notes and tabs with no row in
+the summary are left out and named in the result; its date cell sets the quarter.
+
 **Holdings sheet** (Investment Portfolio → Direct investments)
 A company's own statements never show what the stake cost or is worth. Instead of typing each
 company's details, **Download holdings sheet**, fill it in — or import the team's own

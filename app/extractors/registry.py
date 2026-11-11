@@ -384,7 +384,8 @@ def extract_file(path: Path, original_name: Optional[str] = None) -> ExtractionR
                 filename=name, file_hash=file_hash, detected_report_type="master_workbook",
                 report_type_confidence=1.0,
                 entity_name=f"{n_funds} fund(s), {n_cos} direct investment(s)",
-                period=period_from_name(name) or "", extractor="master", facts=[],
+                period=period_from_name(name) or reading.get("period") or "",
+                extractor="master", facts=[],
                 warnings=([f"Sheets not read (not an entity or summary sheet): "
                            + ", ".join(reading["skipped"])] if reading["skipped"] else []),
                 master=reading)

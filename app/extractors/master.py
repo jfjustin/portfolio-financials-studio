@@ -148,6 +148,265 @@ def _entity_sheet(ws) -> Optional[dict[str, Any]]:
             "values": values, "commitment": commitment, "calls": calls, "sheet": ws.title}
 
 
+# --------------------------------------------------------------------------
+# The accounting team's Equity Investments Summary workbook
+# --------------------------------------------------------------------------
+# its "Investments Summary" table, per kind of entity
+_SUMMARY_COLS = {
+    "investment balance": "balance", "gross investment funding": "funding",
+    "return of capital other cash proceeds": "returned", "return of capital": "returned",
+    "cumulative impairment": "impairment", "total commitment": "commitment",
+    "remaining commitment": "future_draw", "ownership": "ownership_pct",
+    "initial investment date": "initial_investment_date",
+}
+_SECTION_FUNDS = re.compile(r"^funds?$", re.I)
+_SECTION_CLOSED = re.compile(r"^closed investments$", re.I)
+_SECTION_SKIP = re.compile(r"^other$", re.I)
+_SECTION_NOTES = re.compile(r"note receivable|held-to-maturity|\bhtm\b", re.I)
+
+
+def _num(v: Any) -> Optional[Decimal]:
+    if isinstance(v, (int, float)) and not isinstance(v, bool):
+        return Decimal(str(v))
+    t = _text(v)
+    if not t or t.startswith("<") or t.lower() in ("n/a", "na", "-"):
+        return None
+    return parse_number(t)[0]
+
+
+def _amt(n: Optional[Decimal]) -> Optional[str]:
+    """A whole-unit amount to the cent; a float's rounding residue is nil."""
+    if n is None:
+        return None
+    q = n.quantize(Decimal("0.01"))
+    if q == 0:
+        return "0"
+    t = format(q, "f")                     # never "5E+6": that reads back as 56
+    return t[:-3] if t.endswith(".00") else t
+
+
+def _pct(v: Any) -> Optional[str]:
+    """An ownership cell: 0.0751 (a fraction) or 7.51 -> "7.51"; "< 1%" -> None."""
+    n = _num(v)
+    if n is None:
+        return None
+    return str(n * 100 if n < 1 else n)
+
+
+def _summary_table(ws) -> Optional[dict[str, Any]]:
+    """The "Investments Summary" sheet: one row per entity under section
+    headings (Equity Investments, Funds, Note Receivable, CLOSED INVESTMENTS),
+    a header row naming the columns above each block. Returns
+    {"records": [...], "period": "2026-Q2"} or None."""
+    rows = [list(r) for r in ws.iter_rows(values_only=True)]
+    header_idx = [i for i, r in enumerate(rows)
+                  if any(_key(c) == "investment balance" for c in r if isinstance(c, str))
+                  and any(_key(c).startswith("gross investment") for c in r if isinstance(c, str))]
+    if not header_idx:
+        return None
+    period = ""
+    for r in rows[:4]:
+        for c in r:
+            if hasattr(c, "isoformat"):
+                from .base import quarter_label
+                period = quarter_label(c.date() if hasattr(c, "date") else c)
+    cols: dict[int, str] = {}
+    name_col = 1
+    section, closed, notes = "", False, False
+    records: list[dict[str, Any]] = []
+    seen: dict[str, dict[str, Any]] = {}
+    for i, r in enumerate(rows):
+        texts = [(j, c) for j, c in enumerate(r) if isinstance(c, str) and c.strip()]
+        if i in header_idx:
+            cols = {}
+            for j, c in texts:
+                k = _key(c)
+                if k == "investment":
+                    name_col = j
+                for pat, field in _SUMMARY_COLS.items():
+                    if k == pat or (pat == "ownership" and k.startswith("ownership")):
+                        cols[j] = field
+                        break
+            continue
+        if not cols:
+            continue
+        nums = [c for c in r if isinstance(c, (int, float)) and not isinstance(c, bool)]
+        if len(texts) == 1 and not nums:                       # a section heading
+            title = texts[0][1].strip()
+            if _SECTION_CLOSED.match(title):
+                closed = True
+            section = title
+            notes = bool(_SECTION_NOTES.search(title))
+            continue
+        name = _text(r[name_col]) if name_col < len(r) else ""
+        if not name or re.match(r"total\b|check\b", name, re.I):
+            continue
+        if _SECTION_SKIP.match(section) or (closed and notes):
+            continue          # "Other", and closed notes: converted notes of companies listed above
+        classified = classify_document(name)
+        entity = classified["entity_name"] or re.sub(r"\s*\(.*\)\s*$", "", name).strip()
+        if entity.lower() in seen:
+            continue          # the first row for an entity is its current position
+        is_fund = classified["entity_kind"] == "fund" or bool(_SECTION_FUNDS.match(section))
+        got: dict[str, Any] = {}
+        for j, field in cols.items():
+            v = r[j] if j < len(r) else None
+            if v in (None, ""):
+                continue
+            got[field] = v
+        values: dict[str, str] = {}
+        if is_fund:
+            pairs = (("balance", "investment_balance"), ("funding", "drawn_to_date"),
+                     ("commitment", "commitment"), ("future_draw", "future_draw"))
+        else:
+            pairs = (("balance", "book_value"), ("funding", "total_invested"))
+        for src, dst in pairs:
+            n = _num(got.get(src))
+            if n is not None:
+                values[dst] = _amt(n)
+        returned = _num(got.get("returned"))
+        if is_fund and returned is not None:
+            values["distribution_to_date"] = _amt(abs(returned))
+        elif not is_fund and returned and closed and abs(returned) >= 1:
+            values["exit_proceeds"] = _amt(abs(returned))
+        impairment = _num(got.get("impairment"))
+        if not is_fund and impairment and abs(impairment) >= 1:
+            values["impairment"] = _amt(abs(impairment))
+        else:
+            impairment = None
+        pct = _pct(got.get("ownership_pct"))
+        if pct is not None:
+            values["ownership_pct"] = pct
+        from ..portfolio import parse_date
+        d = got.get("initial_investment_date")
+        iso = parse_date(_text(d)) if d not in (None, "") else None
+        if iso:                                  # "Pre 2014" is not a date: left out
+            values["initial_investment_date"] = iso
+            if not is_fund:
+                values["last_investment_date"] = iso
+        if not is_fund:
+            values["holding_status"] = ("Exit" if closed else "Impaired" if impairment else "Current")
+            if closed:
+                values.setdefault("operating_status", "Inactive")
+        if not values:
+            continue
+        commitment = values.pop("commitment", None)
+        rec = {"entity": entity, "kind": "fund" if is_fund else "direct_investment",
+               "values": values, "commitment": commitment, "calls": [], "sheet": ws.title}
+        seen[entity.lower()] = rec
+        records.append(rec)
+    return {"records": records, "period": period} if records else None
+
+
+_TAB_LABELS = {
+    "entity type": "entity_type", "method of accounting": "accounting_method",
+    "gl account": "gl_account", "company code": "company_code",
+    "initial investment date": "initial_investment_date", "terms": "terms",
+    "total commitment": "commitment", "remaining commitment": "future_draw",
+    "investment balance": "investment_balance",
+}
+_OWNERSHIP_DATED = re.compile(r"ownership\s*(?:-\s*)?(.*)$", re.I)
+
+
+def _accounting_tabs(ws) -> list[dict[str, Any]]:
+    """The backup tab(s) behind the summary: a block per entity — its name,
+    then label | value rows (Entity Type … Terms, Total Commitment), a
+    "Funding | Amount | Investment Date" table (funds, notes) or an
+    "Investment | … | Cash Outlay | … | Investment Date" table of securities
+    (companies). Two entities may share one tab."""
+    rows = [list(r) for r in ws.iter_rows(values_only=True)]
+    nonempty = [i for i, r in enumerate(rows) if any(c not in (None, "") for c in r)]
+    starts = []
+    for pos, i in enumerate(nonempty[:-1]):
+        r, nxt = rows[i], rows[nonempty[pos + 1]]
+        if (isinstance(r[0], str) and r[0].strip() and all(c in (None, "") for c in r[1:])
+                and isinstance(nxt[0], str) and _key(nxt[0]) in ("entity type", "method of accounting")):
+            starts.append(i)
+    out = []
+    for n, start in enumerate(starts):
+        end = starts[n + 1] if n + 1 < len(starts) else len(rows)
+        block = rows[start:end]
+        title = block[0][0].strip()
+        if len(title) < 3 and len(starts) == 1:
+            title = ws.title.strip()           # a stray mark in A1: the tab is named after its entity
+        classified = classify_document(title)
+        entity = classified["entity_name"] or title
+        values: dict[str, str] = {}
+        own: list[tuple[str, str]] = []          # (date text, value) for "% Ownership - 12/31/2025"
+        calls: list[dict[str, Any]] = []
+        securities: list[tuple[str, str]] = []  # (date, security) for the latest one held
+        table: Optional[dict[str, int]] = None
+        for r in block[1:]:
+            a = r[0]
+            if isinstance(a, str) and a.strip():
+                k = _key(a)
+                m = _OWNERSHIP_DATED.match(k)
+                if k.startswith("ownership") and len(r) > 1:
+                    pct = _pct(r[1])
+                    if pct is not None:
+                        own.append((m.group(1) if m else "", pct))
+                    continue
+                if k in _TAB_LABELS and len(r) > 1 and r[1] not in (None, ""):
+                    field = _TAB_LABELS[k]
+                    v = r[1]
+                    if field in ("commitment", "future_draw", "investment_balance"):
+                        num = _num(v)
+                        if num is None:
+                            continue
+                        v = _amt(num)
+                    else:
+                        v = _text(v)
+                        if _text(v).lower() in ("n/a", "na"):
+                            continue
+                    values.setdefault(field, v)
+                    continue
+                if k == "funding" and any(_key(c) == "investment date" for c in r if isinstance(c, str)):
+                    table = {"amount": 1, "date": next(j for j, c in enumerate(r)
+                                                       if isinstance(c, str) and _key(c) == "investment date")}
+                    continue
+                if k == "investment" and any(_key(c) == "investment date" for c in r if isinstance(c, str)):
+                    heads = {_key(c): j for j, c in enumerate(r) if isinstance(c, str)}
+                    outlay = next((j for h, j in heads.items() if h.startswith("cash outlay")), None)
+                    if outlay is not None:
+                        table = {"amount": outlay, "date": heads["investment date"], "securities": True}
+                    continue
+                if re.match(r"total\b", k):
+                    table = None
+                    continue
+            if table and isinstance(a, str) and a.strip():
+                amount = _num(r[table["amount"]] if table["amount"] < len(r) else None)
+                d = _text(r[table["date"]]) if table["date"] < len(r) else ""
+                if amount is None or amount <= 0 or not d:
+                    continue
+                # a sale, acquisition, mark-to-market or repayment line is not money put in
+                if table.get("securities") and (
+                        re.search(r"\bsale\b|sold|proceeds|acquisition|mtm|mark|repay|conver|"
+                                  r"distribut|write", a, re.I)
+                        or (_num(r[1]) is not None and _num(r[1]) < 0)):
+                    continue
+                amount = Decimal(_amt(amount))
+                desc = re.sub(rf"^{re.escape(entity)}\s*", "", a.strip(), flags=re.I) or a.strip()
+                desc = re.sub(rf"^{re.escape(title)}\s*", "", desc, flags=re.I) or desc
+                calls.append({"date": d, "description": desc, "amount": str(amount),
+                              "total_raise": None, "pre_money": None})
+                if table.get("securities"):
+                    securities.append((d, desc))
+        if own:
+            dated = [(t, v) for t, v in own if re.search(r"\d", t)]
+            values["ownership_pct"] = (max(dated, key=lambda tv: _text(tv[0]))[1] if dated
+                                       else next((v for t, v in own if not t), own[-1][1]))
+        if securities and "security" not in values:
+            values["security"] = max(securities)[1]
+        is_fund = classified["entity_kind"] == "fund" or (
+            classified["entity_kind"] == "unknown" and "commitment" in values)
+        if not is_fund:
+            values.pop("investment_balance", None)      # a company's balance is its book value
+        commitment = values.pop("commitment", None)
+        out.append({"entity": entity, "kind": "fund" if is_fund else "direct_investment",
+                    "values": values, "commitment": commitment, "calls": calls, "sheet": ws.title})
+    return out
+
+
 def read_master(path: Path) -> Optional[dict[str, Any]]:
     """{"records": [...], "sheets": [...], "skipped": [...]} when the workbook
     is a master workbook, else None."""
@@ -161,10 +420,23 @@ def read_master(path: Path) -> Optional[dict[str, Any]]:
     sheets: list[str] = []
     skipped: list[str] = []
     summary_rows: list[list[Any]] = []
+    period = ""
+    tab_records: list[dict[str, Any]] = []
     for ws in wb.worksheets:
         rec = _entity_sheet(ws)
         if rec:
             records.append(rec)
+            sheets.append(ws.title)
+            continue
+        table = _summary_table(ws)
+        if table:
+            records += table["records"]
+            period = period or table["period"]
+            sheets.append(ws.title)
+            continue
+        tabs = _accounting_tabs(ws)
+        if tabs:
+            tab_records += tabs
             sheets.append(ws.title)
             continue
         rows = [list(r) for r in ws.iter_rows(values_only=True)]
@@ -173,12 +445,26 @@ def read_master(path: Path) -> Optional[dict[str, Any]]:
             sheets.append(ws.title)
         else:
             skipped.append(ws.title)
-    if not records and not summary_rows:
+    if not records and not summary_rows and not tab_records:
         return None
-    if records or len(sheets) >= 1:
-        # a lone Summary-Portfolio Value sheet counts too: it names many entities
-        pass
     by_entity = {r["entity"].lower(): r for r in records}
+    has_summary = any(r["sheet"] != "summary" and not r.get("calls") and r["kind"]
+                      for r in records) and bool(period)
+    for t in tab_records:                 # the summary row is the position; the tab adds detail
+        rec = by_entity.get(t["entity"].lower())
+        if rec is None:
+            if has_summary:
+                # a backup tab with no row in the summary (a converted note, a closed
+                # position the summary leaves out) is detail without a position: skipped
+                skipped.append(f"{t['sheet']} ({t['entity']}: not in the Investments Summary)")
+                continue
+            records.append(t)
+            by_entity[t["entity"].lower()] = t
+            continue
+        for k, v in t["values"].items():
+            rec["values"].setdefault(k, v)
+        rec["commitment"] = rec["commitment"] or t["commitment"]
+        rec["calls"] = rec["calls"] or t["calls"]
     if summary_rows:
         reading = read_holdings(summary_rows)
         for h in reading["records"]:
@@ -193,7 +479,7 @@ def read_master(path: Path) -> Optional[dict[str, Any]]:
             if rec["commitment"] is None and h.get("commitment"):
                 rec["commitment"] = h["commitment"]
         skipped += [f"row {e['row']} ({e['company']}): {e['message']}" for e in reading["errors"]]
-    return {"records": records, "sheets": sheets, "skipped": skipped}
+    return {"records": records, "sheets": sheets, "skipped": skipped, "period": period}
 
 
 def apply_master(reading: dict[str, Any], user: str = "local") -> dict[str, Any]:
