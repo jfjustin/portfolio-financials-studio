@@ -168,13 +168,18 @@
           <div class="dif-controls">
             <label class="small muted">Year <select id="dif-year" aria-label="Report year"></select></label>
             <label class="small muted">Period <select id="dif-period" aria-label="Report period"></select></label>
+            <label class="small muted" title="Any run of quarters, across years: flows added up, cash as of the last quarter, burn over the months">
+              Or from <select id="dif-from" aria-label="Range start quarter"><option value="">—</option></select></label>
+            <label class="small muted">to <select id="dif-to" aria-label="Range end quarter"><option value="">—</option></select></label>
             <a class="btn sm primary" id="dif-export" href="/api/exports/direct-investment-financials.xlsx">Download xlsx</a>
           </div>
         </div>
         <p class="report-sub">Each portfolio company's own P&amp;L, balance sheet and cash-flow figures,
           in $000 — approved values only. Burn and runway are computed: Gross Monthly Burn = Operating
           Expense ÷ months · Net Monthly Burn = −(Operating Cash Flow + CapEx) ÷ months · Runway =
-          Ending Cash ÷ monthly burn. Type budgets (in $000) into the Budget rows.</p>
+          Ending Cash ÷ monthly burn. Type budgets (in $000) into the Budget rows. Pick a quarter, the
+          year, or any run of quarters (from … to, across years): flows add up over the quarters that
+          have figures, cash is as of the last of them, burn is over the months they cover.</p>
         <div class="scroll"><table class="tbl-report tbl-dif">
           <thead><tr><th class="lbl">Company</th><th class="lbl"></th><th>Revenue</th>
             <th>Operating Cash Flow</th><th>CapEx</th><th>Ending Cash</th><th>Operating Expense</th>

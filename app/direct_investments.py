@@ -163,21 +163,77 @@ def _year_total(parts: list[dict[str, Optional[Decimal]]]) -> dict[str, Optional
     return out
 
 
-def report(year: Optional[int] = None) -> dict[str, Any]:
-    """The report for one calendar year (default: the latest with actuals)."""
+def quarters_between(start: str, end: str) -> list[str]:
+    """"2025-Q3", "2026-Q2" -> the quarters from one to the other, inclusive."""
+    if not (re.fullmatch(r"20\d{2}-Q[1-4]", start or "") and re.fullmatch(r"20\d{2}-Q[1-4]", end or "")):
+        raise ValueError("start and end must be quarters, e.g. 2025-Q3 and 2026-Q2")
+    a, b = int(start[:4]) * 4 + int(start[-1]) - 1, int(end[:4]) * 4 + int(end[-1]) - 1
+    if b < a:
+        a, b = b, a
+    if b - a >= 40:
+        raise ValueError("a range covers at most ten years")
+    return [f"{n // 4}-Q{n % 4 + 1}" for n in range(a, b + 1)]
+
+
+def range_column(company: str, quarters: list[str], actuals: dict, budgets: dict) -> dict[str, Any]:
+    """One company over several quarters, as one column: flows added up over
+    the quarters that have the figure, cash as of the latest quarter with it,
+    burn over the months those quarters cover, and which quarters are missing."""
+    parts = [{k: d["value"] for k, d in actuals.get((company, q), {}).items() if k in BASE}
+             for q in quarters]
+    have = [q for q, part in zip(quarters, parts) if part]
+    act: dict[str, Optional[Decimal]] = {}
+    covered: dict[str, list[str]] = {}
+    for k in _FLOWS:
+        vals = [(q, part.get(k)) for q, part in zip(quarters, parts) if part.get(k) is not None]
+        act[k] = sum((v for _q, v in vals), Decimal(0)) if vals else None
+        covered[k] = [q for q, _v in vals]
+    cash = [(q, part.get("ending_cash")) for q, part in zip(quarters, parts)
+            if part.get("ending_cash") is not None]
+    act["ending_cash"] = cash[-1][1] if cash else None
+    months = 3 * len(have)
+    bud_parts = [{m: v for (c, p, m), v in budgets.items() if c == company and p == q} for q in quarters]
+    bud: dict[str, Optional[Decimal]] = {}
+    if all(bud_parts):
+        for k in _FLOWS:
+            vals = [b.get(k) for b in bud_parts]
+            bud[k] = sum(vals, Decimal(0)) if all(v is not None for v in vals) else None
+        bud["ending_cash"] = bud_parts[-1].get("ending_cash")
+    missing = [q for q in quarters if q not in have]
+    partial = [k for k in _FLOWS if act[k] is not None and len(covered[k]) < len(have)]
+    labels = dict(ROWS)
+    issues = []
+    if missing and have:
+        issues.append({"kind": "missing", "message": f"no approved figures for {', '.join(missing)} — "
+                       "the totals cover " + ", ".join(have) + " only"})
+    if partial:
+        issues.append({"kind": "estimate", "message": ", ".join(labels[k] for k in partial)
+                       + ": not in every quarter covered — added up over the quarters that have it"})
+    return {"actual": {**act, **derive(act, months)} if have else {},
+            "budget": {**bud, **derive(bud, 3 * len(quarters))} if bud else {},
+            "sources": {}, "pending": {}, "checks": [], "issues": issues,
+            "months": months, "quarters": have, "missing": missing, "partial": partial}
+
+
+def report(year: Optional[int] = None, start: Optional[str] = None,
+           end: Optional[str] = None) -> dict[str, Any]:
+    """The report for one calendar year (default: the latest with actuals);
+    with `start` and `end` quarters, one more column covering that range."""
     actuals, pending, conflicts = _actuals()
     budgets = db.get_budgets()
     years = sorted({int(q[:4]) for _c, q in actuals}
                    | {int(p[:4]) for _c, p, _m in budgets if p[:4].isdigit()})
+    span = quarters_between(start, end) if start and end else []
+    range_key = f"{span[0]}..{span[-1]}" if span else None
     if year is None:
-        year = years[-1] if years else date.today().year
+        year = int(span[-1][:4]) if span else (years[-1] if years else date.today().year)
     quarters = [f"{year}-Q{n}" for n in range(1, 5)]
     unread: dict[tuple[str, str], list[dict]] = {}
     for sub in db.unread_submissions():
         q = _quarter_of(sub["period"] or "")
         if sub["report_type"] == "company_financials" and q:
             unread.setdefault((sub["entity_name"], q), []).append(sub)
-    companies = sorted({c for c, q in actuals if q in quarters}
+    companies = sorted({c for c, q in actuals if q in quarters or q in span}
                        | {c for c, p, _m in budgets if p[:4] == str(year)}
                        | {c for c, q in pending if q in quarters}
                        | {c for c, q in unread if q in quarters}, key=_natural)
@@ -226,8 +282,16 @@ def report(year: Optional[int] = None) -> dict[str, Any]:
             "budget": {**bud_year, **derive(bud_year, 12)} if bud_year else {},
             "sources": {}, "pending": {}, "checks": [], "issues": [],
             "months": 3 * len(act_parts)}
+        if range_key:
+            cols[range_key] = range_column(company, span, actuals, budgets)
         out.append({"company": company, "currency": currency, "columns": cols})
-    return {"year": year, "years": years or [year], "periods": quarters + [str(year)],
+    all_quarters = sorted({q for _c, q in actuals} | {p for _c, p, _m in budgets
+                                                      if re.fullmatch(r"20\d{2}-Q[1-4]", p)})
+    return {"year": year, "years": years or [year],
+            "periods": quarters + [str(year)] + ([range_key] if range_key else []),
+            "range": {"key": range_key, "start": span[0], "end": span[-1], "quarters": span}
+            if span else None,
+            "quarters_on_file": all_quarters,
             "latest_quarter": latest, "rows": [{"key": k, "label": l} for k, l in ROWS],
             "companies": out}
 
@@ -274,19 +338,25 @@ def default_quarter(rep: dict) -> int:
     return int(lq[-1]) if lq else 1
 
 
-def workbook(year: Optional[int] = None, quarter: Optional[int] = None) -> tuple[bytes, str]:
-    """(xlsx bytes, file name) — "Direct Investment Financials Q1 2026.xlsx"."""
+def workbook(year: Optional[int] = None, quarter: Optional[int] = None,
+             start: Optional[str] = None, end: Optional[str] = None) -> tuple[bytes, str]:
+    """(xlsx bytes, file name) — "Direct Investment Financials Q1 2026.xlsx"; with a
+    start and end quarter, one more Budget | Actual pair for that range."""
     from openpyxl import Workbook
     from openpyxl.comments import Comment
     from openpyxl.styles import Alignment, Font, PatternFill
     from openpyxl.utils import get_column_letter
 
-    rep = report(year)
+    rep = report(year, start, end)
     year = rep["year"]
     quarter = quarter or default_quarter(rep)
     title = f"Direct Investment Financials Q{quarter} {year}"
     yy = str(year)[-2:]
     heads = [f"Q{n}'{yy}" for n in range(1, 5)] + [str(year)]
+    if rep["range"]:
+        r0, r1 = rep["range"]["start"], rep["range"]["end"]
+        heads.append(f"Q{r0[-1]}'{r0[2:4]}–Q{r1[-1]}'{r1[2:4]}")
+        title += f" ({r0} to {r1})"
     bold = Font(bold=True)
     pending_fill = PatternFill("solid", fgColor="FFF4CE")
 

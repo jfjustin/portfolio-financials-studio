@@ -343,6 +343,13 @@ closed investments as exits), and the backup tab behind each entity adds the acc
 capital calls or securities bought. The "Other" block, converted notes and tabs with no row in
 the summary are left out and named in the result; its date cell sets the quarter.
 
+**Any run of quarters** (Direct Investment Financials → *Or from … to*)
+Besides a quarter or the year, pick a start and end quarter, across years ("Q3'25 to Q1'26"). The
+flows (revenue, operating cash flow, CapEx, operating expense) add up over the quarters that have
+approved figures, Ending Cash is as of the last of them, burn is over the months those quarters
+cover, and runway follows. Quarters with no figures, and a figure missing from some of them, are
+named under the table. The export carries the range as one more Budget | Actual pair.
+
 **IRR** (its own section — the workbook's IRR tab)
 Money-weighted (XIRR) returns as of a quarter, from dated cash flows in USD: capital calls and
 investments out (the dated calls entered or imported; failing those a fund's quarterly funding

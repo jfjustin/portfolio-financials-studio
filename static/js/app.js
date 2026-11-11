@@ -41,7 +41,14 @@
     if (ps.detail) b.title = ps.detail;
     setupNav();
     $("#ledger-filter").addEventListener("input", renderLedger);
-    $("#dif-year").addEventListener("change", e => loadDirectInvestments(+e.target.value));
+    $("#dif-year").addEventListener("change", e => { DIF_RANGE = null; loadDirectInvestments(+e.target.value); });
+    const pickRange = () => {
+      const a = $("#dif-from").value, b = $("#dif-to").value;
+      if (a && b) { DIF_RANGE = { start: a <= b ? a : b, end: a <= b ? b : a }; loadDirectInvestments(null); }
+      else if (!a && !b && DIF_RANGE) { DIF_RANGE = null; loadDirectInvestments(DIF.year); }
+    };
+    $("#dif-from").addEventListener("change", pickRange);
+    $("#dif-to").addEventListener("change", pickRange);
     $("#irr-asof").addEventListener("change", e => loadIrr(e.target.value));
     $$(".irr-split .btn").forEach(b => b.addEventListener("click", () => { IRR_SPLIT = b.dataset.split; renderIrr(); }));
     $("#dif-period").addEventListener("change", renderDif);
@@ -227,14 +234,26 @@
         ? '<span class="muted" title="Not burning cash in this period">n/a</span>'
         : '<span class="muted">—</span>');
 
+  let DIF_RANGE = null;   // {start, end} when a run of quarters is chosen
+  const qLabel = q => `Q${q.slice(-1)}'${q.slice(2, 4)}`;
   async function loadDirectInvestments(year) {
-    DIF = await api("/api/direct-investments" + (year ? "?year=" + year : ""));
+    const qs = [];
+    if (year) qs.push("year=" + year);
+    if (DIF_RANGE) qs.push("start=" + DIF_RANGE.start, "end=" + DIF_RANGE.end);
+    const res = await fetch("/api/direct-investments" + (qs.length ? "?" + qs.join("&") : ""));
+    if (!res.ok) { toast("Range not shown: " + (await failText(res))); DIF_RANGE = null; return loadDirectInvestments(year); }
+    DIF = await res.json();
     $("#dif-year").innerHTML = DIF.years.map(y =>
       `<option value="${y}" ${y === DIF.year ? "selected" : ""}>${y}</option>`).join("");
     const ps = $("#dif-period"), keep = ps.value, yy = String(DIF.year).slice(2);
     ps.innerHTML = DIF.periods.map((p, i) =>
-      `<option value="${p}">${i < 4 ? `Q${i + 1}'${yy}` : `${DIF.year} (year)`}</option>`).join("");
-    ps.value = DIF.periods.includes(keep) ? keep : (DIF.latest_quarter || DIF.periods[0]);
+      `<option value="${p}">${i < 4 ? `Q${i + 1}'${yy}` : i === 4 ? `${DIF.year} (year)`
+        : `${qLabel(DIF.range.start)} – ${qLabel(DIF.range.end)} (${DIF.range.quarters.length} quarters)`}</option>`).join("");
+    ps.value = DIF.range ? DIF.range.key : (DIF.periods.includes(keep) ? keep : (DIF.latest_quarter || DIF.periods[0]));
+    // any quarter on file, plus the chosen year's, as range ends
+    const all = [...new Set((DIF.quarters_on_file || []).concat([1, 2, 3, 4].map(n => `${DIF.year}-Q${n}`)))].sort();
+    for (const [id, cur] of [["#dif-from", DIF_RANGE && DIF_RANGE.start], ["#dif-to", DIF_RANGE && DIF_RANGE.end]])
+      $(id).innerHTML = '<option value="">—</option>' + all.map(q => `<option value="${q}" ${q === cur ? "selected" : ""}>${qLabel(q)}</option>`).join("");
     $("#dif-companies").innerHTML = DIF.companies.map(c => `<option value="${esc(c.company)}">`).join("");
     $("#dif-manual-q").innerHTML = DIF.periods.slice(0, 4).map(p =>
       `<option ${p === (DIF.latest_quarter || DIF.periods[0]) ? "selected" : ""}>${p}</option>`).join("");
@@ -243,9 +262,9 @@
 
   function renderDif() {
     const per = $("#dif-period").value;
-    const q = per.includes("-Q") ? per.slice(-1) : "";
+    const q = /^\d{4}-Q\d$/.test(per) ? per.slice(-1) : "";
     $("#dif-export").href = `/api/exports/direct-investment-financials.xlsx?year=${DIF.year}` +
-      (q ? `&quarter=${q}` : "");
+      (q ? `&quarter=${q}` : "") + (DIF.range ? `&start=${DIF.range.start}&end=${DIF.range.end}` : "");
     const tb = $("#dif-body"); tb.innerHTML = "";
     if (!DIF.companies.length) {
       tb.innerHTML = '<tr><td colspan="11" class="muted" style="text-align:left">No direct-investment ' +
@@ -254,8 +273,10 @@
       $("#dif-attention").innerHTML = "";
       return;
     }
-    const editable = per.includes("-Q") || /^\d{4}$/.test(per);
-    const quarter = per.includes("-Q");
+    const editable = /^\d{4}-Q\d$/.test(per) || /^\d{4}$/.test(per);
+    const quarter = /^\d{4}-Q\d$/.test(per);
+    $("#dif-card .report-title").textContent = "Direct Investment Financials" +
+      (DIF.range && per === DIF.range.key ? ` — ${qLabel(DIF.range.start)} to ${qLabel(DIF.range.end)}` : "");
     DIF.companies.forEach(c => {
       const col = c.columns[per] || { actual: {}, budget: {}, sources: {}, pending: [], checks: [] };
       const tr = document.createElement("tr");

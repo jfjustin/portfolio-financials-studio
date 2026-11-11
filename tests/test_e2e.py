@@ -103,6 +103,7 @@ def main() -> int:
     master_workbook()
     equity_investments_workbook()
     irr_section()
+    period_ranges()
     deletes_and_odd_names()
     clear_data(samples)
 
@@ -1556,6 +1557,56 @@ def equity_investments_workbook() -> None:
     check(line["Closed 9Q"]["status"] == "exited" and near(line["Closed 9Q"]["realized"], 797_000)
           and line["Company 98B"]["status"] == "impaired" and near(line["Company 98B"]["book"], 599_994),
           "the summary places them: a closed position's realized gain, an impaired position's book value")
+
+
+def period_ranges() -> None:
+    """Direct Investment Financials over any run of quarters: flows added up,
+    cash as of the last quarter, burn over the months covered, missing
+    quarters named; the export carries the range as one more column."""
+    import io
+
+    import openpyxl
+    from fastapi.testclient import TestClient
+
+    from app.main import app
+
+    client = TestClient(app)
+    def manual(q, metric, value):
+        client.post("/api/manual-values", json={"entity": "Company 95R", "report_type": "company_financials",
+                                                "period": q, "metric": metric, "value": value, "scale": 1000})
+    for q, rev, opex, ocf, capex, cash in (("2025-Q4", "100", "300", "(250)", "(50)", "2,000"),
+                                           ("2026-Q1", "140", "330", "(280)", "(20)", "1,700")):
+        for m, v in (("revenue", rev), ("operating_expense", opex), ("operating_cash_flow", ocf),
+                     ("capex", capex), ("ending_cash", cash)):
+            manual(q, m, v)
+    R = client.get("/api/direct-investments?start=2025-Q4&end=2026-Q2").json()
+    key = R["range"]["key"]
+    co = next(c for c in R["companies"] if c["company"] == "Company 95R")
+    col = co["columns"][key]
+    a = col["actual"]
+    D = lambda x: Decimal(str(x))
+    check(R["year"] == 2026 and key == "2025-Q4..2026-Q2" and R["range"]["quarters"] == ["2025-Q4", "2026-Q1", "2026-Q2"]
+          and key in R["periods"] and D(a["revenue"]) == 240_000 and D(a["operating_expense"]) == 630_000
+          and D(a["ending_cash"]) == 1_700_000 and col["months"] == 6 and col["missing"] == ["2026-Q2"],
+          "a range across years: revenue and opex added up over the quarters with figures, cash as of the "
+          "last of them, six months covered, the quarter without figures named")
+    check(D(a["gross_monthly_burn"]) == 105_000 and D(a["net_monthly_burn"]) == 100_000
+          and a["gross_runway"] == 16 and a["net_runway"] == 17
+          and any(i["kind"] == "missing" and "2026-Q2" in i["message"] for i in col["issues"]),
+          "burn = flows ÷ months covered, runway from the last cash; the gap is flagged")
+    R2 = client.get("/api/direct-investments?start=2026-Q1&end=2025-Q4").json()
+    check(R2["range"]["key"] == "2025-Q4..2026-Q1" and R2["companies"] and
+          client.get("/api/direct-investments?start=2025-Q4&end=2026").status_code == 400
+          and client.get("/api/direct-investments?start=2010-Q1&end=2026-Q1").status_code == 400,
+          "from/to in either order; a bad quarter or a range over ten years is refused")
+    x = client.get("/api/exports/direct-investment-financials.xlsx?start=2025-Q4&end=2026-Q2")
+    wb = openpyxl.load_workbook(io.BytesIO(x.content))
+    ws = next(w for w in wb.worksheets if w.title.startswith("Company 95R"))
+    heads = [c.value for c in ws[1] if c.value]
+    rev_row = next(r for r in range(3, 12) if ws.cell(r, 1).value == "Revenue")
+    check("Q4'25–Q2'26" in heads and abs(float(ws.cell(rev_row, 13).value) - 240.0) < 0.001
+          and "2025-Q4 to 2026-Q2" in x.headers.get("content-disposition", ""),
+          "the workbook carries the range as a sixth Budget | Actual pair, in $000, named in the file")
 
 
 def irr_section() -> None:

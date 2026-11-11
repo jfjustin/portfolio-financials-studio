@@ -269,9 +269,14 @@ def performance_summary():
 
 
 @app.get("/api/direct-investments")
-def direct_investment_report(year: Optional[int] = None):
-    """Lam's "Direct Investment Financials": Budget | Actual per company and quarter."""
-    return direct_investments.report(year)
+def direct_investment_report(year: Optional[int] = None, start: Optional[str] = None,
+                             end: Optional[str] = None):
+    """Lam's "Direct Investment Financials": Budget | Actual per company and
+    quarter; with start and end quarters, one more column over that range."""
+    try:
+        return direct_investments.report(year, start, end)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
 
 
 @app.post("/api/budgets")
@@ -372,11 +377,15 @@ async def add_value_to_submission(sub_id: int, request: Request):
 
 
 @app.get("/api/exports/direct-investment-financials.xlsx")
-def export_direct_investments(year: Optional[int] = None, quarter: Optional[int] = None):
+def export_direct_investments(year: Optional[int] = None, quarter: Optional[int] = None,
+                              start: Optional[str] = None, end: Optional[str] = None):
     """The "Direct Investment Financials Qn YYYY" workbook in Lam's layout."""
     if quarter is not None and quarter not in (1, 2, 3, 4):
         raise HTTPException(400, "quarter must be 1-4")
-    data, name = direct_investments.workbook(year, quarter)
+    try:
+        data, name = direct_investments.workbook(year, quarter, start, end)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
     return StreamingResponse(
         io.BytesIO(data),
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
