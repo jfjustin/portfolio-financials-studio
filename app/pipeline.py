@@ -15,13 +15,13 @@ from typing import Any, Optional
 from . import carry_forward, db, lake, storage
 from .config import settings
 from .extractors.registry import extract_file
-from .validate import validate_facts
+from .validate import scale_checks, validate_facts
 
 
 def process_path(path: Path, *, save_copy: bool = True,
                  allow_duplicate: bool = False,
                  display_name: Optional[str] = None,
-                 source_key: Optional[str] = None) -> dict[str, Any]:
+                 source_key: Optional[str] = None, user: str = "local") -> dict[str, Any]:
     """Process a file already on disk. Returns a summary dict."""
     result = extract_file(path, original_name=display_name)
 
@@ -41,6 +41,7 @@ def process_path(path: Path, *, save_copy: bool = True,
 
     # run validation (mutates fact flags/status in place)
     checks = validate_facts(result.detected_report_type, result.facts)
+    checks += scale_checks(result.detected_report_type, result.entity_name, result.facts)
 
     # optionally keep an immutable copy of the source (local dir or Azure Blob)
     if save_copy:
@@ -50,7 +51,7 @@ def process_path(path: Path, *, save_copy: bool = True,
             pass  # copy is best-effort; extraction already succeeded
 
     sub_id = db.save_extraction(result, source_key=source_key)
-    _after_save(result, sub_id)
+    _after_save(result, sub_id, user=user)
     # 02 Land + 04 Bronze: the original and the extraction as produced
     lake.record_extraction(sub_id, result, path, revision=1)
     lake.request_sync()
@@ -76,10 +77,19 @@ def process_path(path: Path, *, save_copy: bool = True,
         "checks": [c.to_dict() for c in checks],
         "n_errors": len(errors),
         "warnings": result.warnings,
+        # a master workbook: who was filled in, not facts
+        "entities": ((result.master or {}).get("applied") or {}).get("updated", []),
+        "calls_added": ((result.master or {}).get("applied") or {}).get("calls_added", 0),
     }
 
 
-def _after_save(result, sub_id: int) -> None:
+def _after_save(result, sub_id: int, user: str = "local") -> None:
+    if result.master:
+        from .extractors.master import apply_master
+        applied = apply_master(result.master, user=user)
+        result.warnings.extend(applied["errors"])
+        result.master["applied"] = applied
+        return
     if result.detected_report_type != carry_forward.RF:
         return
     # the investor's own statement replaces figures computed pro-rata from a
@@ -102,8 +112,9 @@ def reprocess_submission(sub_id: int, user: str = "local") -> dict[str, Any]:
     result = extract_file(path, original_name=sub["filename"])
     carry_forward.apply_to_result(result)
     checks = validate_facts(result.detected_report_type, result.facts)
+    checks += scale_checks(result.detected_report_type, result.entity_name, result.facts)
     counts = db.replace_extraction(sub_id, result, user=user)
-    _after_save(result, sub_id)
+    _after_save(result, sub_id, user=user)
     lake.record_extraction(sub_id, result, path,
                            revision=db.get_submission(sub_id).get("revision") or 1)
     lake.request_sync()
@@ -114,7 +125,7 @@ def reprocess_submission(sub_id: int, user: str = "local") -> dict[str, Any]:
 
 
 def process_upload(filename: str, raw_bytes: bytes,
-                   allow_duplicate: bool = False) -> dict[str, Any]:
+                   allow_duplicate: bool = False, user: str = "local") -> dict[str, Any]:
     """Process bytes received from the web upload endpoint."""
     settings.ensure_dirs()
     safe_name = Path(filename).name
@@ -128,7 +139,7 @@ def process_upload(filename: str, raw_bytes: bytes,
         tmp = Path(tf.name)
     try:
         return process_path(tmp, save_copy=False, allow_duplicate=allow_duplicate,
-                            display_name=safe_name, source_key=source_key or None)
+                            display_name=safe_name, source_key=source_key or None, user=user)
     finally:
         try:
             tmp.unlink()

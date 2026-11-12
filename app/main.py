@@ -13,11 +13,9 @@ import re
 import io
 import json
 import secrets
-from datetime import date
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal
 from pathlib import Path
 from typing import Optional
-from urllib.parse import parse_qs, urlsplit
 
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import (HTMLResponse, JSONResponse, RedirectResponse,
@@ -26,7 +24,7 @@ from fastapi.staticfiles import StaticFiles
 from starlette.concurrency import run_in_threadpool
 from fastapi.templating import Jinja2Templates
 
-from . import (auth, carry_forward, db, direct_investments, fabric_export, lake, performance,
+from . import (auth, carry_forward, db, direct_investments, fabric_export, irr, lake, performance,
                portfolio, terms)
 from .config import settings
 from .llm import get_provider
@@ -78,6 +76,16 @@ async def lake_follows_changes(request: Request, call_next):
 
 
 @app.middleware("http")
+async def read_once_per_request(request: Request, call_next):
+    """A GET computes each shared read (approved values, the roll-forward) once."""
+    token = db.request_cache_scope(request.method == "GET")
+    try:
+        return await call_next(request)
+    finally:
+        db._REQUEST_CACHE.reset(token)
+
+
+@app.middleware("http")
 async def cache_headers(request: Request, call_next):
     response = await call_next(request)
     path = request.url.path
@@ -85,14 +93,27 @@ async def cache_headers(request: Request, call_next):
         response.headers["Cache-Control"] = (
             "public, max-age=31536000, immutable" if "v" in request.query_params
             else "no-cache")
-    elif (response.headers.get("content-type", "").startswith("text/html")
-          and "Cache-Control" not in response.headers):
+    elif path == "/portfolio-dashboard":
+        response.headers["Cache-Control"] = "private, no-store"
+    elif response.headers.get("content-type", "").startswith("text/html"):
         response.headers["Cache-Control"] = "no-cache"
     return response
 
 
+@app.exception_handler(Exception)
+async def _unexpected(request: Request, exc: Exception):
+    """An unexpected failure answers in JSON like every other error, so the
+    page can say what happened instead of "undefined"."""
+    import logging
+    logging.getLogger("pfs").exception("unhandled error on %s %s", request.method, request.url.path)
+    return JSONResponse({"detail": f"The server hit an unexpected error ({type(exc).__name__}) — "
+                                   "try again; if it keeps happening, send the audit log entry"},
+                        status_code=500)
+
+
 @app.on_event("startup")
 def _startup() -> None:
+    auth.check_configuration()
     db.init_db()
 
 
@@ -113,122 +134,44 @@ def index(request: Request):
 
 @app.get("/portfolio-dashboard", response_class=HTMLResponse)
 def portfolio_dashboard(request: Request):
-    """Show the separately supplied workbook snapshot through the Studio's auth."""
-    snapshot_path = settings.data_dir / "portfolio-dashboard.json"
+    """Independent browser-only dashboard; Studio ingestion/data are not used."""
     snapshot = None
-    comparison = []
-    charts = []
-    source = None
-    period = None
+    snapshot_path = settings.data_dir / "portfolio-dashboard.json"
     try:
         snapshot = json.loads(snapshot_path.read_text(encoding="utf-8"))
-        rows = snapshot["sections"][1]["rows"]
-        categories = [("Core", rows[2]), ("Life Sciences", rows[1])]
-        amounts = [
-            [Decimal(value.replace("$", "").replace("M", "").replace(",", "")) for value in row[2:4]]
-            for _, row in categories
-        ]
-        scale = max(Decimal(1), *(abs(value) for pair in amounts for value in pair))
-        comparison = [
-            (name, [
-                (index, label, row[column], round(abs(amount) * 100 / scale, 2), False)
-                for index, (label, column, amount) in enumerate(zip(
-                    ("Paid-in capital", "Total value"), (2, 3), pair
-                ))
-            ])
-            for (name, row), pair in zip(categories, amounts)
-        ]
-        direct = snapshot["sections"][0]["rows"]
-        investments = [row for row in direct if not row[0].startswith("Total")]
-        charts = [
-            _snapshot_chart("Capital by investment type", "USD millions", investments,
-                            [(2, "Investment cost")]),
-            _snapshot_chart("Realized and unrealized gains", "USD millions", investments,
-                            [(7, "Realized"), (8, "Unrealized")]),
-            _snapshot_chart("Portfolio multiples by category", "Multiple of paid-in capital", rows[1:],
-                            [(11, "TVPI"), (12, "DPI")]),
-            _snapshot_chart("Capital allocation by category", "Percent of capital", rows[1:],
-                            [(14, "Capital allocation")], maximum=Decimal(100), donut=True),
-            _snapshot_chart("Impairment by category", "USD millions",
-                            [row for _, row in categories], [(5, "Impairment")]),
-        ]
-        url = urlsplit(snapshot.get("source", ""))
-        period = snapshot.get("period")
-        if url.scheme == "https" and url.hostname:
-            source = url.geturl()
-            source_month, *_ = parse_qs(url.query).get("asOf", [""])
-            if re.fullmatch(r"\d{4}-\d{2}", source_month):
-                try:
-                    period = date.fromisoformat(f"{source_month}-01").strftime("%B %Y")
-                except ValueError:
-                    pass
-    except FileNotFoundError:
+    except (FileNotFoundError, json.JSONDecodeError):
         pass
     return templates.TemplateResponse(request, "portfolio_dashboard.html", {
         "snapshot": snapshot,
-        "comparison": comparison,
-        "charts": charts,
-        "source": source,
-        "period": period,
         "auth_mode": settings.auth_mode,
         "user": auth.current_user(request) or "",
     }, headers={"Cache-Control": "private, no-store"})
-
-
-def _snapshot_chart(title, unit, rows, series, maximum=None, donut=False):
-    """Keep the source labels and use numeric values only for chart geometry."""
-    groups = []
-    for row in rows:
-        marks = []
-        for index, (column, label) in enumerate(series):
-            if column >= len(row):
-                continue
-            display = str(row[column])
-            try:
-                value = Decimal(display.translate(str.maketrans("", "", "$M,%x")))
-            except InvalidOperation:
-                continue
-            if value.is_finite():
-                marks.append((index, label, display, value))
-        if marks:
-            groups.append((row[0], marks))
-
-    values = [mark[3] for _, marks in groups for mark in marks]
-    signed = any(value < 0 for value in values)
-    scale = max(Decimal(1), maximum or Decimal(0), *(abs(value) for value in values))
-    return {
-        "title": title,
-        "unit": unit,
-        "series": [label for _, label in series],
-        "signed": signed,
-        "donut_split": values[0] if donut and len(values) == 2 and not signed
-        and sum(values) == 100 else None,
-        "groups": [
-            (name, [(index, label, display, round(abs(value) * (50 if signed else 100) / scale, 2),
-                     value < 0) for index, label, display, value in marks])
-            for name, marks in groups
-        ],
-    }
 
 
 # --------------------------------------------------------------------------
 # Auth pages / routes (active only when AUTH_MODE != none)
 # --------------------------------------------------------------------------
 @app.get("/login", response_class=HTMLResponse)
-def login_page(request: Request, error: str = ""):
+def login_page(request: Request, error: str = "", expired: str = ""):
     if auth.current_user(request):
         return RedirectResponse("/", status_code=302)
     return templates.TemplateResponse(request, "login.html", {
-        "auth_mode": settings.auth_mode, "error": error,
+        "auth_mode": settings.auth_mode, "error": error, "expired": expired,
     })
 
 
 @app.post("/api/login")
-def login_submit(password: str = Form("")):
+def login_submit(request: Request, password: str = Form("")):
     if settings.auth_mode != "password":
         raise HTTPException(400, "password login is not enabled")
+    if auth.login_locked(request):
+        return RedirectResponse("/login?error=locked", status_code=302)
     if not auth.verify_password(password):
+        auth.record_login_failure(request)
+        if auth.login_locked(request):
+            return RedirectResponse("/login?error=locked", status_code=302)
         return RedirectResponse("/login?error=1", status_code=302)
+    auth.clear_login_failures(request)
     resp = RedirectResponse("/", status_code=302)
     auth.issue_session(resp, "workspace")
     return resp
@@ -305,16 +248,17 @@ def report_types():
 
 
 @app.post("/api/upload")
-async def upload(files: list[UploadFile] = File(...),
+async def upload(request: Request, files: list[UploadFile] = File(...),
                  allow_duplicate: bool = Form(False)):
     results = []
+    user = auth.current_user(request) or "local"
     for f in files:
         raw = await f.read()
         try:
             # model calls take a while: keep them off the event loop so the rest
             # of the app stays responsive during an upload
             res = await run_in_threadpool(process_upload, f.filename, raw,
-                                          allow_duplicate=allow_duplicate)
+                                          allow_duplicate=allow_duplicate, user=user)
         except Exception as e:  # never crash the whole batch on one bad file
             res = {"status": "error", "filename": f.filename, "message": str(e)}
         results.append(res)
@@ -344,9 +288,14 @@ def performance_summary():
 
 
 @app.get("/api/direct-investments")
-def direct_investment_report(year: Optional[int] = None):
-    """Lam's "Direct Investment Financials": Budget | Actual per company and quarter."""
-    return direct_investments.report(year)
+def direct_investment_report(year: Optional[int] = None, start: Optional[str] = None,
+                             end: Optional[str] = None):
+    """Lam's "Direct Investment Financials": Budget | Actual per company and
+    quarter; with start and end quarters, one more column over that range."""
+    try:
+        return direct_investments.report(year, start, end)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
 
 
 @app.post("/api/budgets")
@@ -447,11 +396,15 @@ async def add_value_to_submission(sub_id: int, request: Request):
 
 
 @app.get("/api/exports/direct-investment-financials.xlsx")
-def export_direct_investments(year: Optional[int] = None, quarter: Optional[int] = None):
+def export_direct_investments(year: Optional[int] = None, quarter: Optional[int] = None,
+                              start: Optional[str] = None, end: Optional[str] = None):
     """The "Direct Investment Financials Qn YYYY" workbook in Lam's layout."""
     if quarter is not None and quarter not in (1, 2, 3, 4):
         raise HTTPException(400, "quarter must be 1-4")
-    data, name = direct_investments.workbook(year, quarter)
+    try:
+        data, name = direct_investments.workbook(year, quarter, start, end)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
     return StreamingResponse(
         io.BytesIO(data),
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -463,23 +416,22 @@ def portfolio_report(as_of: Optional[str] = None):
     """Lam's "Investment Portfolio": funds and direct investments as of a quarter."""
     if as_of and not re.fullmatch(r"20\d{2}-Q[1-4]", as_of):
         raise HTTPException(400, "as_of must be a quarter, e.g. 2026-Q2")
-    return portfolio.report(as_of)
+    rep = portfolio.report(as_of)
+    rep["summary"] = portfolio.summary(rep=rep)      # same reading, no second pass
+    return rep
 
 
 def _parse_date(raw: str) -> Optional[str]:
-    """"3/15/2019", "2019-03-15", "15 Mar 2019" -> "2019-03-15"."""
-    from .extractors.base import normalize_period
-    raw = (raw or "").strip()
-    m = re.fullmatch(r"(\d{1,2})/(\d{1,2})/(\d{2}|\d{4})", raw)
-    if m:
-        y = int(m.group(3)) + (2000 if len(m.group(3)) == 2 else 0)
-        try:
-            from datetime import date
-            return date(y, int(m.group(1)), int(m.group(2))).isoformat()
-        except ValueError:
-            return None
-    p = normalize_period(raw)
-    return p if p and re.fullmatch(r"\d{4}-\d{2}-\d{2}", p) else None
+    return portfolio.parse_date(raw)
+
+
+@app.get("/api/irr")
+def irr_report(as_of: Optional[str] = None):
+    """IRR as of a quarter: the whole portfolio, Core vs Life Sciences, direct vs
+    funds, and every entity — with the dated flows behind each figure."""
+    if as_of and not re.fullmatch(r"20\d{2}-Q[1-4]", as_of):
+        raise HTTPException(400, "as_of must be a quarter, e.g. 2026-Q2")
+    return irr.report(as_of)
 
 
 @app.get("/api/portfolio/summary")
@@ -491,48 +443,39 @@ def portfolio_summary(as_of: Optional[str] = None):
     return portfolio.summary(as_of)
 
 
-@app.post("/api/portfolio/{entity}/details")
+@app.get("/api/portfolio/holdings.csv")
+def holdings_sheet():
+    """Every direct investment's holding record as one sheet, to fill in and import."""
+    return StreamingResponse(iter([portfolio.holdings_csv()]), media_type="text/csv", headers={
+        "Content-Disposition": 'attachment; filename="holdings.csv"'})
+
+
+@app.post("/api/portfolio/holdings")
+async def import_holdings(request: Request, file: UploadFile = File(...)):
+    """Fill the direct investments' holding records — cost, value, round, dates,
+    impairment, group, exit — from one sheet (xlsx or csv), a row per company."""
+    name = file.filename or "holdings.csv"
+    if not name.lower().endswith((".xlsx", ".xlsm", ".csv")):
+        raise HTTPException(400, "the holdings sheet must be an .xlsx or .csv file")
+    try:
+        return portfolio.import_holdings(await file.read(), name,
+                                         user=auth.current_user(request) or "local")
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    except Exception:
+        raise HTTPException(400, "this file couldn't be read as a sheet")
+
+
+@app.post("/api/portfolio/{entity:path}/details")
 async def set_portfolio_details(entity: str, request: Request):
     """Master data for a fund or direct investment (type, vintage, fund size,
     region / sector, accounting details, theme, round, status, exit...)."""
     body = await request.json()
     user = auth.current_user(request) or "local"
-    fields = {k: t for k, _l, t in portfolio.FUND_FIELDS + portfolio.COMPANY_FIELDS}
-    values: dict = {}
-    for key, raw in body.items():
-        if key == "kind":
-            if raw in (None, ""):
-                values["kind"] = None          # a hand-added entry leaves the report
-                continue
-            if raw not in ("fund", "direct_investment"):
-                raise HTTPException(400, "kind must be fund or direct_investment")
-            values["kind"] = raw
-            continue
-        if key == "commitment":
-            continue
-        if key not in fields:
-            raise HTTPException(400, f"unknown field '{key}'")
-        text = str(raw if raw is not None else "").strip()
-        kind = fields[key]
-        if not text:
-            values[key] = None
-        elif kind in ("money", "int", "percent", "year", "rate"):
-            from .models import parse_number
-            v = parse_number(text)[0]
-            if v is None:
-                raise HTTPException(400, f"{key}: can't read a number from '{text}'")
-            values[key] = str(int(v)) if kind in ("int", "year") else str(v)
-        elif kind == "date":
-            iso = _parse_date(text)
-            if iso is None:
-                raise HTTPException(400, f"{key}: can't read a date from '{text}'")
-            values[key] = iso
-        elif kind.startswith("choice:"):
-            if text not in kind[7:].split(","):
-                raise HTTPException(400, f"{key} must be one of {kind[7:]}")
-            values[key] = text
-        else:
-            values[key] = text[:2000]
+    try:
+        values = portfolio.coerce_details(body)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
     details = db.set_details(entity, values, user=user)
     if "commitment" in body:
         commitment = str(body.get("commitment") or "").strip()
@@ -545,7 +488,7 @@ async def set_portfolio_details(entity: str, request: Request):
     return {"entity": entity, "details": details}
 
 
-@app.post("/api/portfolio/{entity}/calls")
+@app.post("/api/portfolio/{entity:path}/calls")
 async def add_portfolio_calls(entity: str, request: Request):
     """Add dated capital calls / investments: one {date, description, amount}, or
     pasted lines "date <tab> description <tab> amount" (scale 1000000 for $M)."""
@@ -573,6 +516,23 @@ async def add_portfolio_calls(entity: str, request: Request):
         rows.append((date_iso, str(body.get("description") or ""), amount))
     ids = [db.add_capital_call(entity, d, abs(a) * scale, desc, user=user) for d, desc, a in rows]
     return {"added": len(ids), "ids": ids}
+
+
+@app.get("/api/portfolio/{entity:path}/footprint")
+def portfolio_entity_footprint(entity: str):
+    """What deleting this fund / company would take with it."""
+    return db.entity_footprint(entity)
+
+
+@app.delete("/api/portfolio/{entity:path}")
+def delete_portfolio_entity(entity: str, request: Request):
+    """Delete a fund / company: details, parameters, dated investments, budgets,
+    and every file and value filed under its name (audited)."""
+    fp = db.entity_footprint(entity)
+    if not (fp["files"] or fp["manual_entries"] or fp["values"] or fp["calls"] or fp["budgets"]
+            or fp["details"]):
+        raise HTTPException(404, f"nothing on file for '{entity}'")
+    return {"deleted": db.delete_entity(entity, user=auth.current_user(request) or "local")}
 
 
 @app.delete("/api/portfolio/calls/{call_id}")
@@ -664,6 +624,15 @@ def submissions():
     return {"submissions": db.list_submissions()}
 
 
+@app.delete("/api/submissions/{sub_id}")
+def delete_submission(sub_id: int, request: Request):
+    """Delete one uploaded file and every value read from it (audited)."""
+    gone = db.delete_submission(sub_id, user=auth.current_user(request) or "local")
+    if gone is None:
+        raise HTTPException(404, "submission not found")
+    return {"deleted": gone}
+
+
 @app.get("/api/submissions/{sub_id}")
 def submission_detail(sub_id: int):
     sub = db.get_submission(sub_id)
@@ -740,7 +709,7 @@ def delete_term(term_id: int, request: Request):
     return {"status": "ok"}
 
 
-@app.get("/api/funds/{entity}/memory")
+@app.get("/api/funds/{entity:path}/memory")
 def fund_memory(entity: str, report_type: str = carry_forward.RF):
     mem = terms.fund_memory(entity, report_type)
     if mem["last_quarter"]:
@@ -748,7 +717,7 @@ def fund_memory(entity: str, report_type: str = carry_forward.RF):
     return mem
 
 
-@app.post("/api/funds/{entity}/profile")
+@app.post("/api/funds/{entity:path}/profile")
 async def set_fund_profile(entity: str, request: Request):
     body = await request.json()
     commitment = str(body.get("commitment") or "").strip()

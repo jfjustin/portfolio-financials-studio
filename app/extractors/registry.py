@@ -26,8 +26,8 @@ from .base import (classify_document, detect_statement_dates, file_sha256,
                    quarter_label)
 from .csv_native import extract_csv
 from .excel import extract_excel
-from .pdf_native import (ScannedPdfError, extract_pdf, parse_statement_lines,
-                         pdf_pages, render_page_png)
+from .pdf_native import (ScannedPdfError, choose_period_columns, extract_pdf,
+                         parse_statement_lines, pdf_pages, render_page_png)
 
 EXCEL_EXT = {".xlsx", ".xlsm", ".xls"}
 PDF_EXT = {".pdf"}
@@ -95,6 +95,7 @@ def assemble(raw_items: list[RawItem], text_blob: str, filename: str,
     else:
         period = normalize_period(text_blob) or normalize_period(filename) or "UNKNOWN"
     currency = detect_currency(text_blob) or "USD"
+    choose_period_columns(raw_items, period)
     if rt_key == "company_financials":
         return _company_result(raw_items, text_blob, filename, file_hash, extractor, rt_conf,
                                entity, period, dates, currency, dc)
@@ -374,6 +375,20 @@ def extract_file(path: Path, original_name: Optional[str] = None) -> ExtractionR
     name = original_name or path.name
 
     if ext in EXCEL_EXT:
+        from .master import period_from_name, read_master
+        reading = read_master(path)
+        if reading:
+            n_funds = sum(1 for r in reading["records"] if r["kind"] == "fund")
+            n_cos = len(reading["records"]) - n_funds
+            return ExtractionResult(
+                filename=name, file_hash=file_hash, detected_report_type="master_workbook",
+                report_type_confidence=1.0,
+                entity_name=f"{n_funds} fund(s), {n_cos} direct investment(s)",
+                period=period_from_name(name) or reading.get("period") or "",
+                extractor="master", facts=[],
+                warnings=([f"Sheets not read (not an entity or summary sheet): "
+                           + ", ".join(reading["skipped"])] if reading["skipped"] else []),
+                master=reading)
         raw_items, text = extract_excel(path)
         return _with_schedule_totals(_with_model(path, raw_items, text, name, file_hash, "excel"),
                                      text)

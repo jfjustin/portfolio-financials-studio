@@ -21,6 +21,21 @@
     return n.toLocaleString();
   }
 
+  // Text width in the page's own font, so a chart in a narrow section shortens its
+  // labels instead of drawing them over the bars or past its edge.
+  const CTX = document.createElement("canvas").getContext("2d");
+  function textW(s, size, weight) {
+    CTX.font = `${weight || 400} ${size}px ${getComputedStyle(document.body).fontFamily}`;
+    return CTX.measureText(String(s)).width;
+  }
+  function fit(s, maxW, size) {
+    s = String(s);
+    if (textW(s, size) <= maxW) return s;
+    while (s.length > 1 && textW(s + "…", size) > maxW) s = s.slice(0, -1);
+    return s + "…";
+  }
+  const widest = (items, size, weight) => Math.max.apply(null, items.map(s => textW(s, size, weight)).concat([0]));
+
   // data: [{label, value}]
   function barChart(container, data, opts) {
     opts = opts || {};
@@ -29,10 +44,11 @@
       container.innerHTML = '<div class="muted small">No trusted data yet.</div>';
       return;
     }
-    const rowH = 30, padL = 8, padR = 64, padT = 6, gap = 8;
+    const rowH = 30, padL = 8, padT = 6, gap = 8, fs = 12;
     const W = container.clientWidth || 520;
-    const labelW = Math.min(180, Math.max(90, W * 0.32));
-    const chartW = W - labelW - padL - padR;
+    const padR = widest(data.map(d => fmt(d.value)), fs) + 12;          // the value after the longest bar
+    const labelW = Math.min(widest(data.map(d => d.label), fs) + 12, Math.max(64, W * 0.38), 200);
+    const chartW = Math.max(16, W - labelW - padL - padR);
     const H = padT * 2 + data.length * rowH;
     const max = Math.max.apply(null, data.map(d => Math.abs(Number(d.value) || 0))) || 1;
 
@@ -44,11 +60,10 @@
       const val = Number(d.value) || 0;
       const w = Math.max(2, (Math.abs(val) / max) * chartW);
       const color = PALETTE[i % PALETTE.length];
-      // label (truncated)
+      // label (shortened to its column; the full name is in the tooltip)
       const label = String(d.label);
-      const short = label.length > 22 ? label.slice(0, 21) + "…" : label;
-      const t = el("text", { x: padL, y: y + rowH / 2 + 4, "font-size": 12,
-        fill: "currentColor" }, short);
+      const t = el("text", { x: padL, y: y + rowH / 2 + 4, "font-size": fs,
+        fill: "currentColor" }, fit(label, labelW - 8, fs));
       t.appendChild(el("title", {}, label));
       svg.appendChild(t);
       // bar
@@ -74,8 +89,16 @@
     }
     const fiscalLabels = data.fiscal_labels || {};
     const W = container.clientWidth || 640;
-    const H = 240, padL = 54, padR = 16, padT = 14, padB = 46;  // padB: 2 lines (calendar + FY)
+    // the latest period's labels and the end value are centred on the last point: keep them inside
+    const last = periods[periods.length - 1];
+    const lastTotal = (data.total || []).filter(p => p.period === last)[0];
+    const padR = Math.ceil(Math.max(16, textW(last, 11) / 2 + 4, textW(fiscalLabels[last] || "", 10) / 2 + 4,
+                                    lastTotal ? textW(fmt(lastTotal.value), 12, 700) / 2 + 4 : 0));
+    const H = 240, padL = 54, padT = 14, padB = 46;  // padB: 2 lines (calendar + FY)
     const plotW = W - padL - padR, plotH = H - padT - padB;
+    // label every period while they fit, else every 2nd / 3rd …, always including the latest
+    const labelW = Math.max(widest(periods, 11), widest(periods.map(p => fiscalLabels[p] || ""), 10)) + 10;
+    const every = periods.length > 1 ? Math.max(1, Math.ceil(labelW / (plotW / (periods.length - 1)))) : 1;
     const xi = {}; periods.forEach((p, i) => xi[p] = i);
     const x = i => padL + (periods.length === 1 ? plotW / 2 : (i / (periods.length - 1)) * plotW);
 
@@ -99,6 +122,7 @@
     });
     // x labels — calendar period on top, fiscal-year label underneath
     periods.forEach((p, i) => {
+      if ((periods.length - 1 - i) % every) return;
       svg.appendChild(el("text", { x: x(i), y: H - 24, "font-size": 11,
         "text-anchor": "middle", fill: "currentColor", "fill-opacity": 0.7 }, p));
       const fy = fiscalLabels[p];

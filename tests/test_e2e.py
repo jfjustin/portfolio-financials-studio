@@ -97,6 +97,15 @@ def main() -> int:
     investment_portfolio(samples)
     manual_entry(samples)
     portfolio_summary()
+    pdf_reading(samples)
+    easy_auth_user()
+    password_gate()
+    master_workbook()
+    equity_investments_workbook()
+    xirr_roots()
+    irr_section()
+    period_ranges()
+    deletes_and_odd_names()
     clear_data(samples)
 
     print()
@@ -1129,6 +1138,648 @@ def portfolio_summary() -> None:
                                    for r in range(1, dash.max_row + 1)),
           "the Investment Portfolio workbook carries the summary as a Dashboard sheet")
 
+    # funds: realized gain leaves out the capital that came back
+    client.post(P + "Fund 92/details", json={"returned_capital": "0.6m"})
+    S = client.get("/api/portfolio/summary").json()
+    f = {ln["entity"]: ln for ln in S["lines"]}["Fund 92"]
+    check(near(f["realized"], 400_000) and near(f["unrealized"], 1_600_000)
+          and near(float(f["realized"]) + float(f["unrealized"]), 2_000_000),
+          "a fund's realized gain = distributions − returned capital; total gain unchanged")
+
+    # a USD rate per quarter wins over the single rate
+    bad = client.post(P + "Fund 93/details", json={"usd_rates": "about 1.2"})
+    client.post(P + "Fund 93/details", json={"usd_rates": "2026-Q1=1.2, 2025 Q4: 1.05"})
+    S = client.get("/api/portfolio/summary?as_of=2026-Q1").json()
+    check(bad.status_code == 400
+          and near({ln["entity"]: ln for ln in S["lines"]}["Fund 93"]["aum"], 1_200_000),
+          "USD rates per quarter: the quarter's own rate converts it, unreadable rates are refused")
+    S2 = client.get("/api/portfolio/summary?as_of=2026-Q2").json()
+    check(near({ln["entity"]: ln for ln in S2["lines"]}["Fund 93"]["aum"], 1_200_000)
+          and any(n["entity"] == "Fund 93" and "2026-Q1 USD rate" in n["message"] for n in S2["notes"]),
+          "a quarter without its own rate uses the latest earlier one, and says so")
+
+    # cells resting on an estimate are marked, row by row
+    S = client.get("/api/portfolio/summary").json()
+    fund_row = next(r for r in S["rows"] if r["kind"] == "fund")
+    est_keys = {k for ln in S["lines"] if ln["kind"] == "fund" for k in ln["estimated_keys"]}
+    check(est_keys <= set(fund_row["estimated"])
+          and all(isinstance(r["estimated"], list) for r in S["rows"] + S["totals"])
+          and all(not r["estimated"] for r in S["rows"] if r["kind"] == "status"),
+          "summary rows list the cells that rest on an estimate; direct investments have none")
+
+    # Overview's TVPI / DPI are the summary's fund row
+    perf = client.get("/api/performance").json()["portfolio"]
+    check(perf["tvpi"] == round(fund_row["tvpi"], 2) and perf["dpi"] == round(fund_row["dpi"], 2)
+          and near(perf["total_nav"], fund_row["aum"]) and perf["n_funds"] == fund_row["count"],
+          "Overview's TVPI, DPI and NAV are the Portfolio Summary's fund row")
+
+    # one holdings sheet fills every company's holding record
+    sheet = ("Portfolio holdings\n"
+             "Company,Cost ($M),Fair Value ($M),Round,Status,Group,Last investment date,Impairment ($M),Notes\n"
+             "Company 91D,2.5,4.0,Series B,active,Life Sciences,3/15/2025,,\n"
+             "Company 91E,1.0,0.25,Seed,Active,,2024-11-02,0.75,\n"
+             "Company 91F,lots,1,Seed,Active,,,,\n"
+             "Total,3.5,4.25,,,,,,\n")
+    r = client.post("/api/portfolio/holdings", files={"file": ("holdings.csv", sheet.encode())})
+    res = r.json()
+    S = client.get("/api/portfolio/summary").json()
+    line = {ln["entity"]: ln for ln in S["lines"]}
+    check(r.status_code == 200 and res["updated"] == 2 and len(res["errors"]) == 1
+          and res["errors"][0]["company"] == "Company 91F" and res["ignored_columns"] == ["Notes"],
+          "holdings sheet: good rows imported, an unreadable row reported and skipped, totals row ignored")
+    d, e = line.get("Company 91D"), line.get("Company 91E")
+    check(d is not None and near(d["paid_in"], 2_500_000) and near(d["value"], 4_000_000)
+          and d["group"] == "Life Sciences" and e is not None and e["status"] == "impaired"
+          and near(e["impairment"], -750_000) and "Company 91F" not in line,
+          "imported holdings feed the summary: cost and value in $M, group, impairment")
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.append(["Company", "Total Investment to Date", "Total Value"])
+    ws.append(["company 91d", 2_600_000, None])
+    buf = io.BytesIO()
+    wb.save(buf)
+    r = client.post("/api/portfolio/holdings", files={"file": ("holdings.xlsx", buf.getvalue())})
+    line = {ln["entity"]: ln for ln in client.get("/api/portfolio/summary").json()["lines"]}
+    back = client.get("/api/portfolio/holdings.csv").text
+    check(r.json().get("updated") == 1 and near(line["Company 91D"]["paid_in"], 2_600_000)
+          and near(line["Company 91D"]["value"], 4_000_000) and "Company 91D" in back
+          and client.post("/api/portfolio/holdings",
+                          files={"file": ("x.csv", b"a,b\n1,2\n")}).status_code == 400,
+          "an xlsx sheet updates a company by name, empty cells keep what is on file; "
+          "a sheet without a Company column is refused")
+
+    # the team's own Summary sheet: a fund block and a company block, $M without a
+    # unit, "NA" cells, cell-reference rows, each block closed by its Total row,
+    # the dashboard block underneath (made-up figures)
+    sheet = ("Cell References,,$B$2,$B$3,$B$5,$D$15,$E$15,$F$15,$B$13,$B$11,$B$11,$F$13\n"
+             "Worksheet Reference,,Fund,Type,Vintage,#,$,Fair Market Value,Draw,Q4'25 NAV,Q1'26 NAV,Distribution\n"
+             "Fund 94,,Fund 94,LP,2019,12 ,$150.0M,$210.0M,$6.0M,$5.0M,$5.5M,$1.0M\n"
+             "Fund 95,,Fund 95,LP,2021,8 ,$80.0M,$90.0M,$2.0M,$1.8M,$1.9M,$0.0M\n"
+             ",,Total,,,,$230.0M,$300.0M,$8.0M,$6.8M,$7.4M,$1.0M\n"
+             "Cell References,,$B$2,$B$10,,,,$B$9,$B$8,$F$14,$G$14,$E$14\n"
+             ",,,,,,,,,,Lam's Total,Lam's\n"
+             "Worksheet Reference,,Company,Theme,Operating Status,Current/Impaired/Exit,Impairment Date,"
+             "Round,Investment Date,Pre-Money Val,Investment,Ownership,Estimated FMV,Gain (%),Book Value,Proceeds,Impairment\n"
+             "Company 94A,,Company 94A,Semi,Active,Current,,Seed,Sep 2022,$30.0,$2.0,6.82%,$3.0,50.0%,$2.0,,\n"
+             "Company 94B,,Company 94B,Life Science,Active,Impaired,2025,Series A,Oct 2017,NA,$2.0,0.45%,$0.6,-70.0%,$0.6,,$1.4\n"
+             "Company 94C,,Company 94C,I4.0,Inactive,Exit,,Series A,Jun 2021,$440.0,$7.0,4.48%,$19.7,181.8%,$12.6,$0.0,\n"
+             "Company 94D,,Company 94D,Semi,Inactive,Exit,,Seed,Jul 2021,$0.0,$4.0,0.00%,$5.0,NA,$0.0,$5.0,\n"
+             ",,Total Direct,,,,,,,,$15.0,,$28.3,,$15.2,$5.0,$1.4\n"
+             ",Dashboard needed,,,,,,,,,,,,,,,\n"
+             ",,Current Direct Investment,,1,$2.0M,$3.0M,$2.0M,$0.0M,$0.0M,$0.0M,$1.0M\n"
+             ",,Total Direct Investment,,4,$15.0M,$28.3M,$15.2M,-$1.4M,$5.0M,-$10.0M,$13.3M\n")
+    r = client.post("/api/portfolio/holdings", files={"file": ("summary.csv", sheet.encode())})
+    res = r.json()
+    S = client.get("/api/portfolio/summary").json()
+    line = {ln["entity"]: ln for ln in S["lines"]}
+    rep = client.get("/api/portfolio").json()
+    f94 = {x["entity"]: x for x in rep["funds"]}.get("Fund 94")
+    check(r.status_code == 200 and res["updated"] == 6 and not res["errors"]
+          and len(res["notes"]) == 1 and "$B$2" not in line and "Current Direct Investment" not in line,
+          "the team's Summary sheet: fund and company blocks read, each closed by its Total row, "
+          "cell references and the dashboard rows ignored")
+    check(f94 is not None and near(f94["drawn_to_date"], 6_000_000) and near(f94["investment_balance"], 5_500_000)
+          and near(f94["distribution_to_date"], 1_000_000) and f94["vintage"] == 2019
+          and f94["stats"]["count"] == 12 and near(f94["stats"]["cost"], 150_000_000),
+          "fund block: draw, the latest quarter's NAV, distribution, vintage and latest stats")
+    a, b, c, d = (line.get(k) for k in ("Company 94A", "Company 94B", "Company 94C", "Company 94D"))
+    check(a and near(a["paid_in"], 2_000_000) and near(a["value"], 3_000_000) and a["status"] == "current"
+          and b and b["status"] == "impaired" and near(b["impairment"], -1_400_000) and b["group"] == "Life Sciences"
+          and c and c["status"] == "exited" and near(c["value"], 19_700_000) and near(c["book"], 12_600_000)
+          and near(c["realized"], -7_000_000) and near(c["unrealized"], 19_700_000)
+          and d and near(d["realized"], 1_000_000) and near(d["aum"], 0),
+          "company block: $M amounts, NA skipped, Current / Impaired / Exit status, an exit valued at its FMV")
+    rows = {r["label"]: r for r in S["rows"]}
+    tot = {r["label"]: r for r in S["totals"]}
+    check(near(rows["Total Direct Investments"]["alloc_pct"] + rows["Fund Investments"]["alloc_pct"], 100)
+          and near(tot["Total Investments"]["alloc_pct"], 100)
+          and rows["Current Direct Investments"]["alloc_pct"] is None,
+          "% capital allocation: direct + funds = 100%, shown on the block and group rows only")
+
+
+def easy_auth_user() -> None:
+    """Behind Azure App Service Authentication the audit trail names the
+    signed-in person; without it, entries stay "local"."""
+    from fastapi.testclient import TestClient
+
+    from app.main import app
+
+    client = TestClient(app)
+    client.post("/api/portfolio/Company 96A/details", json={"kind": "direct_investment", "theme": "Semi"},
+                headers={"X-MS-CLIENT-PRINCIPAL-NAME": "reviewer@example.com"})
+    client.post("/api/portfolio/Company 96A/details", json={"theme": "Devices"})
+    users = [a["user"] for a in db.get_audit(limit=20) if a["action"] == "entity_details"
+             and a["field"] == "Company 96A"]
+    check(users[:2] == ["local", "reviewer@example.com"],
+          "audit entries carry the Easy Auth user when the platform names one, else local")
+
+
+def password_gate() -> None:
+    """AUTH_MODE=password: every page and API call needs the session; the cookie
+    is HTTPS-only; wrong passwords are limited per address; a gated workspace
+    refuses to start on the repository's default session secret."""
+    from fastapi.testclient import TestClient
+
+    from app import auth
+    from app.main import app
+
+    saved = (settings.auth_mode, settings.app_password, settings.session_secret)
+    settings.auth_mode, settings.app_password = "password", "test-password-only"
+    try:
+        bad = None
+        try:
+            auth.check_configuration()
+        except RuntimeError as e:
+            bad = str(e)
+        settings.session_secret = "x" * 48
+        auth.check_configuration()
+        check(bad is not None and "SESSION_SECRET" in bad,
+              "a gated workspace refuses to start on the default session secret")
+        client = TestClient(app, follow_redirects=False)
+        home, api = client.get("/"), client.get("/api/portfolio")
+        check(home.status_code == 302 and home.headers["location"] == "/login"
+              and api.status_code == 401,
+              "without a session: pages redirect to login, the API answers 401")
+        auth._FAILURES.clear()
+        results = [client.post("/api/login", data={"password": "wrong"}).headers["location"]
+                   for _ in range(settings.login_max_failures)]
+        right_but_locked = client.post("/api/login", data={"password": "test-password-only"})
+        check(results[0] == "/login?error=1" and results[-1] == "/login?error=locked"
+              and right_but_locked.headers["location"] == "/login?error=locked",
+              f"{settings.login_max_failures} wrong passwords lock that address out, even for the right one")
+        auth._FAILURES.clear()
+        ok = client.post("/api/login", data={"password": "test-password-only"})
+        cookie = ok.headers.get("set-cookie", "")
+        check(ok.status_code == 302 and ok.headers["location"] == "/" and "Secure" in cookie
+              and "HttpOnly" in cookie,
+              "the right password opens a session: HttpOnly, HTTPS-only cookie")
+        check(client.get("/api/health").status_code == 200
+              and client.get("/", cookies={auth.COOKIE: cookie.split(";")[0].split("=", 1)[1]}).status_code == 200,
+              "with the session the workspace opens; the health check stays public")
+        token = cookie.split(";")[0].split("=", 1)[1]
+        check(api.json().get("detail", "").startswith("Your session has ended")
+              and client.get("/", cookies={auth.COOKIE: token}).headers.get("set-cookie") is None,
+              "a 401 says why in its detail; a fresh session is not re-issued")
+        import json as _json
+        old_payload = _json.dumps({"u": "workspace", "t": int(__import__("time").time()) - 7 * 3600}).encode()
+        aged = client.get("/api/health", cookies={auth.COOKIE: auth._sign(old_payload)})
+        aged = client.get("/", cookies={auth.COOKIE: auth._sign(old_payload)})
+        check(aged.status_code == 200 and auth.COOKIE in (aged.headers.get("set-cookie") or ""),
+              "a session past half its life is renewed on use, so a working day never ends in 'Not saved'")
+    finally:
+        settings.auth_mode, settings.app_password, settings.session_secret = saved
+        auth._FAILURES.clear()
+
+
+def master_workbook() -> None:
+    """The team's Investment Portfolio workbook (one sheet per fund / company
+    in its layout, the accounting block beside, a Summary-Portfolio Value tab
+    and a planning tab) fills every entity in one upload; nothing is invented
+    from a stray heading; a re-read adds no duplicate investments."""
+    import io
+
+    import openpyxl
+    from fastapi.testclient import TestClient
+
+    from app.extractors.base import guess_entity_name
+    from app.main import app
+    from app.pipeline import reprocess_submission
+
+    client = TestClient(app)
+    wb = openpyxl.Workbook()
+    aop = wb.active
+    aop.title = "Investments-AOP"
+    aop.append(["Follow-on 1 Company Q EU/ Devices H1 2026 1 25"])
+    aop.append(["Planned", "H1 2026", 1.0])
+    f = wb.create_sheet("Fund 97")
+    for r, label, value in ((2, "Investment Name", "Example Partners III"), (3, "Investment Type", "LP"),
+                            (4, "Current / Most Recent Round", "-"), (5, "Vintage", 2019),
+                            (6, "Fund Size", 150.0), (7, "Commitment", 5.0), (9, "Future Draw", 1.0),
+                            (10, "Region / Sector Focus", "US/Software"), (11, "Investment Balance", 4.2),
+                            (13, "Drawn to Date", 4.0)):
+        f.cell(r, 1, label); f.cell(r, 2, value)
+    f.cell(13, 5, "Distribution to Date"); f.cell(13, 6, -1.0)
+    for c, h in zip("BCDEF", ("Date", "# of investments", "Cost Basis", "Value", "Gain / (Loss) %")):
+        f[f"{c}14"] = h
+    f["A15"] = "Latest Stats"; f["B15"] = "2026-03-31"; f["C15"] = 14; f["D15"] = 40.0; f["E15"] = 55.0
+    for c, h in zip("BCDEF", ("Date", "Current Round", "Amount Invested", "Total Raise", "Pre Money Valuation")):
+        f[f"{c}16"] = h
+    f.append([]); f["A17"] = "Invested"; f["B17"] = "2019-04-14"; f["C17"] = "Drawdown #1"; f["D17"] = 0.5
+    f["A18"] = "Invested"; f["B18"] = "2026-02-10"; f["C18"] = "Drawdown #9"; f["D18"] = 0.5
+    f["H2"] = "Equity Investments Summary"
+    for r, label, value in ((3, "Entity Type", "Limited Partnership"), (4, "Method of Accounting", "Equity Method"),
+                            (5, "GL Account", "1234"), (6, "Company Code", "C9"), (7, "% Ownership", 0.025),
+                            (8, "Initial Investment Date", "2019-04-14"), (9, "Terms", "10 years"),
+                            (10, "Total Commitment", 5_000_000), (11, "Remaining Commitment", 1_000_000),
+                            (12, "Total Funding", 4_000_000), (13, "Total Equity Income/(Loss)", 1_200_000),
+                            (14, "Total Distributions", -1_000_000), (15, "Investment Balance", 4_200_000)):
+        f.cell(r, 8, label); f.cell(r, 9, value)
+    co = wb.create_sheet("Company 97A")
+    for r, label, value in ((2, "Investment Name", "Example Robotics Inc."), (3, "Investment Type", "Direct"),
+                            (4, "Current / Most Recent Round", "Series A"), (5, "Most Recent Investment Date", "2026-03-01"),
+                            (6, "Total Investment to Date", 2.0), (7, "Projected Future Investments", 1.0),
+                            (9, "Investments", "Series A Preferred"), (10, "Theme", "Robotics"),
+                            (11, "Total Value", 3.0), (12, "Operating Status", "Active")):
+        co.cell(r, 1, label); co.cell(r, 2, value)
+    for c, h in zip("BCDEF", ("Date", "Current Round", "Amount Invested", "Total Raise", "Pre Money Valuation")):
+        co[f"{c}16"] = h
+    co["A17"] = "Invested"; co["B17"] = "2024-06-01"; co["C17"] = "Seed"; co["D17"] = 0.5; co["E17"] = 4.0; co["F17"] = 12.0
+    co["A18"] = "Invested"; co["B18"] = "2026-03-01"; co["C18"] = "Series A"; co["D18"] = 1.5; co["E18"] = 20.0; co["F18"] = 60.0
+    sv = wb.create_sheet("Summary-Portfolio Value")
+    sv.append(["Worksheet Reference", None, "Company", "Theme", "Operating Status", "Current/Impaired/Exit", "Book Value"])
+    sv.append(["Company 97A", None, "Company 97A", "Advanced robotics", "Active", "Current", 1.8])
+    sv.append([None, None, "Total Direct", None, None, None, 1.8])
+    buf = io.BytesIO()
+    wb.save(buf)
+    r = client.post("/api/upload", files={"files": ("Investment Portfolio Jun'26 (test).xlsx", buf.getvalue())})
+    res = r.json()["results"][0]
+    check(res["status"] == "ok" and res["report_type"] == "master_workbook" and res["period"] == "2026-Q2"
+          and {e["entity"] for e in res["entities"]} == {"Fund 97", "Company 97A"} and res["calls_added"] == 4
+          and any("Investments-AOP" in w for w in res["warnings"]),
+          "a master workbook is recognised: both entities filled, 4 dated investments, the planning tab named as not read")
+    rep = client.get("/api/portfolio?as_of=2026-Q2").json()
+    names = {x["entity"] for x in rep["funds"] + rep["companies"]}
+    check(not any(n.startswith("Follow-on") for n in names) and "Follow-on 1 Company Q" not in str(db.all_details()),
+          "no entity is invented from the planning tab's first line")
+    fund = {x["entity"]: x for x in rep["funds"]}["Fund 97"]
+    D = lambda x: Decimal(str(x)) if x is not None else None
+    check(fund["investment_name"] == "Example Partners III" and fund["investment_type"] == "LP"
+          and fund["vintage"] == 2019 and D(fund["fund_size"]) == 150_000_000
+          and D(fund["commitment"]) == 5_000_000 and D(fund["future_draw"]) == 1_000_000
+          and D(fund["investment_balance"]) == 4_200_000 and D(fund["drawn_to_date"]) == 4_000_000
+          and D(fund["distribution_to_date"]) == 1_000_000 and fund["region_sector"] == "US/Software"
+          and fund["stats"]["count"] == 14 and D(fund["stats"]["cost"]) == 40_000_000
+          and fund["accounting"]["gl_account"] == "1234" and D(fund["accounting"]["ownership_pct"]) == Decimal("2.5")
+          and len([c for c in fund["invested"] if c["source"] == "entered"]) == 2,
+          "fund sheet: $M figures, commitment, latest stats, accounting block (whole units, % ownership) and calls")
+    com = {x["entity"]: x for x in rep["companies"]}["Company 97A"]
+    det = com["details"]
+    check(com["investment_name"] == "Example Robotics Inc." and com["current_round"] == "Series A"
+          and com["security"] == "Series A Preferred" and D(com["total_invested"]) == 2_000_000
+          and D(com["total_value"]) == 3_000_000 and com["operating_status"] == "Active"
+          and com["theme"] == "Robotics" and D(det["book_value"]) == 1_800_000
+          and D(com["invested"][1]["total_raise"]) == 20_000_000 and D(com["invested"][1]["pre_money"]) == 60_000_000,
+          "company sheet: type, round, security, cost, value, status; the summary tab fills book value "
+          "without overriding the sheet's theme; rounds carry total raise and pre-money")
+    again = reprocess_submission(res["submission_id"])
+    rep = client.get("/api/portfolio?as_of=2026-Q2").json()
+    n_calls = len([c for c in {x["entity"]: x for x in rep["funds"]}["Fund 97"]["invested"] if c["source"] == "entered"])
+    check(again["status"] == "ok" and n_calls == 2, "re-reading the workbook adds no duplicate investments")
+    check(guess_entity_name(["Follow-on 1 Company Q EU/ Devices H1 2026 1 25", "Planned H1 2026"],
+                            "Investment Portfolio.xlsx") == "Investment Portfolio",
+          "a planning line never becomes an entity name in the general reader either")
+
+
+def equity_investments_workbook() -> None:
+    """The accounting team's Equity Investments Summary workbook (made-up
+    figures): the Investments Summary table — open equity investments, funds,
+    notes, closed investments — plus a backup tab per entity with the
+    accounting labels and dated funding / securities tables."""
+    import datetime as dt
+    import io
+
+    import openpyxl
+    from fastapi.testclient import TestClient
+
+    from app.main import app
+
+    client = TestClient(app)
+    near = lambda a, b: a is not None and abs(float(a) - float(b)) < 0.01
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Investments Summary"
+    ws.append([None, "Equity Investments Summary Workbook", "Summarized presentation"])
+    ws.append([None, dt.datetime(2026, 6, 28)])
+    ws.append([])
+    head = [None, "Investment", "Investment Balance", "Gross Investment / Funding", "Equity Income/(Loss)",
+            "Return of Capital/Other Cash Proceeds", "MTM & Conversion Gain/(Loss)", "Acquisition Impact",
+            "Cumulative Impairment", "Total Commitment", "Remaining Commitment", "Ownership %", "Initial Investment Date"]
+    ws.append(head)
+    ws.append([None, "Equity Investments"])
+    ws.append(["Company 98A (2022)", "Company 98A", 2_979_349.49, 2_239_872.67, 0, 0, 739_476.82, 0, 0, 0, 0, 0.0682, dt.datetime(2022, 9, 21)])
+    ws.append(["Company 98B (2017)", "Company 98B", 599_994, 1_999_994, 0, 0, 0, 0, -1_400_000, 0, 0, "< 1%", dt.datetime(2017, 10, 5)])
+    ws.append(["Company 98G (Pre 2014)", "Company 98G", 0, 74_088, 0, 0, 0, 0, -74_088, 0, 0, "< 1%", "Pre 2014"])
+    ws.append([None, None, 3_579_343.49, 4_313_954.67])
+    ws.append([None, "Funds"])
+    ws.append(["Fund 98 (2016)", "Fund 98", 4_831_951.58, 5_000_000, -168_048.42, 0, 0, 0, 0, 5_000_000, 0, 0.07298, dt.datetime(2016, 12, 15)])
+    ws.append(["Fund 97 (2019)", "Fund 97", 5_623_205.10, 6_871_259, 91_307, -1_339_361, 0, 0, 0, 5_530_950, 0, 0.0192, dt.datetime(2019, 12, 20)])
+    ws.append([None, None, 10_455_156.68])
+    ws.append([None, "Note Receivable"])
+    ws.append([None, "Investment", "Investment Balance", "Gross Investment / Funding", "Accrued Interest", "Return of Capital",
+               "Note Conversion / Repayment", "Cumulative Impairment", None, "Initial Investment Date"])
+    ws.append(["Note 9B (2025)", "Note 9B", 1_000_000, 1_000_000, 0, 0, 0, 0, 0, dt.datetime(2025, 10, 17)])
+    ws.append([None, "Total Equity Investments", 15_034_500])
+    ws.append([None, "Check", 0])
+    ws.append([None, "CLOSED INVESTMENTS"])
+    ws.append(head)
+    ws.append([None, "Equity Investments"])
+    ws.append(["Closed 9Q (2018)", "Closed 9Q", 1.16e-10, 2_000_000, 0, -2_797_000, 797_000, 0, 0, 0, 0, None, None])
+    ws.append([None, "Other"])
+    ws.append([None, "Closed 9Z", 0, 59_021_700, 5_602_260, 0, 0, -64_624_000, 0, 0, 0, None, None])
+    ws.append([None, "Note Receivable"])
+    ws.append([None, "Investment", "Investment Balance", "Gross Investment / Funding", "Accrued Interest", "Return of Capital",
+               "Note Conversion / Repayment", "Cumulative Impairment"])
+    ws.append(["Company 98A (2021 Convertible Note)", "Company 98A", 0, 1_000_000, 21_041, 0, -1_021_041, 0])
+    f = wb.create_sheet("Fund 98")
+    for r in (["i"], [], ["Entity Type", "Exempted Limited Partnership"], ["Method of Accounting", "Equity Method"],
+              ["GL Account", 190645], ["Company Code", 1220], ["% Ownership", 0.07298, "Confirmed"],
+              ["Initial Investment Date", dt.datetime(2016, 12, 15)], ["Terms", "- $300K initial investment with $5M funding commitment"],
+              ["Total Commitment", 5_000_000], ["Remaining Commitment", 0], ["Funding", "Amount", "Investment Date"],
+              ["Initial Investment", 300_000, dt.datetime(2016, 12, 15)], ["Capital Call", 212_440, dt.datetime(2017, 11, 1)],
+              ["Capital Call", 4_487_560, dt.datetime(2019, 1, 15)], ["Total Funding", 5_000_000],
+              ["Equity Income/(Loss)", "Amount"], [dt.datetime(2017, 3, 31), -73_015.9], ["Total Equity Income/(Loss)", -168_048.42],
+              ["Investment Balance", 4_831_951.58]):
+        f.append(r)
+    co = wb.create_sheet("Company 98A")
+    for r in (["Company 98A"], [], ["Entity Type", "Corporation"], ["Method of Accounting", "Measurement Alternative"],
+              ["GL Account", 190645], ["Company Code", 1220], ["% Ownership - initial investment", 0.0778],
+              ["% Ownership - 6/30/2025", 0.074], ["% Ownership - 12/31/2025", 0.0682, "Cap table, October 2025"],
+              ["Investment", "Investment Value", "Cash Outlay", "MTM of Shares", "Investment Date", "# of Equity Shares", "Price", "Terms"],
+              ["Company 98A Series Seed-2 Preferred Shares", 1_097_254.9, 1_000_000, 97_254.9, dt.datetime(2022, 9, 21), 1_307_189, 0.765, "- Convertible"],
+              ["Company 98A Series Seed-2 Preferred Shares", 642_222, 0, 642_222, dt.datetime(2025, 12, 1), 1_307_189, 0.8394, "- marked up"],
+              ["Company 98A Series A Preferred Shares", 1_239_872.67, 1_239_872.67, None, dt.datetime(2025, 10, 7), 931_745, 1.3307, "- Convertible"],
+              [None, 2_979_349.49, 2_239_872.67, 739_476.82]):
+        co.append(r)
+    two = wb.create_sheet("Closed 9Q & 9R")
+    for r in (["Closed 9Q"], [], ["Entity Type", "Corporation"], ["Method of Accounting", "Measurement Alternative"],
+              ["GL Account", 190645], ["Company Code", 1220], ["% Ownership", 0.009, "Cap table"],
+              ["Investment", "Investment Balance", "Cash Outlay", "Return of Capital", "MTM Gain/(Loss)", "Investment Date"],
+              ["Closed 9Q Series B-1 Preferred Shares", 1_333_333, 1_333_333, None, None, dt.datetime(2018, 6, 26)],
+              ["Closed 9Q Series B-2 Preferred Shares", 666_667, 666_667, None, None, dt.datetime(2019, 3, 12)],
+              ["Acquisition", -2_000_000, 0, -2_797_000, 797_000, dt.datetime(2021, 9, 20)],
+              [None, 0, 2_000_000, -2_797_000, 797_000], [], [],
+              ["Closed 9R"], [], ["Entity Type", "Corporation"], ["Method of Accounting", "MTM each reporting period"],
+              ["GL Account", 190642], ["Company Code", 1220],
+              ["Investment", "Total Investment", "Cash Outlay/Cash Proceeds", "MTM of Shares", "Value", "Investment Date"],
+              ["Closed 9R Common Stock", 2_330_410, 0, 2_330_410, 2_330_410, dt.datetime(2021, 9, 20)],
+              ["Closed 9R sale of all shares", -2_411_500, 2_032_570, -378_931, None, dt.datetime(2021, 12, 9)]):
+        two.append(r)
+    sap = wb.create_sheet("SAP")
+    sap.append(["Update quarterly"]); sap.append(["Account", "P12 FY25", "P3 FY26"]); sap.append([190644, 13_353_400, 13_334_400])
+    buf = io.BytesIO()
+    wb.save(buf)
+    r = client.post("/api/upload", files={"files": ("Equity Investments Summary Workbook - Jun26 (test).xlsx", buf.getvalue())})
+    res = r.json()["results"][0]
+    names = {e["entity"] for e in res.get("entities", [])}
+    check(res["status"] == "ok" and res["report_type"] == "master_workbook" and res["period"] == "2026-Q2"
+          and names == {"Company 98A", "Company 98B", "Company 98G", "Fund 98", "Fund 97", "Note 9B", "Closed 9Q"}
+          and "Closed 9Z" not in names and "Closed 9R" not in names and "SAP" in " ".join(res["warnings"]),
+          "Equity Investments Summary: open positions, funds, notes and closed investments read; the "
+          "'Other' block, closed notes and tabs without a summary row left out; the period from the workbook date")
+    rep = client.get("/api/portfolio?as_of=2026-Q2").json()
+    funds = {x["entity"]: x for x in rep["funds"]}
+    cos = {x["entity"]: x for x in rep["companies"]}
+    D = lambda x: Decimal(str(x)) if x is not None else None
+    f98, f97 = funds["Fund 98"], funds["Fund 97"]
+    check(D(f98["drawn_to_date"]) == 5_000_000 and D(f98["commitment"]) == 5_000_000
+          and D(f98["investment_balance"]) == Decimal("4831951.58") and D(f98["future_draw"]) == 0
+          and D(f98["accounting"]["ownership_pct"]) == Decimal("7.298") and f98["accounting"]["gl_account"] == "190645"
+          and f98["accounting"]["initial_investment_date"] == "2016-12-15"
+          and len([c for c in f98["invested"] if c["source"] == "entered"]) == 3
+          and D(f97["distribution_to_date"]) == 1_339_361 and D(f97["drawn_to_date"]) == 6_871_259,
+          "funds: funding, commitment, balance, remaining commitment, distributions (sign dropped), ownership "
+          "from a fraction, dated capital calls from the tab named after the fund")
+    a, b, g, q = cos["Company 98A"], cos["Company 98B"], cos["Company 98G"], cos["Closed 9Q"]
+    da, db_, dq = a["details"], b["details"], q["details"]
+    check(D(a["total_invested"]) == Decimal("2239872.67") and D(da["book_value"]) == Decimal("2979349.49")
+          and da["holding_status"] == "Current" and D(da["ownership_pct"]) == Decimal("6.82")
+          and a["security"] == "Series A Preferred Shares" and da["accounting_method"] == "Measurement Alternative"
+          and len([c for c in a["invested"] if c["source"] == "entered"]) == 2
+          and db_["holding_status"] == "Impaired" and D(db_["impairment"]) == 1_400_000 and "ownership_pct" not in db_
+          and g["last_investment_date"] in (None, "") and "last_investment_date" not in g["details"],
+          "companies: cost from funding, balance as book value, impairment, the latest dated ownership, "
+          "the latest security, two real outlays as investments (a mark-up is not one), 'Pre 2014' is no date")
+    check(q["exited"] and dq["holding_status"] == "Exit" and D(q["exit"]["proceeds"]) == 2_797_000
+          and D(q["total_invested"]) == 2_000_000 and len([c for c in q["invested"] if c["source"] == "entered"]) == 2
+          and dq.get("operating_status") == "Inactive",
+          "a closed investment: exited with its proceeds, two outlays, the acquisition line not an investment")
+    S = client.get("/api/portfolio/summary?as_of=2026-Q2").json()
+    line = {ln["entity"]: ln for ln in S["lines"]}
+    check(line["Closed 9Q"]["status"] == "exited" and near(line["Closed 9Q"]["realized"], 797_000)
+          and line["Company 98B"]["status"] == "impaired" and near(line["Company 98B"]["book"], 599_994),
+          "the summary places them: a closed position's realized gain, an impaired position's book value")
+
+
+def period_ranges() -> None:
+    """Direct Investment Financials over any run of quarters: flows added up,
+    cash as of the last quarter, burn over the months covered, missing
+    quarters named; the export carries the range as one more column."""
+    import io
+
+    import openpyxl
+    from fastapi.testclient import TestClient
+
+    from app.main import app
+
+    client = TestClient(app)
+    def manual(q, metric, value):
+        client.post("/api/manual-values", json={"entity": "Company 95R", "report_type": "company_financials",
+                                                "period": q, "metric": metric, "value": value, "scale": 1000})
+    for q, rev, opex, ocf, capex, cash in (("2025-Q4", "100", "300", "(250)", "(50)", "2,000"),
+                                           ("2026-Q1", "140", "330", "(280)", "(20)", "1,700")):
+        for m, v in (("revenue", rev), ("operating_expense", opex), ("operating_cash_flow", ocf),
+                     ("capex", capex), ("ending_cash", cash)):
+            manual(q, m, v)
+    R = client.get("/api/direct-investments?start=2025-Q4&end=2026-Q2").json()
+    key = R["range"]["key"]
+    co = next(c for c in R["companies"] if c["company"] == "Company 95R")
+    col = co["columns"][key]
+    a = col["actual"]
+    D = lambda x: Decimal(str(x))
+    check(R["year"] == 2026 and key == "2025-Q4..2026-Q2" and R["range"]["quarters"] == ["2025-Q4", "2026-Q1", "2026-Q2"]
+          and key in R["periods"] and D(a["revenue"]) == 240_000 and D(a["operating_expense"]) == 630_000
+          and D(a["ending_cash"]) == 1_700_000 and col["months"] == 6 and col["missing"] == ["2026-Q2"],
+          "a range across years: revenue and opex added up over the quarters with figures, cash as of the "
+          "last of them, six months covered, the quarter without figures named")
+    check(D(a["gross_monthly_burn"]) == 105_000 and D(a["net_monthly_burn"]) == 100_000
+          and a["gross_runway"] == 16 and a["net_runway"] == 17
+          and any(i["kind"] == "missing" and "2026-Q2" in i["message"] for i in col["issues"]),
+          "burn = flows ÷ months covered, runway from the last cash; the gap is flagged")
+    R2 = client.get("/api/direct-investments?start=2026-Q1&end=2025-Q4").json()
+    check(R2["range"]["key"] == "2025-Q4..2026-Q1" and R2["companies"] and
+          client.get("/api/direct-investments?start=2025-Q4&end=2026").status_code == 400
+          and client.get("/api/direct-investments?start=2010-Q1&end=2026-Q1").status_code == 400,
+          "from/to in either order; a bad quarter or a range over ten years is refused")
+    x = client.get("/api/exports/direct-investment-financials.xlsx?start=2025-Q4&end=2026-Q2")
+    wb = openpyxl.load_workbook(io.BytesIO(x.content))
+    ws = next(w for w in wb.worksheets if w.title.startswith("Company 95R"))
+    heads = [c.value for c in ws[1] if c.value]
+    rev_row = next(r for r in range(3, 12) if ws.cell(r, 1).value == "Revenue")
+    check("Q4'25–Q2'26" in heads and abs(float(ws.cell(rev_row, 13).value) - 240.0) < 0.001
+          and "2025-Q4 to 2026-Q2" in x.headers.get("content-disposition", ""),
+          "the workbook carries the range as a sixth Budget | Actual pair, in $000, named in the file")
+
+
+def xirr_roots() -> None:
+    """The solver returns the economically meaningful rate when the flows have
+    several roots, and the plain answer when they have one."""
+    from datetime import date as D
+
+    from app.performance import xirr
+
+    one = xirr([(D(2020, 1, 1), -100.0)] + [(D(2020 + k, 1, 1), 10.0) for k in range(1, 5)]
+               + [(D(2025, 1, 1), 110.0)])
+    two = xirr([(D(2020, 1, 1), -100.0), (D(2021, 1, 1), 230.0), (D(2022, 1, 1), -132.0)])
+    # years are days ÷ 365, so leap days move the answer a little from a round 10%
+    check(one is not None and abs(one - 0.10) < 5e-3, "a 10% bond-like flow solves to 10%")
+    check(two is not None and abs(two - 0.10) < 5e-3,
+          "flows with two roots (10% and 20%) give the one nearest zero, never a −99% artefact")
+    # many interleaved calls and distributions, each year's return modest: the
+    # combined answer must sit near the per-fund answers, not at −99%
+    flows = []
+    for k in range(12):
+        flows.append((D(2016 + k // 4, 1 + 3 * (k % 4), 1), -250_000.0))
+        flows.append((D(2017 + k // 4, 1 + 3 * (k % 4), 1), 90_000.0))
+    flows.append((D(2026, 6, 30), 2_600_000.0))
+    r = xirr(flows)
+    check(r is not None and -0.05 < r < 0.25, f"interleaved calls and distributions: {r} is a plausible rate")
+
+
+def irr_section() -> None:
+    """IRR from dated flows: an exit with a known answer, a fund from its
+    calls, distributions and balance, the splits, and what is left out."""
+    from fastapi.testclient import TestClient
+
+    from app.main import app
+
+    client = TestClient(app)
+    P = "/api/portfolio/"
+    client.post(P + "Company 96B/details", json={"kind": "direct_investment", "total_invested": "1m",
+                                                 "exit_date": "2024-01-01", "exit_proceeds": "2m",
+                                                 "exit_value": "2m", "portfolio_group": "Life Sciences"})
+    client.post(P + "Company 96B/calls", json={"date": "2021-01-01", "description": "Series A", "amount": "1000000"})
+    client.post(P + "Fund 96/details", json={"kind": "fund", "drawn_to_date": "4m", "distribution_to_date": "1m",
+                                             "investment_balance": "5m", "initial_investment_date": "2020-01-01"})
+    client.post(P + "Company 96C/details", json={"kind": "direct_investment", "theme": "no money in yet"})
+    R = client.get("/api/irr?as_of=2026-Q2").json()
+    ents = {e["entity"]: e for e in R["entities"]}
+    b, f = ents.get("Company 96B"), ents.get("Fund 96")
+    check(b is not None and abs(b["irr_pct"] - 26.0) < 0.3 and not b["estimated"] and b["status"] == "exited"
+          and [x["kind"] for x in b["flows"]] == ["call", "proceeds"] and b["group"] == "Life Sciences",
+          "an exit: $1M in on 2021-01-01, $2M out on 2024-01-01 → 26% IRR, from two dated flows")
+    check(f is not None and f["estimated"] and f["irr_pct"] is not None and f["irr_pct"] > 0
+          and {x["kind"] for x in f["flows"]} == {"call", "distribution", "value"}
+          and any("initial investment date" in n for n in f["notes"]),
+          "a fund with no dated calls: total invested placed on its initial date, undated distributions "
+          "and the balance at the quarter end — marked as an estimate, with the reason")
+    g = R["groups"]
+    check(g["life_sciences"]["n"] >= 1 and "Company 96B" in g["life_sciences"]["members"]
+          and "Fund 96" in g["funds"]["members"] and "Company 96B" in g["direct"]["members"]
+          and g["all"]["n"] == len(R["entities"]) and g["all"]["irr_pct"] is not None
+          and set(R["splits"]) == {"all", "group", "kind"}
+          and g["core"]["n"] + g["life_sciences"]["n"] == g["all"]["n"]
+          and g["direct"]["n"] + g["funds"]["n"] == g["all"]["n"],
+          "groups: Core + Life Sciences = all = Direct + Funds, each with its own IRR")
+    check(any(x["entity"] == "Company 96C" for x in R["left_out"]) and "Company 96C" not in ents,
+          "an entity with no investment on file is listed as left out, not given a figure")
+    g2 = R["groups"]
+    ents_rates = [e["irr_pct"] for e in R["entities"] if e["irr_pct"] is not None]
+    check(g2["all"]["irr_pct"] > -50 and g2["funds"]["irr_pct"] is None or g2["funds"]["irr_pct"] > -50,
+          "group IRRs are not −99% artefacts when the members' own rates are ordinary")
+    check("2026-Q2" in R["quarters"], "the quarters on offer include those of entered values and workbooks")
+    bad = client.get("/api/irr?as_of=2026")
+    check(bad.status_code == 400, "the quarter is validated")
+
+
+def deletes_and_odd_names() -> None:
+    """One file or one fund / company can be deleted on its own (audited), and
+    an entity whose name holds a slash is still reachable."""
+    from fastapi.testclient import TestClient
+
+    from app.main import app
+
+    client = TestClient(app, raise_server_exceptions=False)
+    odd = "Follow-on 1 Company Q EU/ Devices H1 2026 1 25"
+    r = client.post(f"/api/portfolio/{odd}/details", json={"kind": "direct_investment", "theme": "x"})
+    fp = client.get(f"/api/portfolio/{odd}/footprint").json()
+    gone = client.delete(f"/api/portfolio/{odd}")
+    check(r.status_code == 200 and fp["details"] and gone.status_code == 200
+          and odd not in db.all_details(),
+          "an entity named with a slash can be edited, measured and deleted")
+    bad = client.post("/api/portfolio/Company 9/details", content=b"not json",
+                      headers={"Content-Type": "application/json"})
+    check(bad.status_code == 500 and "detail" in bad.json(),
+          "an unexpected server error still answers in JSON with a detail")
+    subs = client.get("/api/submissions").json()["submissions"]
+    victim = next(s for s in subs if s["report_type"] == "company_financials" and s["n_facts"])
+    before = client.get("/api/dashboard").json()["n_facts"]
+    r = client.delete(f"/api/submissions/{victim['id']}")
+    after = client.get("/api/dashboard").json()
+    still = [s["id"] for s in client.get("/api/submissions").json()["submissions"]]
+    check(r.status_code == 200 and r.json()["deleted"]["deleted_facts"] >= 1
+          and victim["id"] not in still and after["n_facts"] < before
+          and client.delete(f"/api/submissions/{victim['id']}").status_code == 404
+          and any(a["action"] == "delete_submission" and a["submission_id"] == victim["id"]
+                  for a in db.get_audit(limit=10)),
+          "one uploaded file is deleted with its values, once, and the audit trail says so")
+    fund = next(s["entity_name"] for s in subs if s["entity_name"].startswith("Fund ")
+                and s["n_facts"] and s.get("extractor") != "manual")
+    fp = client.get(f"/api/portfolio/{fund}/footprint").json()
+    r = client.delete(f"/api/portfolio/{fund}")
+    left = [s for s in client.get("/api/submissions").json()["submissions"] if s["entity_name"] == fund]
+    inv = client.get("/api/investments").json()
+    check(r.status_code == 200 and fp["files"] and not left
+          and fund not in {e["entity_name"] for e in inv["entities"]}
+          and fund not in db.all_details() and not db.get_capital_calls(fund),
+          f"deleting {fund} takes its files, values, details and investments; the roll-forward is rebuilt")
+
+
+def pdf_reading(samples: Path) -> None:
+    """Comparative columns, numbers a PDF splits apart, and figures at the wrong
+    scale: the reporting period's column is read, and mismatches are flagged."""
+    from app.extractors.pdf_native import extract_pdf
+    from app.models import FinancialFact
+    from app.validate import scale_checks
+    from fastapi.testclient import TestClient
+
+    from app.main import app
+
+    client = TestClient(app)
+    report = samples / "Fund 84_Q1 2026 LP Report.pdf"
+    if not report.exists():
+        import subprocess
+        subprocess.run([sys.executable, str(samples / "make_samples.py")], check=True)
+    items, text = extract_pdf(report)
+    check("88,450,000" in text and "2,100,000" in text and "8 8,450,000" not in text,
+          "a number the PDF splits apart (a stray space on a digit) is read whole")
+    r = process_path(report, allow_duplicate=True)
+    facts = {f["metric_key"]: f for f in db.get_facts(r["submission_id"])}
+    check(r["report_type"] == "fund_financials"
+          and Decimal(facts["total_assets"]["value"]) == 91_300_000
+          and Decimal(facts["total_liabilities"]["value"]) == 120_000
+          and Decimal(facts["nav"]["value"]) == 91_180_000
+          and "March 31, 2026" in facts["total_assets"]["provenance"],
+          "this period's column is read, not last year's comparative on its right")
+    check({c["name"]: c["ok"] for c in r["checks"]}.get("balance_sheet")
+          and all(f["status"] == "needs_review" for f in facts.values()),
+          "the figures reconcile, and a column choice still goes to a person to confirm")
+
+    def fact(rt: str, metric: str, value: int) -> FinancialFact:
+        return FinancialFact(entity_name="Fund 84", entity_kind="fund", report_type=rt,
+                             period="2026-Q1", metric_key=metric, metric_label=metric,
+                             value=Decimal(value), status="auto")
+
+    def names(rt: str, entity: str, fs: list) -> set:
+        return {c.name for c in scale_checks(rt, entity, fs)}
+
+    big = [fact("investment_roll_forward", "ending_balance", 95_000_000)]
+    check(names("investment_roll_forward", "Fund 84", big) == {"above_fund_total"}
+          and big[0].status == "needs_review" and "above_fund_total" in big[0].flags,
+          "an investor balance larger than the whole fund on file is flagged for review")
+    client.post("/api/portfolio/Fund 84/details", json={"fund_size": "100m", "commitment": "5m"})
+    off = [fact("investment_roll_forward", "ending_balance", 40_000_000)]
+    fine = [fact("investment_roll_forward", "ending_balance", 4_600_000)]
+    check(names("investment_roll_forward", "Fund 84", off) == {"share_out_of_line"}
+          and not names("investment_roll_forward", "Fund 84", fine) and fine[0].status == "auto",
+          "a balance far from the commitment's share of the fund is flagged; one in line is not")
+    client.post("/api/manual-values", json={
+        "entity": "Fund 85", "report_type": "investment_roll_forward", "period": "2026-Q1",
+        "metric": "ending_balance", "value": "4,000,000"})
+    small = [fact("fund_financials", "total_assets", 3_200), fact("fund_financials", "nav", 3_300)]
+    check(names("fund_financials", "Fund 85", small) == {"assets_below_net_assets",
+                                                         "below_investor_balance"},
+          "fund totals below the investor's own balance (or assets below net assets) are flagged")
+
 
 def clear_data(samples: Path) -> None:
     """The header's "Clear data" button: empties the data, keeps the audit trail."""
@@ -1145,6 +1796,9 @@ def clear_data(samples: Path) -> None:
     res = client.post("/api/admin/clear", json={"confirm": "CLEAR"})
     body = res.json()
     check(res.status_code == 200 and body["cleared_submissions"] > 0, "clear succeeds")
+    check(db.all_details() == {} and db.get_capital_calls() == [] and db.get_budgets() == {}
+          and body.get("cleared_entities", 0) >= 1,
+          "details, dated investments and budgets are cleared too — nothing 'default' remains")
     check(db.list_submissions() == [] and db.get_facts() == []
           and db.get_investments() == {"entities": [], "quarters": []},
           "submissions, facts and investment views are empty")

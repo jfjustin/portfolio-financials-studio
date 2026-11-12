@@ -247,6 +247,10 @@ upload is checked against the entity's earlier quarters:
 
 Above the trend chart, three ratios summarize the whole fund portfolio:
 
+TVPI and DPI are the Portfolio Summary's *Fund Investments* row (§4d) — the same
+paid-in, distributions and NAV, in USD — so the two cards never disagree. A `*`
+marks a ratio that rests on an estimate.
+
 - **TVPI** (Total Value to Paid-In) = (distributions + current NAV) ÷ total
   capital called. Above 1.0x means the portfolio is worth more than was paid in.
 - **DPI** (Distributions to Paid-In) = cash actually returned ÷ total capital
@@ -301,14 +305,85 @@ net burn $360K/month (10 months).
 - Direct investments are *current*, *impaired* (an impairment is entered) or *exited* (an exit
   date is entered). Held: unrealized = value − cost, AUM = value. Exited: realized = proceeds −
   cost, unrealized = value − proceeds.
-- Funds: value = NAV + distributions, realized = distributions, unrealized = NAV − paid-in,
-  book value and AUM = NAV.
+- Funds: value = NAV + distributions, realized = distributions − returned capital, unrealized =
+  NAV − (paid-in − returned capital), book value and AUM = NAV. Returned capital is the figure
+  entered in the fund's details, else the return-of-capital lines of the quarters on file.
+- A `*` marks a cell that rests on an estimate — the quarters on file rather than a
+  since-inception figure. Hover it, and see the note under the table.
 - Every row: total gain = realized + unrealized, gain % = total gain ÷ cost, TVPI = value ÷
   cost, DPI = proceeds ÷ cost.
 - In each company's details, enter its **impairment**, **book value** (default: cost − impairment)
   and **portfolio group** (default: Life Sciences when its theme says so, else Core). A fund that
   reports in another currency needs its **USD rate** in its details; until then it's listed under
-  the table and left out of the totals.
+  the table and left out of the totals. For a rate per quarter, fill **USD rate by quarter**
+  (`2026-Q1=1.08; 2026-Q2=1.10`): the report's quarter uses its own rate, else the latest
+  earlier one (noted under the table).
+
+**Master workbooks** (Upload & files)
+Drop the team's **Investment Portfolio** workbook or the accounting team's **Equity Investments
+Summary** on the upload area like any other file. The app recognises a workbook whose sheets are
+laid out like the team's (one sheet per fund or company — *Investment Name*, *Investment Type*,
+*Total Investment to Date*, *Total Value*, *Commitment*, *Drawn to Date*…, the *Latest Stats*
+row, the *Invested* rows, and the *Equity Investments Summary* block beside them) or that holds
+a *Summary-Portfolio Value* sheet, and:
+- fills every fund's and company's details from its sheet ($M figures scaled; the accounting
+  block read in whole units), sets each fund's commitment, and adds the dated investments it
+  lists (a re-read adds no duplicates);
+- records no quarterly figures from it — it is master data, not a statement — and keeps the file
+  under Submissions as a *Master workbook*, so it can be re-read after an update;
+- leaves other tabs alone (an *Investments-AOP* planning tab, notes) and never creates an entity
+  from a stray heading; the upload result names the tabs it did not read.
+Each entity's own sheet wins over the summary tab for a field both carry.
+
+The **Equity Investments Summary** workbook is read the same way: its *Investments Summary*
+table gives each position (balance, funding, return of capital, impairment, commitment,
+remaining commitment, ownership, initial date — open equity investments, funds, notes, and
+closed investments as exits), and the backup tab behind each entity adds the accounting fields
+(entity type, method, GL account, company code, the latest dated ownership, terms) and the dated
+capital calls or securities bought. The "Other" block, converted notes and tabs with no row in
+the summary are left out and named in the result; its date cell sets the quarter.
+
+**Any run of quarters** (Direct Investment Financials → *Or from … to*)
+Besides a quarter or the year, pick a start and end quarter, across years ("Q3'25 to Q1'26"), or a
+preset: trailing 4 quarters, calendar year to date, the fiscal year of the latest quarter, or the
+previous fiscal year (the fiscal year end is the `FISCAL_YEAR_END_MONTH` setting). The
+flows (revenue, operating cash flow, CapEx, operating expense) add up over the quarters that have
+approved figures, Ending Cash is as of the last of them, burn is over the months those quarters
+cover, and runway follows. Quarters with no figures, and a figure missing from some of them, are
+named under the table. The export carries the range as one more Budget | Actual pair.
+
+**Clear data** (header button) deletes every uploaded file and value *and* every fund's and
+company's details, commitments, dated investments and budgets — nothing shows afterwards until
+something is uploaded or entered again. Taught statement wording and the audit trail stay; a
+backup snapshot is saved first.
+
+**IRR** (its own section — the workbook's IRR tab)
+Money-weighted (XIRR) returns as of a quarter, from dated cash flows in USD: capital calls and
+investments out (the dated calls entered or imported; failing those a fund's quarterly funding
+from the roll-forward; failing that the total invested on the initial investment date);
+distributions by quarter and exit proceeds in; what is still held (a fund's balance, a held
+company's value) as a final inflow at the quarter end. Shown for the whole portfolio, **Core vs
+Life Sciences**, **Direct vs Funds**, and every entity; click a row for the flows behind the
+figure. A `*` marks a figure resting on an undated estimate (its note says which). Entities with
+no investment on file are listed as left out.
+
+**Holdings sheet** (Investment Portfolio → Direct investments)
+A company's own statements never show what the stake cost or is worth. Instead of typing each
+company's details, **Download holdings sheet**, fill it in — or import the team's own
+*Summary – Portfolio Value* sheet as it is — and **Import holdings sheet** (.xlsx or .csv):
+- The sheet holds a block headed **Fund** (type, vintage, # and $ invested, fair market value,
+  draw, the latest quarter's NAV, distribution) and/or one headed **Company**; each block ends
+  at its *Total* row. Cell-reference rows (`$B$2`) and the dashboard block are ignored.
+- Recognised columns: cost / total investment to date, fair value / total value, round, theme,
+  last investment date, projected investment, impairment, book value, status, group, exit date /
+  value / proceeds / escrow, USD rate.
+- A column headed `($M)` or `($000)` is scaled; a sheet whose amounts carry no unit and are all
+  small is read as $M, and the result says so. Empty and `NA` cells keep what is on file.
+- *Current / Impaired / Exit* sets each company's block in the Portfolio Summary; an exit's
+  *Estimated FMV* is its value at exit. **% Capital Allocation** on the block and group rows
+  is each block's cost as a share of all capital invested.
+- A row that can't be read is listed with its row number and skipped; the rest are applied.
+  Every change is in the audit trail.
 
 **When a statement is empty, unreadable or missing a figure**
 Nothing is guessed. Each card lists what needs a person under **Needs attention**:
@@ -387,7 +462,15 @@ label + figure:
   filename or the text.
 - **Several figure columns** (e.g. *Total Partnership | our investor*, or
   *3 months | year to date | inception*): it keeps the right-most and marks
-  the value `multi_column(n)` for review.
+  the value `multi_column(n)` for review. When the page names its columns by
+  date (*March 31, 2026 | December 31, 2025*), the reporting period's column is
+  taken instead, and the choice is shown with the value.
+- **Split numbers:** some redacted or re-saved PDFs print `88,450,000` as
+  `8 8,450,000`. The stray space is dropped so the number is read whole.
+- **Scale:** a fund total smaller than our own balance in that fund, a balance
+  larger than the fund, or a share far from the commitment's share of the fund
+  size is flagged for review (`below_investor_balance`, `above_fund_total`,
+  `share_out_of_line`) — a sign a column or unit was misread.
 
 **2. Model step (when a model is configured).** It runs when the parser's
 roll-forward is incomplete, has multi-column picks, or doesn't add up; when a

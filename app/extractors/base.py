@@ -270,6 +270,10 @@ def guess_entity_name(lines: list[str], filename: str = "") -> str:
     """Best-effort entity name from the top lines of a document or the filename."""
     for ln in lines[:12]:
         s = ln.strip()
+        # a planning line ("Follow-on 1 Company Q EU/ Devices H1 2026 1 25") is
+        # not a name: too many words, or a half-year / quarter and figures in it
+        if len(s.split()) > 5 or re.search(r"\b(h[12]|q[1-4])\s*'?\d{2,4}\b", s, re.I):
+            continue
         if 3 <= len(s) <= 80 and _ENTITY_HINT.search(s) and not re.search(
                 r"\b(statement|report|balance|income|financial|schedule|as of|"
                 r"period|quarter|unaudited|audited)\b", s, re.I):

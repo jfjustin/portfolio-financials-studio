@@ -11,7 +11,7 @@ and delivered in the team's own workbooks.**
 ![Azure](https://img.shields.io/badge/Azure-App%20Service%20%C2%B7%20OpenAI%20%C2%B7%20ADLS-0078D4)
 ![Delta Lake](https://img.shields.io/badge/Delta%20Lake-medallion-00ADD4)
 ![Power BI](https://img.shields.io/badge/Power%20BI%20%2F%20Fabric-ready-F2C811)
-![Tests](https://img.shields.io/badge/end--to--end%20checks-154-2EA44F)
+![Tests](https://img.shields.io/badge/end--to--end%20checks-210-2EA44F)
 
 [See it in action](#-see-it-in-action) · [Highlights](#-highlights) · [Architecture](#%EF%B8%8F-architecture) ·
 [Quick start](#-quick-start) · [User guide](GUIDE.md) · [Architecture notes](docs/ARCHITECTURE.md)
@@ -52,7 +52,7 @@ deliverables the team sends.
   retraining.
 - 🏞️ **Lakehouse-ready** — Land → Bronze → Silver → Gold Delta tables on ADLS Gen2 or Fabric OneLake, plus
   versioned Parquet exports for Power BI.
-- 🚀 **Shipped to Azure** — GitHub Actions runs 154 end-to-end checks before every deploy to App Service;
+- 🚀 **Shipped to Azure** — GitHub Actions runs 210 end-to-end checks before every deploy to App Service;
   Entra ID SSO and keyless (managed identity) access to Azure services.
 
 ## 🎬 See it in action
@@ -162,7 +162,7 @@ per entity and period. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 | Data platform | Delta Lake (`deltalake`, PyArrow) on ADLS Gen2 or Microsoft Fabric OneLake · Parquet exports |
 | Frontend | Plain JavaScript with SVG charts — no external CDNs, fonts or scripts |
 | Cloud & DevOps | Azure App Service · GitHub Actions · Docker · Azure Container Apps · Entra ID · managed identity |
-| Testing | End-to-end suite of 154 checks on synthetic documents, run before every deploy |
+| Testing | End-to-end suite of 210 checks on synthetic documents, run before every deploy |
 
 ## 🚀 Quick start
 
@@ -217,11 +217,19 @@ on the model.
 
 <br>
 
-- **Overall Performance** — TVPI, DPI and a money-weighted IRR across all fund investments, from
-  confirmed funding, distributions and NAV (`app/performance.py`).
+- **Overall Performance** — TVPI, DPI and a money-weighted IRR across all fund investments; TVPI and
+  DPI are the Portfolio Summary's fund row, so the two never disagree (`app/performance.py`).
+- **IRR** — XIRR from dated cash flows for the whole portfolio, Core vs Life Sciences, Direct vs
+  Funds and every entity, with the flows behind each figure.
 - **Portfolio Summary** — direct investments by status (current / impaired / exited), funds, and all
   investments by portfolio group: cost or paid-in, total value, book value, impairment, proceeds,
-  realized / unrealized / total gain, gain %, TVPI, DPI and AUM. Also the workbook's Dashboard sheet.
+  realized / unrealized / total gain, gain %, TVPI, DPI and AUM, in USD with per-quarter rates;
+  cells resting on an estimate are marked. Also the workbook's Dashboard sheet.
+- **Holdings sheet** — one .xlsx / .csv fills every company's holding record (cost, value, round,
+  dates, impairment, group); unreadable rows are reported, never half-applied.
+- **Master workbooks** — the team's Investment Portfolio or the accounting team's Equity Investments
+  Summary workbook, dropped on the upload area, fills every fund and company at once (positions,
+  accounting fields, commitments, dated investments) and never invents an entity from a planning tab.
 - **Direct Investments** — per company: investment cost, estimated FMV, book value, unrealized
   gain/(loss), MOIC, ownership.
 - **Direct Investment Financials** and **Investment Portfolio** — the two quarterly deliverables, each
@@ -312,6 +320,9 @@ AUTH_MODE=entra ENTRA_TENANT_ID=... ENTRA_CLIENT_ID=... ENTRA_CLIENT_SECRET=... 
 
 Sessions are signed HttpOnly cookies; static assets, the login page and the health check are the only
 unauthenticated routes. Use `password` or `entra` for any deployment other people can reach.
+On Azure App Service the simplest gate is **App Service Authentication** (Microsoft sign-in in
+front of the app, no code change): keep `AUTH_MODE=none`; the audit trail then records the
+signed-in person from the platform's `X-MS-CLIENT-PRINCIPAL-NAME` header.
 
 </details>
 
@@ -391,7 +402,7 @@ app/
   db.py                     SQLAlchemy Core storage, append-only audit trail
   storage.py · auth.py · config.py
 templates/ · static/        dashboard — no external CDNs, SVG charts
-tests/test_e2e.py           154 end-to-end checks on synthetic documents
+tests/test_e2e.py           210 end-to-end checks on synthetic documents
 samples/                    synthetic document generator (made-up companies and funds)
 docs/                       architecture, BI integration spec, screenshots, demos
 deploy/ · Dockerfile        Azure Container Apps script and container image
@@ -425,22 +436,34 @@ deploy/ · Dockerfile        Azure Container Apps script and container image
 <sub>Built by <a href="https://github.com/jfjustin">Justin Jiang</a> · FastAPI · Azure OpenAI · Delta Lake · Power BI</sub>
 </div>
 
-### Investment Portfolio Dashboard
+## Investment Portfolio Dashboard tab
 
-The second navigation tab displays an optional workbook snapshot. Supply
-`portfolio-dashboard.json` in the configured `DATA_DIR` through your deployment's
-private data volume. Keep the snapshot out of source control. The page uses
-the Studio's existing authentication, so configure authentication before
-hosting a Studio with confidential data.
+The separate `/portfolio-dashboard` page adds browser-only portfolio charts, six KPIs,
+expandable source tables, CSV export, and an Excel upload area below the dashboard.
+It uses the existing application authentication. Studio's intake, review, APIs,
+database, exports, and source JavaScript remain unchanged. The only integration in
+Studio's page is the shared page-navigation include and its stylesheet.
 
-The JSON contains a `period` label, an optional HTTPS `source` workbook link,
-an `irr` array (Core and Life Sciences), and two ordered `sections`. Each
-section has a `title`, `columns`, and `rows` of display values. The first
-section holds direct and fund investments. The second holds Total Investments,
-Life Sciences, and Core, in that order, with the category, company count,
-paid-in capital, and total value as the first four columns. Supply the two
-amounts as dollar values in millions (for example, `"$12.3M"`). Replace the
-snapshot file to update the dashboard. When the source URL includes
-`asOf=YYYY-MM`, both date labels use that report month. For links without a
-report month, both labels use `period`. Update the figures and report month
-together when replacing the snapshot.
+Upload a saved `.xlsx` workbook from this tab. Its parser reads cached formula
+results from `Summary-Portfolio Value`, validates the fixed header/row labels,
+and extracts the summary in C79:R85, C87:R90 and C92:E94. The optional reporting
+date comes from `UPDATE DATE!E9`. Save/recalculate in Excel before uploading.
+Files are parsed locally and never sent to Studio's upload API. A separate
+`pfs-investment-portfolio-dashboard` IndexedDB database holds the last valid
+workbook; it restores automatically and can also be reopened with **Load last
+workbook** or removed with **Forget saved workbook**. Studio's Clear data does
+not access it. This is manual workbook refresh, not live SharePoint synchronization.
+
+A default snapshot is optional: provision `portfolio-dashboard.json` separately in
+`DATA_DIR`. It accepts the previous PR's `sections`/`rows`/`irr` snapshot or the
+`Summary` structure defined in `dashboard-browser/src/lib/portfolio-summary.ts`.
+The file, source workbook and financial figures are not included in Git or Docker.
+Without one, the page can be populated from its own upload area. Changes to this
+private snapshot never populate Studio's database.
+
+Prebuilt dashboard JS/CSS are committed in `static/portfolio-dashboard/`, so the
+existing Python deployment does not require Node or changes to its CI/Dockerfile.
+To edit/rebuild the browser source: `cd dashboard-browser && npm ci && npm test &&
+npm run build` (Node 22.13+). Run the Python integration checks with
+`python tests/test_portfolio_dashboard.py`, followed by the existing
+`python tests/test_e2e.py` suite.

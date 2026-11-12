@@ -109,8 +109,11 @@ class Settings(BaseSettings):
     #   password  -> shared-password gate (a private workspace behind one password)
     #   entra     -> Microsoft Entra ID SSO (OIDC auth-code flow via MSAL)
     auth_mode: str = "none"                       # none | password | entra
-    session_secret: str = "change-me-in-production"
+    session_secret: str = "change-me-in-production"   # must be set when AUTH_MODE != none
     session_ttl_hours: int = 12
+    session_cookie_secure: bool = True            # HTTPS only; false for a local http test
+    login_max_failures: int = 8                   # per address, within login_lockout_minutes
+    login_lockout_minutes: int = 10
     # password mode
     app_password: str = ""                        # the shared workspace password
     # entra mode

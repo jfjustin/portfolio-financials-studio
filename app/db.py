@@ -13,6 +13,7 @@ Design choices for confidential financial data:
 from __future__ import annotations
 
 import json
+from contextvars import ContextVar
 from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Any, Optional
@@ -567,7 +568,9 @@ def set_submission_period(sub_id: int, period: str, user: str = "local") -> str:
 
 
 def clear_data(user: str = "local", keep_backups: int = 5) -> dict[str, Any]:
-    """Delete every submission, fact and investment view row ("start over").
+    """Delete every submission, fact and investment view row, and every fund's
+    and company's details, parameters, dated investments and budgets ("start
+    over"). Taught statement wording is knowledge, not data, and stays.
 
     The audit trail is append-only and is kept; a `clear_data` row records who
     cleared what. With SQLite, a snapshot of the database is saved first under
@@ -593,13 +596,16 @@ def clear_data(user: str = "local", keep_backups: int = 5) -> dict[str, Any]:
     with eng.begin() as conn:
         n_subs = conn.execute(select(func.count()).select_from(submissions)).scalar_one()
         n_facts = conn.execute(select(func.count()).select_from(facts)).scalar_one()
-        for table in (facts, submissions, investment_quarters, investment_entities):
+        n_entities = conn.execute(select(func.count()).select_from(fund_profiles)).scalar_one()
+        for table in (facts, submissions, investment_quarters, investment_entities,
+                      fund_profiles, capital_calls, budgets):
             conn.execute(table.delete())
         conn.execute(insert(audit).values(
             ts=_now(), action="clear_data", user=user,
-            note=(f"cleared {n_subs} submissions, {n_facts} facts"
+            note=(f"cleared {n_subs} submissions, {n_facts} facts, {n_entities} entities' details"
                   + (f"; backup {backup.name}" if backup else ""))))
     return {"cleared_submissions": int(n_subs), "cleared_facts": int(n_facts),
+            "cleared_entities": int(n_entities),
             "backup": backup.name if backup else None}
 
 
@@ -811,6 +817,70 @@ def delete_capital_call(call_id: int, user: str = "local") -> bool:
     return True
 
 
+def delete_submission(sub_id: int, user: str = "local") -> Optional[dict[str, Any]]:
+    """Remove one uploaded file and every value read from it; the roll-forward
+    is rebuilt without it. The audit trail keeps a `delete_submission` row.
+    Returns what was removed, or None when there is no such submission."""
+    with get_engine().begin() as conn:
+        sub = conn.execute(select(submissions).where(submissions.c.id == sub_id)).mappings().first()
+        if sub is None:
+            return None
+        n_facts = conn.execute(select(func.count()).select_from(facts)
+                               .where(facts.c.submission_id == sub_id)).scalar_one()
+        conn.execute(facts.delete().where(facts.c.submission_id == sub_id))
+        conn.execute(submissions.delete().where(submissions.c.id == sub_id))
+        conn.execute(insert(audit).values(
+            ts=_now(), submission_id=sub_id, action="delete_submission", user=user,
+            field=sub["entity_name"],
+            note=f"deleted {sub['filename']} ({sub['report_type']}, {sub['period']}) and "
+                 f"{n_facts} value(s)"))
+    rebuild_investment_views()
+    return {"submission_id": sub_id, "filename": sub["filename"], "entity": sub["entity_name"],
+            "deleted_facts": int(n_facts)}
+
+
+def entity_footprint(entity: str) -> dict[str, Any]:
+    """What deleting a fund / company would take with it."""
+    with get_engine().connect() as conn:
+        subs = conn.execute(select(submissions.c.id, submissions.c.filename, submissions.c.extractor)
+                            .where(submissions.c.entity_name == entity)).all()
+        n_facts = conn.execute(select(func.count()).select_from(facts)
+                               .where(facts.c.entity_name == entity)).scalar_one()
+        n_calls = conn.execute(select(func.count()).select_from(capital_calls)
+                               .where(capital_calls.c.entity_name == entity)).scalar_one()
+        n_budgets = conn.execute(select(func.count()).select_from(budgets)
+                                 .where(budgets.c.entity_name == entity)).scalar_one()
+        has_details = conn.execute(select(fund_profiles.c.entity_name)
+                                   .where(fund_profiles.c.entity_name == entity)).first() is not None
+    return {"entity": entity, "files": [{"id": r.id, "filename": r.filename}
+                                        for r in subs if r.extractor != MANUAL],
+            "manual_entries": sum(1 for r in subs if r.extractor == MANUAL),
+            "values": int(n_facts), "calls": int(n_calls), "budgets": int(n_budgets),
+            "details": has_details}
+
+
+def delete_entity(entity: str, user: str = "local") -> dict[str, Any]:
+    """Remove a fund / company altogether: its details and parameters, dated
+    investments, budgets, and every file and value filed under its name. The
+    audit trail keeps a `delete_entity` row with what went."""
+    fp = entity_footprint(entity)
+    with get_engine().begin() as conn:
+        sub_ids = [r[0] for r in conn.execute(select(submissions.c.id)
+                                              .where(submissions.c.entity_name == entity))]
+        if sub_ids:
+            conn.execute(facts.delete().where(facts.c.submission_id.in_(sub_ids)))
+            conn.execute(submissions.delete().where(submissions.c.id.in_(sub_ids)))
+        conn.execute(facts.delete().where(facts.c.entity_name == entity))
+        conn.execute(capital_calls.delete().where(capital_calls.c.entity_name == entity))
+        conn.execute(budgets.delete().where(budgets.c.entity_name == entity))
+        conn.execute(fund_profiles.delete().where(fund_profiles.c.entity_name == entity))
+        conn.execute(insert(audit).values(
+            ts=_now(), action="delete_entity", user=user, field=entity,
+            note=json.dumps(fp, sort_keys=True)))
+    rebuild_investment_views()
+    return fp
+
+
 def mark_submission_reviewed(sub_id: int, user: str = "local") -> None:
     eng = get_engine()
     with eng.begin() as conn:
@@ -980,9 +1050,34 @@ def approved_statuses() -> tuple[str, ...]:
     return ("auto", "confirmed") if settings.publish_auto_accepted else ("confirmed",)
 
 
+# A read-only request (GET) reuses what it has already read: the dashboard's
+# reports would otherwise re-read every approved value and rebuild the
+# roll-forward several times per page. Writes never use it (see main.py).
+_REQUEST_CACHE: ContextVar[Optional[dict]] = ContextVar("pfs_request_cache", default=None)
+
+
+def request_cache_scope(enabled: bool):
+    """Set the per-request cache on (for a read-only request) or off; returns
+    the token for `_REQUEST_CACHE.reset`."""
+    return _REQUEST_CACHE.set({} if enabled else None)
+
+
+def _cached(key: str, compute):
+    cache = _REQUEST_CACHE.get()
+    if cache is None:
+        return compute()
+    if key not in cache:
+        cache[key] = compute()
+    return cache[key]
+
+
 def trusted_facts() -> list[dict[str, Any]]:
     """Published (Gold) values — what dashboards, exports and the lake's Gold
     layer are built from. Values waiting for review never appear here."""
+    return _cached("trusted_facts", _trusted_facts)
+
+
+def _trusted_facts() -> list[dict[str, Any]]:
     eng = get_engine()
     with eng.connect() as conn:
         rows = conn.execute(
@@ -1260,6 +1355,10 @@ def timeseries() -> dict[str, Any]:
 
 def get_investments() -> dict[str, Any]:
     """Return the investment read-model (rebuilt from trusted facts)."""
+    return _cached("investments", _get_investments)
+
+
+def _get_investments() -> dict[str, Any]:
     rebuild_investment_views()
     eng = get_engine()
     with eng.connect() as conn:

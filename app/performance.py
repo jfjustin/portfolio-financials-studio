@@ -63,52 +63,67 @@ def _period_end_date(period: str) -> Optional[date]:
 def xirr(cashflows: list[tuple[date, float]]) -> Optional[float]:
     """Annualized money-weighted return. None if it can't be solved.
 
-    Newton's method with a bisection fallback; pure Python, no numpy/scipy.
     Convention: outflows (capital calls) negative, inflows (distributions,
-    terminal value) positive.
+    terminal value) positive. Many interleaved calls and distributions can
+    give the NPV curve several roots; the rate nearest zero is the return
+    (a root near −100% is an artefact). Every sign change on a grid from
+    −99% to +1000% a year is bracketed and bisected, then polished.
     """
     if len(cashflows) < 2:
         return None
     if not any(cf < 0 for _d, cf in cashflows) or not any(cf > 0 for _d, cf in cashflows):
         return None  # needs at least one outflow and one inflow to be solvable
-    t0 = cashflows[0][0]
+    t0 = min(d for d, _cf in cashflows)
     years = [(d - t0).days / 365.0 for d, _cf in cashflows]
 
     def npv(rate: float) -> float:
         return sum(cf / ((1.0 + rate) ** t) for t, (_d, cf) in zip(years, cashflows))
 
-    def dnpv(rate: float) -> float:
-        return sum(-t * cf / ((1.0 + rate) ** (t + 1))
-                   for t, (_d, cf) in zip(years, cashflows) if t > 0)
-
-    rate = 0.1
-    for _ in range(100):
+    grid = ([-0.99, -0.97, -0.95, -0.9, -0.85, -0.8, -0.7, -0.6, -0.5, -0.4, -0.3, -0.2, -0.15,
+             -0.1, -0.05, -0.02, 0.0, 0.02, 0.05, 0.1, 0.15, 0.2, 0.3, 0.4, 0.5, 0.75, 1.0, 1.5,
+             2.0, 3.0, 5.0, 10.0])
+    values = []
+    for r in grid:
+        try:
+            values.append(npv(r))
+        except (OverflowError, ZeroDivisionError):
+            values.append(float("nan"))
+    roots: list[float] = []
+    for (r0, v0), (r1, v1) in zip(zip(grid, values), zip(grid[1:], values[1:])):
+        if v0 != v0 or v1 != v1:
+            continue
+        if v0 == 0:
+            roots.append(r0)
+            continue
+        if v0 * v1 < 0:
+            lo, hi, f_lo = r0, r1, v0
+            for _ in range(100):
+                mid = (lo + hi) / 2
+                f_mid = npv(mid)
+                if abs(f_mid) < 1e-9 or hi - lo < 1e-9:
+                    break
+                if f_lo * f_mid < 0:
+                    hi = mid
+                else:
+                    lo, f_lo = mid, f_mid
+            roots.append((lo + hi) / 2)
+    if not roots:
+        return None
+    rate = min(roots, key=abs)
+    # polish with a few Newton steps, kept within the bracket's neighbourhood
+    for _ in range(20):
         f = npv(rate)
-        df = dnpv(rate)
+        df = sum(-t * cf / ((1.0 + rate) ** (t + 1))
+                 for t, (_d, cf) in zip(years, cashflows) if t > 0)
         if abs(df) < 1e-12:
             break
-        new_rate = rate - f / df
-        if new_rate <= -0.9999:
-            new_rate = (rate - 0.9999) / 2  # keep (1+rate) positive
-        if abs(new_rate - rate) < 1e-7:
-            return round(new_rate, 5)
-        rate = new_rate
-
-    # bisection fallback over a wide bracket
-    lo, hi = -0.9999, 10.0
-    f_lo, f_hi = npv(lo), npv(hi)
-    if f_lo * f_hi > 0:
-        return None  # no sign change in bracket; can't solve robustly
-    for _ in range(200):
-        mid = (lo + hi) / 2
-        f_mid = npv(mid)
-        if abs(f_mid) < 1e-6:
-            return round(mid, 5)
-        if f_lo * f_mid < 0:
-            hi, f_hi = mid, f_mid
-        else:
-            lo, f_lo = mid, f_mid
-    return round((lo + hi) / 2, 5)
+        step = f / df
+        if abs(step) > 0.01:
+            break
+        rate -= step
+        if abs(step) < 1e-9:
+            break
+    return round(rate, 5)
 
 
 # --------------------------------------------------------------------------
@@ -233,12 +248,22 @@ def fund_summary() -> list[dict[str, Any]]:
 # Portfolio-level TVPI / DPI / IRR (Lam Capital overall, across all funds)
 # --------------------------------------------------------------------------
 def portfolio_performance() -> dict[str, Any]:
-    """Aggregate TVPI, DPI, and a money-weighted IRR across all fund entities."""
+    """Aggregate TVPI, DPI, and a money-weighted IRR across all fund entities.
+
+    TVPI and DPI are the Portfolio Summary's "Fund Investments" row — the same
+    paid-in, distributions and NAV (in USD), so the two never disagree. IRR is
+    worked out from the dated quarterly flows of the roll-forward."""
+    from . import portfolio
+    summ = portfolio.summary()
+    funds = [ln for ln in summ["lines"] if ln["kind"] == "fund"]
+    row = next((r for r in summ["rows"] if r["kind"] == "fund"), {})
+    paid_in = float(sum((ln["paid_in"] for ln in funds), Decimal(0)))
+    distributions = float(sum((ln["proceeds"] for ln in funds), Decimal(0)))
+    nav = float(sum((ln["aum"] for ln in funds), Decimal(0)))
+
     quarters_by_entity: dict[str, list[dict]] = {}
     for q in db.get_investments()["quarters"]:
         quarters_by_entity.setdefault(q["entity_name"], []).append(q)
-
-    total_funding = total_distributions = total_nav = 0.0
     cashflows: list[tuple[date, float]] = []
     for name, qs in quarters_by_entity.items():
         qs = sorted(qs, key=lambda r: r["period_order"])
@@ -248,32 +273,31 @@ def portfolio_performance() -> dict[str, Any]:
             # see fund_summary(): distributions are stored as the negative
             # balance-impact; use the positive cash-received magnitude here.
             dist = abs(q.get("return_of_capital") or 0) + abs(q.get("dividends") or 0)
-            total_funding += funding
-            total_distributions += dist
             if d:
                 if funding:
                     cashflows.append((d, -funding))
                 if dist:
                     cashflows.append((d, dist))
         ending = qs[-1].get("ending_balance") or 0
-        total_nav += ending
         d = _period_end_date(qs[-1]["period_label"])
         if d and ending:
             cashflows.append((d, ending))  # terminal value as a final inflow
 
     cashflows.sort(key=lambda cf: cf[0])
-    tvpi = round((total_distributions + total_nav) / total_funding, 2) if total_funding else None
-    dpi = round(total_distributions / total_funding, 2) if total_funding else None
     irr = xirr(cashflows)
-
     return {
-        "total_funding": round(total_funding, 2),
-        "total_distributions": round(total_distributions, 2),
-        "total_nav": round(total_nav, 2),
-        "tvpi": tvpi,
-        "dpi": dpi,
+        "total_funding": round(paid_in, 2),
+        "total_distributions": round(distributions, 2),
+        "total_nav": round(nav, 2),
+        "tvpi": round(row["tvpi"], 2) if row.get("tvpi") is not None else None,
+        "dpi": round(row["dpi"], 2) if row.get("dpi") is not None else None,
         "irr_pct": round(irr * 100, 1) if irr is not None else None,
-        "n_funds": len(quarters_by_entity),
+        "n_funds": len(funds),
+        "as_of_label": summ["as_of_label"],
+        "estimated": sorted(row.get("estimated", [])),
+        # funds on file the figures leave out (no paid-in / balance, or no USD rate)
+        "left_out": [n["name"] for n in summ["notes"]
+                     if n["kind"] == "fund" and n["message"].startswith("left out")],
     }
 
 

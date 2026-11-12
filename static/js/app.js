@@ -2,7 +2,23 @@
 (function () {
   const $ = (s, r) => (r || document).querySelector(s);
   const $$ = (s, r) => Array.from((r || document).querySelectorAll(s));
-  const api = (p, o) => fetch(p, o).then(r => r.json());
+  const api = (p, o) => fetch(p, o).then(r => { if (r.status === 401) sessionEnded(); return r.json(); });
+  // the session ended (the gate was turned on, or 12 hours passed): sign in again
+  function sessionEnded() {
+    if (sessionEnded.done) return; sessionEnded.done = true;
+    toast("Your session has ended — signing in again");
+    setTimeout(() => { location.href = "/login?expired=1"; }, 900);
+  }
+  // why a request failed, in words: the server's detail, else its status
+  async function failText(res) {
+    if (res.status === 401) { sessionEnded(); return "your session has ended — sign in again"; }
+    let body = null;
+    try { body = await res.json(); } catch (e) { /* not JSON */ }
+    const d = body && body.detail;
+    if (typeof d === "string" && d) return d;
+    if (Array.isArray(d)) return d.map(x => (x.loc || []).slice(-1)[0] + ": " + x.msg).join("; ");
+    return `HTTP ${res.status}${res.statusText ? " " + res.statusText : ""}`;
+  }
   let REPORT_TYPES = {};
 
   function toast(msg) {
@@ -23,8 +39,32 @@
       b.className = "badge on"; }
     else { b.textContent = h.llm_provider + " unavailable"; b.className = "badge off"; }
     if (ps.detail) b.title = ps.detail;
+    setupNav();
     $("#ledger-filter").addEventListener("input", renderLedger);
-    $("#dif-year").addEventListener("change", e => loadDirectInvestments(+e.target.value));
+    $("#dif-year").addEventListener("change", e => { DIF_RANGE = null; loadDirectInvestments(+e.target.value); });
+    $("#dif-preset").addEventListener("change", e => {
+      const v = e.target.value; if (!v) return;
+      const all = [...$("#dif-from").options].map(o => o.value).filter(Boolean);
+      const latest = DIF.latest_quarter || all[all.length - 1];
+      const qn = q => parseInt(q.slice(0, 4)) * 4 + parseInt(q.slice(-1)) - 1, qs = n => `${Math.floor(n / 4)}-Q${n % 4 + 1}`;
+      const fye = FYE_MONTH, n = qn(latest);          // fiscal year ends in month FYE_MONTH
+      const fyEndQ = Math.ceil(fye / 3), year = parseInt(latest.slice(0, 4)), q = parseInt(latest.slice(-1));
+      const fyEnd = q <= fyEndQ ? qn(`${year}-Q${fyEndQ}`) : qn(`${year + 1}-Q${fyEndQ}`);
+      const r = v === "trailing4" ? [qs(n - 3), latest] : v === "ytd" ? [`${year}-Q1`, latest]
+        : v === "fy" ? [qs(fyEnd - 3), qs(fyEnd)] : v === "fy_prev" ? [qs(fyEnd - 7), qs(fyEnd - 4)] : null;
+      e.target.value = "";
+      if (!r) return;
+      DIF_RANGE = { start: r[0], end: r[1] }; loadDirectInvestments(null);
+    });
+    const pickRange = () => {
+      const a = $("#dif-from").value, b = $("#dif-to").value;
+      if (a && b) { DIF_RANGE = { start: a <= b ? a : b, end: a <= b ? b : a }; loadDirectInvestments(null); }
+      else if (!a && !b && DIF_RANGE) { DIF_RANGE = null; loadDirectInvestments(DIF.year); }
+    };
+    $("#dif-from").addEventListener("change", pickRange);
+    $("#dif-to").addEventListener("change", pickRange);
+    $("#irr-asof").addEventListener("change", e => loadIrr(e.target.value));
+    $$(".irr-split .btn").forEach(b => b.addEventListener("click", () => { IRR_SPLIT = b.dataset.split; renderIrr(); }));
     $("#dif-period").addEventListener("change", renderDif);
     $("#pf-asof").addEventListener("change", e => loadPortfolio(e.target.value));
     wirePortfolioModal();
@@ -37,8 +77,9 @@
   // "Clear data": empty the database after an explicit typed confirmation
   async function clearData() {
     const typed = window.prompt(
-      "This deletes ALL uploaded submissions and extracted values for everyone " +
-      "using this site. The audit trail is kept and a backup snapshot is saved.\n\n" +
+      "This deletes ALL uploaded files and extracted values, and every fund's and company's " +
+      "details, commitments, dated investments and budgets, for everyone using this site. " +
+      "Taught statement wording stays. The audit trail is kept and a backup snapshot is saved.\n\n" +
       "Type CLEAR to confirm:");
     if (typed === null) return;
     if (typed.trim() !== "CLEAR") { toast("Not cleared — you must type CLEAR."); return; }
@@ -47,9 +88,87 @@
       body: JSON.stringify({ confirm: "CLEAR" }) });
     if (!res.ok) { toast("Clear failed: " + (await res.text())); return; }
     const r = await res.json();
-    toast(`Cleared ${r.cleared_submissions} submissions, ${r.cleared_facts} values` +
+    toast(`Cleared ${r.cleared_submissions} files, ${r.cleared_facts} values, ${r.cleared_entities} entities` +
           (r.backup ? ` · backup ${r.backup}` : ""));
     await refresh();
+  }
+
+  // ---------------- Section menu: one section, or several side by side ----------------
+  const CHARTS = { byType: null, byEntity: null, ts: null };
+  function drawCharts() {
+    const pane = $('.pane[data-pane="charts"]');
+    if (!pane || pane.hidden) return;              // drawn when its section is open (it needs a width)
+    if (CHARTS.byType) window.Charts.barChart($("#chart-type"), CHARTS.byType, { title: "Value by report type" });
+    if (CHARTS.byEntity) window.Charts.barChart($("#chart-entity"), CHARTS.byEntity, { title: "Value by entity" });
+    if (CHARTS.ts) window.Charts.lineChart($("#chart-time"), CHARTS.ts, { title: "Portfolio value over time" });
+  }
+  let SELECTED = [];
+  const panes = () => $$("#panes > .pane");
+  const store = {
+    get(k) { try { return localStorage.getItem(k); } catch (e) { return null; } },
+    set(k, v) { try { localStorage.setItem(k, v); } catch (e) { /* private window: not remembered */ } },
+  };
+  function setupNav() {
+    const list = $("#nav-list");
+    list.innerHTML = panes().map(p => {
+      const k = p.dataset.pane, t = p.dataset.title;
+      return `<li class="nav-item" data-pane="${k}">` +
+        `<label class="nav-check" title="Show alongside the open sections"><input type="checkbox" data-pane="${k}" aria-label="Show ${t} alongside"></label>` +
+        `<button type="button" class="nav-link" data-pane="${k}" title="Open ${t} (Ctrl/⌘-click to add it alongside)">${t}</button></li>`;
+    }).join("");
+    panes().forEach(p => {
+      const bar = document.createElement("div");
+      bar.className = "pane-bar";
+      bar.innerHTML = `<span>${p.dataset.title}</span><button type="button" class="pane-close" aria-label="Close ${p.dataset.title}">×</button>`;
+      $(".pane-close", bar).onclick = () => toggleSection(p.dataset.pane);
+      p.prepend(bar);
+    });
+    $$(".nav-link", list).forEach(b => b.addEventListener("click", e => {
+      if (e.metaKey || e.ctrlKey || e.shiftKey) toggleSection(b.dataset.pane);
+      else { SELECTED = [b.dataset.pane]; renderPanes(); window.scrollTo({ top: 0 }); }
+    }));
+    $$(".nav-check input", list).forEach(cb => cb.addEventListener("change", () => toggleSection(cb.dataset.pane)));
+    $("#nav-toggle").onclick = () => setNavCollapsed(!$("#shell").classList.contains("nav-collapsed"));
+    try { SELECTED = JSON.parse(store.get("pfs.sections") || "[]"); } catch (e) { SELECTED = []; }
+    setNavCollapsed(store.get("pfs.navCollapsed") === "1");
+    // charts are redrawn whenever their section changes width: window resize, menu hidden or
+    // shown, one section or three; a hidden section reports 0, so reopening it redraws too
+    let chartW = 0;
+    new ResizeObserver(([e]) => {
+      const w = Math.round(e.contentRect.width);
+      if (w !== chartW) { chartW = w; if (w) requestAnimationFrame(drawCharts); }
+    }).observe($('.pane[data-pane="charts"]'));
+    renderPanes();
+  }
+  function setNavCollapsed(on) {
+    $("#shell").classList.toggle("nav-collapsed", on);
+    const b = $("#nav-toggle");
+    b.textContent = on ? "›" : "‹";
+    b.title = on ? "Show the section menu" : "Hide the section menu";
+    b.setAttribute("aria-expanded", on ? "false" : "true");
+    store.set("pfs.navCollapsed", on ? "1" : "0");
+  }
+  function toggleSection(k) {
+    SELECTED = SELECTED.includes(k) ? SELECTED.filter(x => x !== k) : SELECTED.concat([k]);
+    renderPanes();
+  }
+  function renderPanes() {
+    const available = panes().filter(p => !(p.dataset.pane === "lake" && $("#lake-card").hidden))
+                             .map(p => p.dataset.pane);
+    SELECTED = SELECTED.filter(k => available.includes(k));
+    if (!SELECTED.length) SELECTED = [available[0]];
+    panes().forEach(p => { p.hidden = !SELECTED.includes(p.dataset.pane); });
+    const box = $("#panes");
+    box.classList.toggle("multi", SELECTED.length > 1);
+    box.style.setProperty("--cols", String(Math.min(SELECTED.length, 3)));
+    $$("#nav-list .nav-item").forEach(li => {
+      const k = li.dataset.pane, on = SELECTED.includes(k);
+      li.hidden = !available.includes(k);
+      li.classList.toggle("on", on);
+      $("input", li).checked = on;
+      $(".nav-link", li).setAttribute("aria-current", on ? "page" : "false");
+    });
+    store.set("pfs.sections", JSON.stringify(SELECTED));
   }
 
   async function refresh() {
@@ -63,8 +182,8 @@
     const byType = Object.entries(d.value_by_type).map(([k, v]) =>
       ({ label: (REPORT_TYPES[k] && REPORT_TYPES[k].label) || k, value: v }));
     const byEntity = Object.entries(d.value_by_entity).map(([k, v]) => ({ label: k, value: v }));
-    window.Charts.barChart($("#chart-type"), byType, { title: "Value by report type" });
-    window.Charts.barChart($("#chart-entity"), byEntity, { title: "Value by entity" });
+    CHARTS.byType = byType;
+    CHARTS.byEntity = byEntity;
 
     const s = await api("/api/submissions");
     renderSubs(s.submissions);
@@ -76,9 +195,10 @@
     renderPerformance(perf);
     await loadDirectInvestments(DIF ? DIF.year : null);
     await loadPortfolio(PF ? PF.as_of : null);
+    await loadIrr(IRR ? IRR.as_of : null);
 
-    const ts = await api("/api/timeseries");
-    window.Charts.lineChart($("#chart-time"), ts, { title: "Portfolio value over time" });
+    CHARTS.ts = await api("/api/timeseries");
+    drawCharts();
 
     const lg = await api("/api/ledger");
     LEDGER = lg.rows;
@@ -129,14 +249,27 @@
         ? '<span class="muted" title="Not burning cash in this period">n/a</span>'
         : '<span class="muted">—</span>');
 
+  let DIF_RANGE = null;   // {start, end} when a run of quarters is chosen
+  const FYE_MONTH = Number(document.body.dataset.fye || 12);
+  const qLabel = q => `Q${q.slice(-1)}'${q.slice(2, 4)}`;
   async function loadDirectInvestments(year) {
-    DIF = await api("/api/direct-investments" + (year ? "?year=" + year : ""));
+    const qs = [];
+    if (year) qs.push("year=" + year);
+    if (DIF_RANGE) qs.push("start=" + DIF_RANGE.start, "end=" + DIF_RANGE.end);
+    const res = await fetch("/api/direct-investments" + (qs.length ? "?" + qs.join("&") : ""));
+    if (!res.ok) { toast("Range not shown: " + (await failText(res))); DIF_RANGE = null; return loadDirectInvestments(year); }
+    DIF = await res.json();
     $("#dif-year").innerHTML = DIF.years.map(y =>
       `<option value="${y}" ${y === DIF.year ? "selected" : ""}>${y}</option>`).join("");
     const ps = $("#dif-period"), keep = ps.value, yy = String(DIF.year).slice(2);
     ps.innerHTML = DIF.periods.map((p, i) =>
-      `<option value="${p}">${i < 4 ? `Q${i + 1}'${yy}` : `${DIF.year} (year)`}</option>`).join("");
-    ps.value = DIF.periods.includes(keep) ? keep : (DIF.latest_quarter || DIF.periods[0]);
+      `<option value="${p}">${i < 4 ? `Q${i + 1}'${yy}` : i === 4 ? `${DIF.year} (year)`
+        : `${qLabel(DIF.range.start)} – ${qLabel(DIF.range.end)} (${DIF.range.quarters.length} quarters)`}</option>`).join("");
+    ps.value = DIF.range ? DIF.range.key : (DIF.periods.includes(keep) ? keep : (DIF.latest_quarter || DIF.periods[0]));
+    // any quarter on file, plus the chosen year's, as range ends
+    const all = [...new Set((DIF.quarters_on_file || []).concat([1, 2, 3, 4].map(n => `${DIF.year}-Q${n}`)))].sort();
+    for (const [id, cur] of [["#dif-from", DIF_RANGE && DIF_RANGE.start], ["#dif-to", DIF_RANGE && DIF_RANGE.end]])
+      $(id).innerHTML = '<option value="">—</option>' + all.map(q => `<option value="${q}" ${q === cur ? "selected" : ""}>${qLabel(q)}</option>`).join("");
     $("#dif-companies").innerHTML = DIF.companies.map(c => `<option value="${esc(c.company)}">`).join("");
     $("#dif-manual-q").innerHTML = DIF.periods.slice(0, 4).map(p =>
       `<option ${p === (DIF.latest_quarter || DIF.periods[0]) ? "selected" : ""}>${p}</option>`).join("");
@@ -145,9 +278,9 @@
 
   function renderDif() {
     const per = $("#dif-period").value;
-    const q = per.includes("-Q") ? per.slice(-1) : "";
+    const q = /^\d{4}-Q\d$/.test(per) ? per.slice(-1) : "";
     $("#dif-export").href = `/api/exports/direct-investment-financials.xlsx?year=${DIF.year}` +
-      (q ? `&quarter=${q}` : "");
+      (q ? `&quarter=${q}` : "") + (DIF.range ? `&start=${DIF.range.start}&end=${DIF.range.end}` : "");
     const tb = $("#dif-body"); tb.innerHTML = "";
     if (!DIF.companies.length) {
       tb.innerHTML = '<tr><td colspan="11" class="muted" style="text-align:left">No direct-investment ' +
@@ -156,8 +289,10 @@
       $("#dif-attention").innerHTML = "";
       return;
     }
-    const editable = per.includes("-Q") || /^\d{4}$/.test(per);
-    const quarter = per.includes("-Q");
+    const editable = /^\d{4}-Q\d$/.test(per) || /^\d{4}$/.test(per);
+    const quarter = /^\d{4}-Q\d$/.test(per);
+    $("#dif-card .report-title").textContent = "Direct Investment Financials" +
+      (DIF.range && per === DIF.range.key ? ` — ${qLabel(DIF.range.start)} to ${qLabel(DIF.range.end)}` : "");
     DIF.companies.forEach(c => {
       const col = c.columns[per] || { actual: {}, budget: {}, sources: {}, pending: [], checks: [] };
       const tr = document.createElement("tr");
@@ -221,7 +356,7 @@
     const res = await fetch("/api/manual-values", {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify(Object.assign({ report_type: "company_financials", scale: 1000 }, body)) });
-    if (!res.ok) { toast("Not saved: " + (await res.json()).detail); return false; }
+    if (!res.ok) { toast("Not saved: " + (await failText(res))); return false; }
     toast(String(body.value || "").trim() ? "Figure saved — entered by hand, audited" : "Entered figure withdrawn");
     await loadDirectInvestments(DIF.year);
     return true;
@@ -339,35 +474,86 @@
     $("#pf-committed").textContent = tot(t.committed);
     $("#pf-net").textContent = tot(t.net_cash_flow);
     $$(".pf-open").forEach(a => a.addEventListener("click", e => { e.preventDefault(); openPortfolioEntity(a.dataset.entity); }));
-    loadSummary(PF.as_of);
+    if (PF.summary) renderSummary(PF.summary); else loadSummary(PF.as_of);
     renderAttention("#pf-attention", PF.funds.concat(PF.companies).flatMap(r =>
       (r.issues || []).map(i => Object.assign({ who: r.investment_name, entity: r.entity }, i))),
       i => openPortfolioEntity(i.entity));
   }
 
+  // ---------------- IRR (the workbook's IRR tab) ----------------
+  let IRR = null, IRR_SPLIT = "all";
+  const irrPct = (v, est) => v == null ? '<span class="muted">—</span>'
+    : `<span class="${v < 0 ? "is-neg" : "is-pos"}">${v.toFixed(1)}%</span>` + (est ? EST_MARK : "");
+  async function loadIrr(asOf) {
+    IRR = await api("/api/irr" + (asOf ? "?as_of=" + asOf : ""));
+    $("#irr-asof").innerHTML = IRR.quarters.slice().reverse().map(q =>
+      `<option value="${q}" ${q === IRR.as_of ? "selected" : ""}>${q}</option>`).join("");
+    renderIrr();
+  }
+  function renderIrr() {
+    if (!IRR) return;
+    $$(".irr-split .btn").forEach(b => b.classList.toggle("on", b.dataset.split === IRR_SPLIT));
+    const keys = IRR.splits[IRR_SPLIT];
+    $("#irr-tiles").innerHTML = keys.map(k => { const g = IRR.groups[k]; return `<div class="perf-tile">
+        <div class="pv">${irrPct(g.irr_pct, g.estimated)}</div>
+        <div class="pl">${esc(g.label)} · ${g.n} · invested ${psMoney(g.invested)} · returned ${psMoney(g.returned)} · held ${psMoney(g.value)}</div></div>`; }).join("")
+      + (IRR_SPLIT === "all" ? "" : `<div class="perf-tile"><div class="pv">${irrPct(IRR.groups.all.irr_pct, IRR.groups.all.estimated)}</div><div class="pl">All investments · ${IRR.groups.all.n}</div></div>`);
+    const show = IRR.entities.filter(e => IRR_SPLIT === "all" || keys.some(k => IRR.groups[k].members.includes(e.entity)));
+    const tb = $("#irr-body"); tb.innerHTML = "";
+    if (!show.length) tb.innerHTML = '<tr><td colspan="9" class="muted" style="text-align:left">No dated investments yet — enter or import each investment\'s calls, or confirm roll-forward quarters.</td></tr>';
+    show.forEach(e => {
+      const mult = e.invested ? ((e.returned + e.value) / e.invested) : null;
+      const tr = document.createElement("tr");
+      tr.className = "irr-row";
+      tr.innerHTML = `<td class="lbl">${esc(e.name)}${e.name !== e.entity ? `<div class="small muted">${esc(e.entity)}</div>` : ""}</td>
+        <td class="lbl">${e.kind === "fund" ? "Fund" : "Direct"}${e.status === "exited" ? ' <span class="small muted">· exited</span>' : ""}</td>
+        <td class="lbl">${esc(e.group)}</td><td>${esc(e.first_date)}</td>
+        <td>${psMoney(e.invested)}</td><td>${psMoney(e.returned)}</td><td>${psMoney(e.value)}</td>
+        <td>${mult == null ? "—" : mult.toFixed(2) + "x"}</td><td>${irrPct(e.irr_pct, e.estimated)}</td>`;
+      const fl = document.createElement("tr");
+      fl.className = "irr-flows"; fl.hidden = true;
+      fl.innerHTML = `<td colspan="9"><table class="flows"><thead><tr><th>Date</th><th>Flow</th><th>Amount (USD)</th><th>Source</th></tr></thead><tbody>` +
+        e.flows.map(f => `<tr><td>${esc(f.date)}</td><td>${esc(f.kind)}</td><td class="${f.amount < 0 ? "out" : "in"}">${(f.amount < 0 ? "-" : "+") + "$" + Math.abs(f.amount).toLocaleString("en-US", { maximumFractionDigits: 0 })}</td><td>${esc(f.source)}${f.estimated ? " (estimate)" : ""}</td></tr>`).join("") +
+        `</tbody></table>${e.notes.length ? `<div class="small warn-text" style="margin-top:6px">${e.notes.map(esc).join(" · ")}</div>` : ""}</td>`;
+      tr.onclick = () => { fl.hidden = !fl.hidden; };
+      tb.appendChild(tr); tb.appendChild(fl);
+    });
+    $("#irr-notes").innerHTML = IRR.left_out.length
+      ? "Not included: " + IRR.left_out.map(x => `<b>${esc(x.name)}</b> — ${esc(x.why)}`).join(" · ") : "";
+  }
+
   // ---------------- Portfolio Summary (direct by status, funds, all by group) ----------------
+  const EST_MARK = '<sup class="est" title="Includes an estimate — only the quarters on file, not a since-inception figure">*</sup>';
   const psMoney = v => v == null ? '<span class="muted">—</span>'
     : (Number(v) < 0 ? "-" : "") + "$" + Math.abs(Number(v) / 1e6).toFixed(1) + "M";
   function psCell(k, v) {
     if (v == null) return '<span class="muted">—</span>';
     if (k === "count") return String(v);
     if (k === "gain_pct") return `<span class="${v < 0 ? "is-neg" : "is-pos"}">${v.toFixed(1)}%</span>`;
+    if (k === "alloc_pct") return v.toFixed(1) + "%";
     if (k === "tvpi" || k === "dpi") return v.toFixed(2) + "x";
     return psMoney(v);
   }
   async function loadSummary(asOf) {
-    const S = await api("/api/portfolio/summary" + (asOf ? "?as_of=" + asOf : ""));
+    renderSummary(await api("/api/portfolio/summary" + (asOf ? "?as_of=" + asOf : "")));
+  }
+  function renderSummary(S) {
     $("#ps-asof").textContent = "As of " + S.as_of_label;
-    const first = S.columns.filter(c => c.key !== "dpi" && c.key !== "aum");
-    const render = (head, body, rows, cols) => {
-      $(head).innerHTML = '<th class="lbl"></th>' + cols.map(c => `<th>${esc(c.label)}</th>`).join("");
-      $(body).innerHTML = rows.map(r => `<tr class="${r.kind === "total" ? "ps-total" : ""}">` +
-        `<td class="lbl">${esc(r.label)}</td>` +
-        cols.map(c => `<td class="num ${c.key !== "gain_pct" && Number(r[c.key]) < 0 ? "is-neg" : ""}">${psCell(c.key, r[c.key])}</td>`).join("") +
-        "</tr>").join("");
-    };
-    render("#ps-head", "#ps-body", S.rows, first);
-    render("#ps-head2", "#ps-body2", S.totals, S.columns);
+    // one table, two blocks: the columns they share line up, and the first block has no DPI / AUM
+    const all = S.columns.map(c => c.key);
+    const first = all.filter(k => k !== "dpi" && k !== "aum");
+    const head = (keys, cls) => `<tr class="${cls}"><th class="lbl"></th>` + S.columns.map(c =>
+      // headings wrap after a slash ("Gain/ (Loss)") but never at the hyphen of "Paid-in"
+      keys.includes(c.key) ? `<th>${esc(c.label).replace(/-/g, "‑").replace(/\//g, "/​")}</th>`
+                           : '<th class="blank"></th>').join("") + "</tr>";
+    const body = (rows, keys) => rows.map(r => `<tr class="${r.kind === "total" ? "ps-total" : ""}">` +
+      `<td class="lbl">${esc(r.label)}</td>` + S.columns.map(c => !keys.includes(c.key) ? '<td class="blank"></td>' :
+        `<td class="num ${c.key !== "gain_pct" && c.key !== "alloc_pct" && Number(r[c.key]) < 0 ? "is-neg" : ""}">${psCell(c.key, r[c.key])}` +
+        `${r[c.key] != null && (r.estimated || []).includes(c.key) ? EST_MARK : ""}</td>`).join("") +
+      "</tr>").join("");
+    $("#ps-table").innerHTML = `<thead>${head(first, "")}</thead><tbody>${body(S.rows, first)}</tbody>` +
+      `<tbody class="ps-mid"><tr class="ps-gap"><td colspan="${all.length + 1}"></td></tr>${head(all, "ps-subhead")}</tbody>` +
+      `<tbody>${body(S.totals, all)}</tbody>`;
     $("#ps-notes").innerHTML = S.notes.length
       ? "Not in the totals or valued differently: " + S.notes.map(n => `<b>${esc(n.name)}</b> — ${esc(n.message)}`).join(" · ")
       : "";
@@ -399,7 +585,7 @@
       return `<label>${esc(f.label)}<input name="${f.key}" value="${esc(val(f))}" placeholder="${esc(ph)}"></label>`;
     }).join("");
     renderCalls(row);
-    $("#pf-m-remove").hidden = !row.removable;
+    $("#pf-m-remove").textContent = row.removable ? "Remove from report" : "Delete…";
     $("#pf-modal").classList.add("show");
     $("#pf-modal-bg").classList.add("show");
   }
@@ -433,6 +619,21 @@
       const f = e.target, body = Object.fromEntries(new FormData(f).entries());
       if (await saveManual(body)) f.reset();
     });
+    $("#pf-holdings").addEventListener("change", async e => {
+      const file = e.target.files[0];
+      if (!file) return;
+      const fd = new FormData(); fd.append("file", file);
+      const res = await fetch("/api/portfolio/holdings", { method: "POST", body: fd });
+      e.target.value = "";
+      const r = await res.json();
+      const out = $("#pf-holdings-result");
+      if (!res.ok) { out.innerHTML = `<span class="warn-text">Not imported: ${esc(r.detail)}</span>`; return; }
+      out.innerHTML = `${r.updated} record${r.updated === 1 ? "" : "s"} updated from ${esc(file.name)}` +
+        (r.notes || []).map(n => ` · ${esc(n)}`).join("") +
+        (r.ignored_columns.length ? ` · columns not used: ${r.ignored_columns.map(esc).join(", ")}` : "") +
+        r.errors.map(x => `<div class="warn-text">Row ${x.row} (${esc(x.company)}) skipped — ${esc(x.message)}</div>`).join("");
+      await loadPortfolio(PF.as_of);
+    });
     $("#pf-add").addEventListener("submit", async e => {
       e.preventDefault();
       const f = e.target, field = n => f.elements.namedItem(n);
@@ -441,7 +642,7 @@
       const res = await fetch(`/api/portfolio/${encodeURIComponent(name)}/details`, {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ kind: field("kind").value }) });
-      if (!res.ok) { toast("Not added: " + (await res.json()).detail); return; }
+      if (!res.ok) { toast("Not added: " + (await failText(res))); return; }
       f.reset();
       await loadPortfolio(PF.as_of);
       openPortfolioEntity(name);
@@ -453,7 +654,7 @@
       const res = await fetch(`/api/submissions/${sid}/facts`, {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ metric: field("metric").value, value: field("value").value }) });
-      if (!res.ok) { toast("Not added: " + (await res.json()).detail); return; }
+      if (!res.ok) { toast("Not added: " + (await failText(res))); return; }
       toast("Value added — entered by you, audited");
       f.reset();
       await openSub(sid);
@@ -470,7 +671,7 @@
       if (PF_ENTITY.kind) body.kind = PF_ENTITY.kind;
       const res = await fetch(`/api/portfolio/${encodeURIComponent(PF_ENTITY.entity)}/details`, {
         method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
-      if (!res.ok) { toast("Not saved: " + (await res.json()).detail); return; }
+      if (!res.ok) { toast("Not saved: " + (await failText(res))); return; }
       toast("Details saved (audit recorded)");
       const lamShare = (PF_ENTITY.fund_level_ids || []);
       if (body.commitment && lamShare.length) {
@@ -483,13 +684,22 @@
       await reopenPortfolio();
     };
     $("#pf-m-remove").onclick = async () => {
-      if (!window.confirm(`Take "${PF_ENTITY.investment_name}" off the report? Nothing on file uses it.`)) return;
-      const res = await fetch(`/api/portfolio/${encodeURIComponent(PF_ENTITY.entity)}/details`, {
-        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ kind: "" }) });
-      if (!res.ok) { toast("Not removed: " + (await res.json()).detail); return; }
+      const fp = await api(`/api/portfolio/${encodeURIComponent(PF_ENTITY.entity)}/footprint`);
+      const goes = [fp.files.length ? `${fp.files.length} uploaded file${fp.files.length === 1 ? "" : "s"} (${fp.files.map(f => f.filename).join(", ")})` : "",
+        fp.values ? `${fp.values} value${fp.values === 1 ? "" : "s"}` : "", fp.calls ? `${fp.calls} dated investment${fp.calls === 1 ? "" : "s"}` : "",
+        fp.budgets ? `${fp.budgets} budget figure${fp.budgets === 1 ? "" : "s"}` : "", fp.details ? "its details" : ""].filter(Boolean);
+      const msg = goes.length
+        ? `Delete "${PF_ENTITY.investment_name}" (${PF_ENTITY.entity})?\n\nThis removes ${goes.join(", ")}. The audit trail keeps a record. This can't be undone.`
+        : `Take "${PF_ENTITY.investment_name}" off the report? Nothing on file uses it.`;
+      if (!window.confirm(msg)) return;
+      const res = goes.length
+        ? await fetch(`/api/portfolio/${encodeURIComponent(PF_ENTITY.entity)}`, { method: "DELETE" })
+        : await fetch(`/api/portfolio/${encodeURIComponent(PF_ENTITY.entity)}/details`, {
+            method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ kind: "" }) });
+      if (!res.ok) { toast("Not deleted: " + (await failText(res))); return; }
       $("#pf-modal").classList.remove("show"); $("#pf-modal-bg").classList.remove("show");
-      toast("Removed from the report");
-      await loadPortfolio(PF.as_of);
+      toast(goes.length ? "Deleted (audit recorded)" : "Removed from the report");
+      await refresh();
     };
     $("#pf-m-add").onclick = async () => {
       const lines = $("#pf-m-lines").value;
@@ -497,7 +707,7 @@
       const res = await fetch(`/api/portfolio/${encodeURIComponent(PF_ENTITY.entity)}/calls`, {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ lines, scale: Number($("#pf-m-scale").value) }) });
-      if (!res.ok) { toast("Not added: " + (await res.json()).detail); return; }
+      if (!res.ok) { toast("Not added: " + (await failText(res))); return; }
       $("#pf-m-lines").value = "";
       toast(`Added ${(await res.json()).added} row(s)`);
       await reopenPortfolio();
@@ -512,13 +722,16 @@
 
   function renderPerformance(perf) {
     const p = perf.portfolio || {};
-    $("#perf-tvpi").textContent = p.tvpi != null ? p.tvpi.toFixed(2) + "x" : "—";
-    $("#perf-dpi").textContent = p.dpi != null ? p.dpi.toFixed(2) + "x" : "—";
+    // the Portfolio Summary's "Fund Investments" row: the two always agree
+    const est = k => (p.estimated || []).includes(k) ? EST_MARK : "";
+    $("#perf-tvpi").innerHTML = (p.tvpi != null ? p.tvpi.toFixed(2) + "x" : "—") + est("tvpi");
+    $("#perf-dpi").innerHTML = (p.dpi != null ? p.dpi.toFixed(2) + "x" : "—") + est("dpi");
     $("#perf-irr").textContent = p.irr_pct != null ? p.irr_pct.toFixed(1) + "%" : "—";
     $("#perf-nav").textContent = p.total_nav != null ? money(p.total_nav) : "—";
     $("#perf-asof").textContent = p.n_funds
-      ? `Across ${p.n_funds} fund${p.n_funds === 1 ? "" : "s"} · ${money(p.total_funding||0)} called · ${money(p.total_distributions||0)} distributed`
-      : "No confirmed fund roll-forward data yet";
+      ? `Across ${p.n_funds} fund${p.n_funds === 1 ? "" : "s"} as of ${p.as_of_label} · ${money(p.total_funding||0)} paid in · ${money(p.total_distributions||0)} distributed`
+        + ((p.left_out || []).length ? ` · not included: ${p.left_out.join(", ")}` : "")
+      : "No confirmed fund data yet";
 
     // Direct Investments table
     const di = perf.direct_investments || [];
@@ -631,8 +844,16 @@
       tr.innerHTML = `<td>#${s.id}</td><td>${esc(s.filename)}</td><td>${esc(rt)}</td>
         <td>${esc(s.entity_name || "")}</td>
         <td>${esc(s.period || "")}${s.fiscal_label ? `<div class="small muted fy">${esc(s.fiscal_label)}</div>` : ""}</td>
-        <td class="num">${s.n_facts}</td><td>${status}</td>`;
+        <td class="num">${s.n_facts}</td><td>${status} <button class="btn sm danger sub-del" data-id="${s.id}" data-name="${esc(s.filename)}" title="Delete this file and its values" aria-label="Delete ${esc(s.filename)}">×</button></td>`;
       tr.onclick = () => openSub(s.id);
+      $(".sub-del", tr).onclick = async e => {
+        e.stopPropagation();
+        if (!window.confirm(`Delete "${s.filename}" and the ${s.n_facts} value${s.n_facts === 1 ? "" : "s"} read from it? The audit trail keeps a record.`)) return;
+        const res = await fetch(`/api/submissions/${s.id}`, { method: "DELETE" });
+        if (!res.ok) { toast("Not deleted: " + (await failText(res))); return; }
+        toast("File deleted (audit recorded)");
+        await refresh();
+      };
       tb.appendChild(tr);
     });
   }
@@ -685,7 +906,11 @@
         div.innerHTML = `<b>${esc(r.filename)}</b> → #${r.submission_id}
           · <span class="muted">${esc((REPORT_TYPES[r.report_type]||{}).label||r.report_type)}</span>
           · ${esc(r.entity_name)} · ${esc(r.period)}
-          <br><span class="small">${r.n_facts} facts — ${r.n_auto_accepted} auto, ${r.n_needs_review} to review, ${r.n_unmapped} unmapped</span>
+          <br><span class="small">${r.report_type === "master_workbook"
+            ? `${r.entities.filter(e => e.kind === "fund").length} fund(s), ${r.entities.filter(e => e.kind !== "fund").length} compan(ies) filled in from their sheets`
+              + (r.calls_added ? `, ${r.calls_added} dated investment${r.calls_added === 1 ? "" : "s"} added` : "")
+              + ` — ${r.entities.map(e => esc(e.entity)).join(", ")}`
+            : `${r.n_facts} facts — ${r.n_auto_accepted} auto, ${r.n_needs_review} to review, ${r.n_unmapped} unmapped`}</span>
           ${errs.map(c => `<div class="warn-line">⚠ ${esc(c.name)}: ${esc(c.detail)}</div>`).join("")}
           ${(r.warnings||[]).map(w => `<div class="warn-line">⚠ ${esc(w)}</div>`).join("")}
           <div style="margin-top:6px"><button class="btn sm" data-open="${r.submission_id}">Review →</button></div>`;
@@ -778,7 +1003,7 @@
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ investor_aliases: $("#mf-aliases").value,
                                commitment: $("#mf-commitment").value, notes: $("#mf-notes").value }) });
-      if (!res.ok) { toast("Not saved: " + (await res.text())); return false; }
+      if (!res.ok) { toast("Not saved: " + (await failText(res))); return false; }
       return true;
     };
     $("#mf-save").onclick = async () => {
@@ -838,7 +1063,9 @@
   async function loadLake() {
     const st = await api("/api/lake/status");
     const card = $("#lake-card");
+    const was = card.hidden;
     card.hidden = !st.enabled;
+    if (was !== card.hidden) renderPanes();     // the menu lists Data lake only when it's on
     if (!st.enabled) return;
     $("#lake-where").textContent = `— ${st.backend} · ${st.location}`;
     $("#lake-stages").innerHTML = LAKE_STAGES.map(([stage, table, what]) => {
@@ -1059,6 +1286,16 @@
   function wireModal() {
     $("#modal-bg").onclick = () => showModal(false);
     $("#m-close").onclick = () => showModal(false);
+    $("#m-delete").onclick = async () => {
+      if (!CURRENT_SUB) return;
+      const sub = CURRENT_SUB.submission, n = (CURRENT_SUB.facts || []).length;
+      if (!window.confirm(`Delete "${sub.filename}" and the ${n} value${n === 1 ? "" : "s"} read from it?\n\nThe roll-forward is rebuilt without it; the audit trail keeps a record. This can't be undone.`)) return;
+      const res = await fetch(`/api/submissions/${sub.id}`, { method: "DELETE" });
+      if (!res.ok) { toast("Not deleted: " + (await failText(res))); return; }
+      showModal(false);
+      toast("File deleted (audit recorded)");
+      await refresh();
+    };
     $("#m-reread").onclick = async () => {
       if (!CURRENT_SUB) return;
       const id = CURRENT_SUB.submission.id;

@@ -461,10 +461,20 @@ INVESTMENT_ROLL_FORWARD = ReportType(
 )
 
 
+# The team's master workbooks — Investment Portfolio, Equity Investments
+# Summary: master data for every fund and company at once, never a quarter's
+# figures (see extractors/master.py). Assigned by detection only.
+MASTER_WORKBOOK = ReportType(
+    key="master_workbook",
+    label="Master workbook (Investment Portfolio / Equity Investments Summary)",
+    entity_kind="portfolio",
+    metrics=(),
+)
+
 REPORT_TYPES: dict[str, ReportType] = {
     rt.key: rt
     for rt in (FUND_FINANCIALS, JOINT_VENTURE, JV_EQUITY_INCOME, DIRECT_INVESTMENT,
-               COMPANY_FINANCIALS, INVESTMENT_ROLL_FORWARD)
+               COMPANY_FINANCIALS, INVESTMENT_ROLL_FORWARD, MASTER_WORKBOOK)
 }
 
 

@@ -5,7 +5,6 @@ __pycache__/
 venv/
 # Local data (confidential) — keep the dirs, ignore contents
 data/pipeline.db
-data/portfolio-dashboard.json
 data/uploads/*
 data/processed/*
 !data/**/.gitkeep
@@ -14,3 +13,7 @@ data/processed/*
 # OS / editor
 .DS_Store
 .Rhistory
+
+# Independent dashboard build dependencies and optional private snapshot
+/dashboard-browser/node_modules
+data/portfolio-dashboard.json
