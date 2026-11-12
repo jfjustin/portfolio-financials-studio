@@ -435,3 +435,35 @@ deploy/ · Dockerfile        Azure Container Apps script and container image
 <div align="center">
 <sub>Built by <a href="https://github.com/jfjustin">Justin Jiang</a> · FastAPI · Azure OpenAI · Delta Lake · Power BI</sub>
 </div>
+
+## Investment Portfolio Dashboard tab
+
+The separate `/portfolio-dashboard` page adds browser-only portfolio charts, six KPIs,
+expandable source tables, CSV export, and an Excel upload area below the dashboard.
+It uses the existing application authentication. Studio's intake, review, APIs,
+database, exports, and source JavaScript remain unchanged. The only integration in
+Studio's page is the shared page-navigation include and its stylesheet.
+
+Upload a saved `.xlsx` workbook from this tab. Its parser reads cached formula
+results from `Summary-Portfolio Value`, validates the fixed header/row labels,
+and extracts the summary in C79:R85, C87:R90 and C92:E94. The optional reporting
+date comes from `UPDATE DATE!E9`. Save/recalculate in Excel before uploading.
+Files are parsed locally and never sent to Studio's upload API. A separate
+`pfs-investment-portfolio-dashboard` IndexedDB database holds the last valid
+workbook; it restores automatically and can also be reopened with **Load last
+workbook** or removed with **Forget saved workbook**. Studio's Clear data does
+not access it. This is manual workbook refresh, not live SharePoint synchronization.
+
+A default snapshot is optional: provision `portfolio-dashboard.json` separately in
+`DATA_DIR`. It accepts the previous PR's `sections`/`rows`/`irr` snapshot or the
+`Summary` structure defined in `dashboard-browser/src/lib/portfolio-summary.ts`.
+The file, source workbook and financial figures are not included in Git or Docker.
+Without one, the page can be populated from its own upload area. Changes to this
+private snapshot never populate Studio's database.
+
+Prebuilt dashboard JS/CSS are committed in `static/portfolio-dashboard/`, so the
+existing Python deployment does not require Node or changes to its CI/Dockerfile.
+To edit/rebuild the browser source: `cd dashboard-browser && npm ci && npm test &&
+npm run build` (Node 22.13+). Run the Python integration checks with
+`python tests/test_portfolio_dashboard.py`, followed by the existing
+`python tests/test_e2e.py` suite.

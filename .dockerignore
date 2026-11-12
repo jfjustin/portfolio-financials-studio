@@ -13,3 +13,7 @@ data/processed/*
 tests/
 *.md
 deploy/
+
+# Independent dashboard build dependencies and optional private snapshot
+/dashboard-browser/node_modules
+data/portfolio-dashboard.json

@@ -1,0 +1,18 @@
+{
+  "name": "pfs-investment-portfolio-dashboard",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "node build.mjs",
+    "test": "node --experimental-strip-types --test tests/*.test.mjs"
+  },
+  "dependencies": {
+    "react": "19.2.6",
+    "react-dom": "19.2.6",
+    "read-excel-file": "9.3.10"
+  },
+  "devDependencies": {
+    "esbuild": "0.28.0"
+  },
+  "engines": {"node": ">=22.13.0"}
+}

@@ -11,6 +11,7 @@ import csv
 import hashlib
 import re
 import io
+import json
 import secrets
 from decimal import Decimal
 from pathlib import Path
@@ -92,6 +93,8 @@ async def cache_headers(request: Request, call_next):
         response.headers["Cache-Control"] = (
             "public, max-age=31536000, immutable" if "v" in request.query_params
             else "no-cache")
+    elif path == "/portfolio-dashboard":
+        response.headers["Cache-Control"] = "private, no-store"
     elif response.headers.get("content-type", "").startswith("text/html"):
         response.headers["Cache-Control"] = "no-cache"
     return response
@@ -127,6 +130,22 @@ def index(request: Request):
         "user": auth.current_user(request) or "",
         "fiscal_year_end_month": settings.fiscal_year_end_month,
     })
+
+
+@app.get("/portfolio-dashboard", response_class=HTMLResponse)
+def portfolio_dashboard(request: Request):
+    """Independent browser-only dashboard; Studio ingestion/data are not used."""
+    snapshot = None
+    snapshot_path = settings.data_dir / "portfolio-dashboard.json"
+    try:
+        snapshot = json.loads(snapshot_path.read_text(encoding="utf-8"))
+    except (FileNotFoundError, json.JSONDecodeError):
+        pass
+    return templates.TemplateResponse(request, "portfolio_dashboard.html", {
+        "snapshot": snapshot,
+        "auth_mode": settings.auth_mode,
+        "user": auth.current_user(request) or "",
+    }, headers={"Cache-Control": "private, no-store"})
 
 
 # --------------------------------------------------------------------------

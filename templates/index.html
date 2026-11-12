@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Portfolio Financials Studio</title>
   <link rel="stylesheet" href="{{ asset_url('css/styles.css') }}">
+  <link rel="stylesheet" href="{{ asset_url('css/site-tabs.css') }}">
 </head>
 <body data-fye="{{ fiscal_year_end_month }}">
   <header class="top">
@@ -23,6 +24,7 @@
       <button id="clear-btn" class="btn sm danger"
               title="Delete all uploaded submissions and extracted values (a backup is kept)">Clear data</button>
     </div>
+    {% include "site_tabs.html" %}
   </header>
 
   <div class="shell" id="shell">

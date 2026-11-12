@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Investment Portfolio Dashboard · Portfolio Financials Studio</title>
+  <link rel="stylesheet" href="{{ asset_url('css/styles.css') }}">
+  <link rel="stylesheet" href="{{ asset_url('css/site-tabs.css') }}">
+  <link rel="stylesheet" href="{{ asset_url('portfolio-dashboard/dashboard.css') }}">
+</head>
+<body>
+  <header class="top">
+    <div class="top-inner">
+      <span class="brand-mark">PF</span>
+      <h1>Portfolio Financials Studio</h1>
+      <span class="confidential">Confidential · Internal Use</span>
+      <span class="spacer"></span>
+      {% if auth_mode != "none" and user %}
+        <span class="user-chip"><span class="dot"></span>{{ user }}</span>
+        <a class="btn sm" href="/logout">Sign out</a>
+      {% endif %}
+    </div>
+    {% include "site_tabs.html" %}
+  </header>
+  <script id="portfolio-dashboard-snapshot" type="application/json">{{ snapshot | tojson }}</script>
+  <div id="portfolio-dashboard-root"></div>
+  <noscript><p>This dashboard requires JavaScript to parse your workbook locally.</p></noscript>
+  <script type="module" src="{{ asset_url('portfolio-dashboard/dashboard.js') }}"></script>
+</body>
+</html>
