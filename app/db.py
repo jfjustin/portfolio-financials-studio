@@ -139,6 +139,7 @@ capital_calls = Table(
     Column("amount", String(64), nullable=False),         # Decimal as string, whole units
     Column("total_raise", String(64)),                    # direct investments: the round's size
     Column("pre_money", String(64)),                      # direct investments: pre-money valuation
+    Column("source", Text),                               # the document it came from, else "entered by hand"
     Column("created_by", String(128)),
     Column("created_at", String(40)),
 )
@@ -791,11 +792,11 @@ def get_capital_calls(entity: Optional[str] = None) -> list[dict[str, Any]]:
 
 def add_capital_call(entity: str, call_date: str, amount: Decimal, description: str = "",
                      total_raise: Optional[Decimal] = None, pre_money: Optional[Decimal] = None,
-                     user: str = "local") -> int:
+                     user: str = "local", source: str = "entered by hand") -> int:
     with get_engine().begin() as conn:
         res = conn.execute(insert(capital_calls).values(
             entity_name=entity, call_date=call_date, amount=str(amount),
-            description=description.strip(),
+            description=description.strip(), source=source,
             total_raise=None if total_raise is None else str(total_raise),
             pre_money=None if pre_money is None else str(pre_money),
             created_by=user, created_at=_now()))

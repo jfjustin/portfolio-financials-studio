@@ -283,9 +283,17 @@ def portfolio_performance() -> dict[str, Any]:
         if d and ending:
             cashflows.append((d, ending))  # terminal value as a final inflow
 
-    cashflows.sort(key=lambda cf: cf[0])
-    irr = xirr(cashflows)
+    # the IRR section's figure for the funds, from the same dated flows it shows
+    from . import irr as irr_module
+    try:
+        irr_funds = irr_module.report(summ["as_of"])["groups"]["funds"]
+        irr = irr_funds["irr_pct"] / 100 if irr_funds["irr_pct"] is not None else None
+        irr_estimated = bool(irr_funds.get("estimated"))
+    except Exception:
+        cashflows.sort(key=lambda cf: cf[0])
+        irr, irr_estimated = xirr(cashflows), True
     return {
+        "irr_estimated": irr_estimated,
         "total_funding": round(paid_in, 2),
         "total_distributions": round(distributions, 2),
         "total_nav": round(nav, 2),

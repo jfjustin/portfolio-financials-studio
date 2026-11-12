@@ -482,7 +482,7 @@ def read_master(path: Path) -> Optional[dict[str, Any]]:
     return {"records": records, "sheets": sheets, "skipped": skipped, "period": period}
 
 
-def apply_master(reading: dict[str, Any], user: str = "local") -> dict[str, Any]:
+def apply_master(reading: dict[str, Any], user: str = "local", source: str = "") -> dict[str, Any]:
     """Write every record: details (merged; empty cells leave what is on file),
     the fund's commitment, and dated investments not already on file."""
     from .. import terms
@@ -498,7 +498,15 @@ def apply_master(reading: dict[str, Any], user: str = "local") -> dict[str, Any]
         except ValueError as e:
             errors.append(f"{entity}: {e}")
             continue
-        db.set_details(entity, {**values, "kind": rec["kind"]}, user=user)
+        # the workbook's quarter, and which fields it set: a statement for a
+        # later quarter supersedes those fields (see portfolio.workbook_dated)
+        prior = db.get_details(entity)
+        stamped = {**values, "kind": rec["kind"]}
+        if reading.get("period"):
+            stamped["workbook_as_of"] = reading["period"]
+            stamped["workbook_fields"] = sorted(set(prior.get("workbook_fields") or [])
+                                                | {k for k, v in values.items() if v is not None})
+        db.set_details(entity, stamped, user=user)
         if rec.get("commitment"):
             prof = terms.fund_profile(entity)
             terms.set_fund_profile(entity, investor_aliases=prof.get("investor_aliases") or "",
@@ -511,6 +519,7 @@ def apply_master(reading: dict[str, Any], user: str = "local") -> dict[str, Any]
             if d is None or (d, Decimal(c["amount"])) in have:
                 continue
             db.add_capital_call(entity, d, Decimal(c["amount"]), c.get("description") or "",
+                                source=source or "master workbook",
                                 total_raise=Decimal(c["total_raise"]) if c.get("total_raise") else None,
                                 pre_money=Decimal(c["pre_money"]) if c.get("pre_money") else None,
                                 user=user)

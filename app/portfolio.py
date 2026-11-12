@@ -253,6 +253,68 @@ def _src(fact: dict) -> str:
             else f"{fact['period']} ({fact['status']})")
 
 
+def first_invested_year(row: dict) -> Optional[int]:
+    """The year the entity was first invested in: its first dated investment, else
+    the initial investment date entered, else a fund's vintage."""
+    det = row.get("details") or {}
+    inv = row.get("invested") or []
+    d = _iso(inv[0]["date"]) if inv else None
+    d = d or _iso(det.get("initial_investment_date")) or _iso(det.get("last_investment_date"))
+    if d:
+        return d.year
+    return int(row["vintage"]) if row.get("vintage") else None
+
+
+def with_window(rep: dict, start: Optional[str], end: Optional[str]) -> dict:
+    """The report with each entity's activity within a window of quarters:
+    dated investments made, and (funds) the roll-forward's funding and
+    distributions, in those quarters — no balances are moved."""
+    if not start or not end:
+        return rep
+    if _order(start) > _order(end):
+        start, end = end, start
+    lo, hi = quarter_bounds(start)[0].isoformat(), quarter_bounds(end)[1].isoformat()
+    quarters_by: dict[str, list[dict]] = {}
+    for q in db.get_investments()["quarters"]:
+        if re.fullmatch(r"20\d{2}-Q[1-4]", q["period_label"] or "") and _order(start) <= _order(q["period_label"]) <= _order(end):
+            quarters_by.setdefault(q["entity_name"], []).append(q)
+    out = dict(rep)
+    for key in ("funds", "companies"):
+        out[key] = []
+        for row in rep[key]:
+            r = dict(row)
+            inside = [c for c in row["invested"] if lo <= c["date"] <= hi]
+            qs = quarters_by.get(row["entity"], [])
+            r["window"] = {
+                "invested": sum((c["amount"] for c in inside), Decimal(0)), "n_calls": len(inside),
+                "drawn": sum((Decimal(str(q["funding"] or 0)) for q in qs), Decimal(0)) if qs else None,
+                "distributed": sum((abs(Decimal(str(q.get("return_of_capital") or 0)))
+                                    + abs(Decimal(str(q.get("dividends") or 0))) for q in qs), Decimal(0)) if qs else None,
+                "quarters": [q["period_label"] for q in qs]}
+            out[key].append(r)
+    out["window"] = {"start": start, "end": end}
+    return out
+
+
+def filter_vintage(rep: dict, year_from: Optional[int], year_to: Optional[int]) -> dict:
+    """The report restricted to entities first invested in within the years."""
+    if year_from is None and year_to is None:
+        return rep
+
+    def keep(row: dict) -> bool:
+        y = first_invested_year(row)
+        return y is not None and (year_from is None or y >= year_from) and (year_to is None or y <= year_to)
+
+    out = dict(rep)
+    out["funds"] = [f for f in rep["funds"] if keep(f)]
+    out["companies"] = [c for c in rep["companies"] if keep(c)]
+    out["totals"] = _totals(out["funds"], out["companies"])
+    out["vintage"] = {"from": year_from, "to": year_to,
+                      "left_out": [r["investment_name"] for r in rep["funds"] + rep["companies"]
+                                   if not keep(r)]}
+    return out
+
+
 def report(as_of: Optional[str] = None) -> dict[str, Any]:
     """Funds and direct investments as of a calendar quarter (default: the latest
     quarter with an approved roll-forward)."""
@@ -352,6 +414,15 @@ def report(as_of: Optional[str] = None) -> dict[str, Any]:
             "company_fields": [{"key": k, "label": l, "type": t} for k, l, t in COMPANY_FIELDS]}
 
 
+def workbook_dated(det: dict, field: str, found_period: str) -> bool:
+    """True when the entity's value for `field` came from a master workbook and a
+    document on file for a later quarter than the workbook's carries it."""
+    as_of = det.get("workbook_as_of") or ""
+    if field not in (det.get("workbook_fields") or []) or not as_of or not found_period:
+        return False
+    return _order(found_period) > _order(as_of)
+
+
 def _natural(name: str) -> list:
     """"Fund 3" before "Fund 11"."""
     return [int(t) if t.isdigit() else t.lower() for t in re.split(r"(\d+)", name)]
@@ -386,12 +457,18 @@ def _fund(name: str, quarters: list[dict], det: dict, prof: dict, facts: dict,
 
     mismatches: list[str] = []
 
-    def entered(field: str, label: str, found: Optional[Decimal], found_src: str
-                ) -> Optional[Decimal]:
+    def entered(field: str, label: str, found: Optional[Decimal], found_src: str,
+                found_period: str = "") -> Optional[Decimal]:
         """A figure typed into the fund's details wins; if a document also has it
-        and disagrees, that's flagged for a person to settle."""
+        and disagrees, that's flagged for a person to settle. A figure that came
+        from a master workbook is as of the workbook's quarter: a statement for a
+        later quarter supersedes it."""
         typed = _d(det.get(field))
         if typed is None:
+            return found
+        if found is not None and workbook_dated(det, field, found_period):
+            src[field] = found_src + f" (newer than the workbook of {det['workbook_as_of']})"
+            superseded.append(field)
             return found
         src[field] = "entered"
         if found is not None and abs(typed - found) > max(Decimal(1), abs(found) * Decimal("0.001")):
@@ -399,12 +476,15 @@ def _fund(name: str, quarters: list[dict], det: dict, prof: dict, facts: dict,
                               "— clear the entered value to use the document's")
         return typed
 
+    superseded: list[str] = []
+
     balance = quarters[-1]["ending_balance"] if quarters else None
     if balance is not None:
         balance = Decimal(str(balance))
         src["investment_balance"] = f"roll-forward {quarters[-1]['period_label']} ending balance"
     balance = entered("investment_balance", "Investment Balance", balance,
-                      src.get("investment_balance", ""))
+                      src.get("investment_balance", ""),
+                      quarters[-1]["period_label"] if quarters else "")
     stated = fact("commitment")
     commitment = _d(prof.get("commitment"))
     if commitment is not None:
@@ -438,8 +518,10 @@ def _fund(name: str, quarters: list[dict], det: dict, prof: dict, facts: dict,
                          ("distribution_to_date", "Distribution to Date")):
         if det.get(field) not in (None, ""):
             found = drawn if field == "drawn_to_date" else distributed
+            metric = "cumulative_contributions" if field == "drawn_to_date" else "cumulative_distributions"
             typed = entered(field, label, None if field in estimated else found,
-                            src.get(field, ""))
+                            src.get(field, ""),
+                            facts[(name, metric)]["period"] if (name, metric) in facts else "")
             estimated.discard(field)
             if field == "drawn_to_date":
                 drawn = typed
@@ -459,7 +541,9 @@ def _fund(name: str, quarters: list[dict], det: dict, prof: dict, facts: dict,
     future = fact("remaining_commitment")
     if future is not None:
         src["future_draw"] = src.pop("remaining_commitment")
-    future = entered("future_draw", "Future Draw", future, src.get("future_draw", ""))
+    future = entered("future_draw", "Future Draw", future, src.get("future_draw", ""),
+                     facts[(name, "remaining_commitment")]["period"]
+                     if (name, "remaining_commitment") in facts else "")
     if future is None and commitment is not None and drawn is not None:
         future = max(commitment - drawn, Decimal(0))
         src["future_draw"] = "commitment − drawn to date"
@@ -531,6 +615,7 @@ def _fund(name: str, quarters: list[dict], det: dict, prof: dict, facts: dict,
             "investment_balance": balance},
         "latest_quarter": quarters[-1]["period_label"] if quarters else None,
         "details": det, "sources": src, "estimated": sorted(estimated),
+        "superseded": superseded,
         "files": ctx["files"],
         # whole-fund reports only: Lam's share needs Lam's commitment, then a re-read
         "fund_level_ids": whole_fund,
@@ -630,7 +715,8 @@ def _invested(calls: list[dict], quarters: list[dict], until: int) -> list[dict]
             continue
         rows.append({"date": d.isoformat(), "description": c["description"] or "",
                      "amount": Decimal(c["amount"]), "total_raise": _d(c.get("total_raise")),
-                     "pre_money": _d(c.get("pre_money")), "source": "entered", "id": c["id"]})
+                     "pre_money": _d(c.get("pre_money")), "source": "entered", "id": c["id"],
+                     "document": c.get("source") or "entered by hand"})
     covered = {quarter_label(_iso(r["date"])) for r in rows}
     for q in quarters:
         funding = Decimal(str(q["funding"] or 0))
@@ -640,7 +726,7 @@ def _invested(calls: list[dict], quarters: list[dict], until: int) -> list[dict]
             rows.append({"date": end.isoformat(),
                          "description": f"Called in Q{label[-1]} {label[:4]} (roll-forward)",
                          "amount": funding, "total_raise": None, "pre_money": None,
-                         "source": "roll-forward", "id": None})
+                         "source": "roll-forward", "id": None, "document": f"roll-forward {label}"})
     return sorted(rows, key=lambda r: r["date"])
 
 
@@ -648,19 +734,30 @@ def _company(name: str, det: dict, facts: dict, calls: list[dict], until: int,
              files: Optional[list[dict]] = None) -> dict[str, Any]:
     src: dict[str, str] = {}
     invested = _invested(calls, [], until)
+    superseded: list[str] = []
     total = _d(det.get("total_invested"))
-    if total is not None:
+    cost_fact = facts.get((name, "cost_basis"))
+    if total is not None and cost_fact and workbook_dated(det, "total_invested", cost_fact["period"]):
+        total = abs(cost_fact["value"])            # a statement after the workbook's quarter
+        src["total_invested"] = _src(cost_fact) + f" (newer than the workbook of {det['workbook_as_of']})"
+        superseded.append("total_invested")
+    elif total is not None:
         src["total_invested"] = "details"
-    elif (name, "cost_basis") in facts:
-        total = abs(facts[(name, "cost_basis")]["value"])
-        src["total_invested"] = _src(facts[(name, "cost_basis")])
+    elif cost_fact:
+        total = abs(cost_fact["value"])
+        src["total_invested"] = _src(cost_fact)
     elif invested:
         total = sum((r["amount"] for r in invested), Decimal(0))
         src["total_invested"] = f"{len(invested)} investment(s) entered"
     value = _d(det.get("total_value"))
-    if value is None and (name, "fair_value") in facts:
-        value = abs(facts[(name, "fair_value")]["value"])
-        src["total_value"] = _src(facts[(name, "fair_value")])
+    value_fact = facts.get((name, "fair_value"))
+    if value is not None and value_fact and workbook_dated(det, "total_value", value_fact["period"]):
+        value = abs(value_fact["value"])
+        src["total_value"] = _src(value_fact) + f" (newer than the workbook of {det['workbook_as_of']})"
+        superseded.append("total_value")
+    elif value is None and value_fact:
+        value = abs(value_fact["value"])
+        src["total_value"] = _src(value_fact)
     exited = bool(det.get("exit_date")) or det.get("holding_status") == "Exit"
     last = det.get("last_investment_date") or (invested[-1]["date"] if invested else None)
     return {
@@ -676,7 +773,7 @@ def _company(name: str, det: dict, facts: dict, calls: list[dict], until: int,
         "exited": exited,
         "exit": {"date": det.get("exit_date"), "value": _d(det.get("exit_value")),
                  "proceeds": _d(det.get("exit_proceeds")), "escrow": _d(det.get("exit_escrow"))},
-        "invested": invested, "details": det, "sources": src,
+        "invested": invested, "details": det, "sources": src, "superseded": superseded,
         "files": files or [],
         "removable": not files and total is None and value is None,
         "issues": ([] if total is not None else [

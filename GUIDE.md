@@ -393,6 +393,26 @@ company's value) as a final inflow at the quarter end. Shown for the whole portf
 Life Sciences**, **Direct vs Funds**, and every entity; click a row for the flows behind the
 figure. A `*` marks a figure resting on an undated estimate (its note says which). Entities with
 no investment on file are listed as left out.
+Two time-period filters sit on the IRR and the Investment Portfolio, each labelled with what
+it does:
+- **Window — which quarters' flows count** (from … to quarters). On the IRR: the return earned
+  within those quarters only; what was held at the start counts as the opening outlay and what
+  was held at the end as the closing value, both from balances on file for those quarters (the
+  roll-forward, or a master workbook dated exactly that quarter), so a fund without them, or a
+  company (whose value is only kept as of now), is left out with the reason rather than guessed.
+  On the Investment Portfolio: the investments made, and a fund's funding and distributions,
+  within those quarters, in extra columns; balances stay as of the quarter chosen above.
+- **First invested — which entities are included** (from … to years): only funds and companies
+  whose first investment falls in those years.
+- Every IRR row says what it **covers**: the first and last flow dates, and for each document the
+  kind of flow, its date range and count — so a fund whose calls came from the accounting
+  workbook (2020–2025) and whose distributions and balance come from this year's statements
+  says exactly that, and a call typed in is named as entered by hand.
+- The dated investments on file are checked against the paid-in: when they fall short, the
+  figure is marked `*` and the note asks for the missing calls.
+- Figures from a master workbook are as of the workbook's quarter: a statement for a later
+  quarter (a new PCAP, a roll-forward) supersedes them, so uploading a newer statement moves the
+  IRR, the balance and the summary. Overview's IRR is the IRR section's fund figure.
 
 **Holdings sheet** (Investment Portfolio → Direct investments)
 A company's own statements never show what the stake cost or is worth. Instead of typing each

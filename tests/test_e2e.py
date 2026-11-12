@@ -104,6 +104,7 @@ def main() -> int:
     equity_investments_workbook()
     xirr_roots()
     irr_section()
+    irr_windows_and_precedence()
     period_ranges()
     deletes_and_odd_names()
     clear_data(samples)
@@ -1718,6 +1719,123 @@ def irr_section() -> None:
     check("2026-Q2" in R["quarters"], "the quarters on offer include those of entered values and workbooks")
     bad = client.get("/api/irr?as_of=2026")
     check(bad.status_code == 400, "the quarter is validated")
+
+
+def irr_windows_and_precedence() -> None:
+    """The arithmetic behind held and closed positions checked by hand; IRR over
+    a window of quarters; a vintage filter; a statement newer than a workbook
+    supersedes its figures; Overview shows the IRR section's fund figure."""
+    from datetime import date as DT
+
+    from fastapi.testclient import TestClient
+
+    from app.main import app
+    from app.performance import xirr
+
+    client = TestClient(app)
+    P = "/api/portfolio/"
+    # ---- held: $1M in on 2024-01-01, worth $1.5M at 2026-06-30 -> 1.5^(1/t) − 1
+    client.post(P + "Company 97H/details", json={"kind": "direct_investment", "total_invested": "1m",
+                                                 "total_value": "1.5m"})
+    client.post(P + "Company 97H/calls", json={"date": "2024-01-01", "description": "Seed", "amount": "1000000"})
+    t = (DT(2026, 6, 30) - DT(2024, 1, 1)).days / 365
+    expect = (1.5 ** (1 / t) - 1) * 100
+    R = client.get("/api/irr?as_of=2026-Q2").json()
+    h = {e["entity"]: e for e in R["entities"]}["Company 97H"]
+    check(abs(h["irr_pct"] - round(expect, 1)) < 0.11 and [f["kind"] for f in h["flows"]] == ["call", "value"]
+          and h["invested"] == 1_000_000 and h["value"] == 1_500_000 and h["returned"] == 0,
+          f"held: one call and the value at the quarter end → {expect:.1f}% by hand, {h['irr_pct']}% here")
+    # ---- closed with escrow: proceeds on the exit date, escrow as still to come
+    client.post(P + "Company 97X/details", json={"kind": "direct_investment", "total_invested": "2m",
+                                                 "exit_date": "2025-06-30", "exit_proceeds": "3m", "exit_escrow": "0.3m"})
+    client.post(P + "Company 97X/calls", json={"lines": "2022-06-30\tSeries A\t1,200,000\n2023-06-30\tSeries B\t800,000"})
+    R = client.get("/api/irr?as_of=2026-Q2").json()
+    x = {e["entity"]: e for e in R["entities"]}["Company 97X"]
+    by_hand = xirr([(DT(2022, 6, 30), -1_200_000), (DT(2023, 6, 30), -800_000), (DT(2025, 6, 30), 3_000_000),
+                    (DT(2026, 6, 30), 300_000)])
+    check(x["status"] == "exited" and [f["kind"] for f in x["flows"]] == ["call", "call", "proceeds", "value"]
+          and abs(x["irr_pct"] - round(by_hand * 100, 1)) < 0.11 and x["returned"] == 3_000_000 and x["value"] == 300_000,
+          "closed: two calls, proceeds on the exit date, escrow still to come — matches the flows by hand")
+    # ---- dated investments that don't add up to the paid-in are flagged
+    client.post(P + "Company 97P/details", json={"kind": "direct_investment", "total_invested": "3m", "total_value": "3m"})
+    client.post(P + "Company 97P/calls", json={"date": "2024-01-01", "description": "Seed", "amount": "1000000"})
+    R = client.get("/api/irr?as_of=2026-Q2").json()
+    pp = {e["entity"]: e for e in R["entities"]}["Company 97P"]
+    check(pp["estimated"] and any("add up to 1,000,000, but paid-in is 3,000,000" in n for n in pp["notes"]),
+          "calls that fall short of the paid-in: the figure is marked as an estimate and says why")
+    # ---- a fund over a window of quarters: opening and closing from the roll-forward
+    for q, beg, fund, dist, end in (("2024-Q4", "0", "2,000,000", "0", "2,000,000"),
+                                    ("2025-Q1", "2,000,000", "0", "(100,000)", "2,100,000"),
+                                    ("2025-Q2", "2,100,000", "500,000", "0", "2,700,000"),
+                                    ("2025-Q3", "2,700,000", "0", "(200,000)", "2,750,000")):
+        for metric, value in (("beginning_balance", beg), ("funding", fund), ("return_of_capital", dist),
+                              ("ending_balance", end)):
+            client.post("/api/manual-values", json={"entity": "Fund 97W", "report_type": "investment_roll_forward",
+                                                    "period": q, "metric": metric, "value": value})
+    client.post(P + "Fund 97W/details", json={"kind": "fund", "initial_investment_date": "2024-11-15"})
+    R = client.get("/api/irr?as_of=2025-Q3&start=2025-Q1&end=2025-Q2").json()
+    w = {e["entity"]: e for e in R["entities"]}["Fund 97W"]
+    kinds = [(f["kind"], f["date"], round(f["amount"])) for f in w["flows"]]
+    by_hand = xirr([(DT(2025, 1, 1), -2_000_000), (DT(2025, 3, 31), 100_000), (DT(2025, 6, 30), -500_000),
+                    (DT(2025, 6, 30), 2_700_000)])
+    check(R["window"] == {"start": "2025-Q1", "end": "2025-Q2"}
+          and kinds == [("opening", "2025-01-01", -2_000_000), ("distribution", "2025-03-31", 100_000),
+                        ("call", "2025-06-30", -500_000), ("value", "2025-06-30", 2_700_000)]
+          and abs(w["irr_pct"] - round(by_hand * 100, 1)) < 0.11,
+          "a window Q1–Q2 2025: the balance at end-2024 opens it, the Q2 balance closes it, flows between")
+    R = client.get("/api/irr?as_of=2025-Q3&start=2024-Q1&end=2024-Q2").json()
+    check("Fund 97W" in [x["entity"] for x in R["left_out"]] or "Fund 97W" not in [e["entity"] for e in R["entities"]],
+          "a window before the fund existed gives it no figure")
+    bad = client.get("/api/irr?as_of=2025-Q3&start=2025-Q1")
+    check(bad.status_code == 400, "a window needs both ends")
+    # ---- vintage filter on the portfolio and the IRR
+    R = client.get("/api/irr?as_of=2026-Q2&vintage_from=2024&vintage_to=2024").json()
+    names = {e["entity"] for e in R["entities"]}
+    check("Company 97H" in names and "Company 97P" in names and "Company 97X" not in names and "Fund 97W" in names
+          and "Company 97X" in R["vintage"]["left_out"],
+          "first invested in 2024 only: the 2024 positions stay, the 2022 one is left out")
+    PF = client.get("/api/portfolio?as_of=2026-Q2&vintage_from=2022&vintage_to=2023").json()
+    check({c["entity"] for c in PF["companies"]} == {"Company 97X"} or
+          ("Company 97X" in {c["entity"] for c in PF["companies"]} and "Company 97H" not in {c["entity"] for c in PF["companies"]}),
+          "the Investment Portfolio filtered to 2022–2023 vintages")
+    # ---- a statement newer than the workbook supersedes the workbook's figure
+    client.post(P + "Fund 97W/details", json={"investment_balance": "2,000,000", "drawn_to_date": "2,000,000"})
+    db.set_details("Fund 97W", {"workbook_as_of": "2024-Q4", "workbook_fields": ["investment_balance", "drawn_to_date"]})
+    PF = client.get("/api/portfolio?as_of=2025-Q3").json()
+    f = {x["entity"]: x for x in PF["funds"]}["Fund 97W"]
+    check(Decimal(str(f["investment_balance"])) == 2_750_000 and "investment_balance" in f["superseded"]
+          and "newer than the workbook" in f["sources"]["investment_balance"]
+          and not any(i["kind"] == "mismatch" and "Investment Balance" in i["message"] for i in f["issues"]),
+          "a roll-forward for 2025-Q3 beats the workbook's 2024-Q4 balance, without a mismatch flag")
+    R = client.get("/api/irr?as_of=2025-Q3").json()
+    w = {e["entity"]: e for e in R["entities"]}["Fund 97W"]
+    check(round(w["value"]) == 2_750_000, "and the IRR uses the newer balance, so a new statement moves the IRR")
+    # ---- every figure states what it covers, document by document
+    R = client.get("/api/irr?as_of=2025-Q3").json()
+    w = {e["entity"]: e for e in R["entities"]}["Fund 97W"]
+    cov = {(c["kind"], c["document"]) for c in w["coverage"]}
+    check(w["first_date"] == "2024-12-31" and w["last_date"] == "2025-09-30"
+          and any(k == "call" and "roll-forward" in d for k, d in cov)
+          and any(k == "distribution" for k, _d in cov) and any(k == "value" for k, _d in cov),
+          "the IRR row says which dates and documents its calls, distributions and balance come from")
+    client.post(P + "Fund 97W/calls", json={"date": "2024-11-15", "description": "Initial", "amount": "2000000"})
+    R = client.get("/api/irr?as_of=2025-Q3").json()
+    w = {e["entity"]: e for e in R["entities"]}["Fund 97W"]
+    hand = next(c for c in w["coverage"] if c["document"] == "entered by hand")
+    check(hand["kind"] == "call" and hand["from"] == "2024-11-15" and w["first_date"] == "2024-11-15",
+          "a call typed in is named as entered by hand, with its date")
+    # ---- the Investment Portfolio's window: activity within those quarters
+    PF = client.get("/api/portfolio?as_of=2025-Q3&start=2025-Q1&end=2025-Q2").json()
+    f = {x["entity"]: x for x in PF["funds"]}["Fund 97W"]
+    check(PF["window"] == {"start": "2025-Q1", "end": "2025-Q2"} and Decimal(str(f["window"]["drawn"])) == 500_000
+          and Decimal(str(f["window"]["distributed"])) == 100_000 and f["window"]["quarters"] == ["2025-Q1", "2025-Q2"]
+          and Decimal(str(f["investment_balance"])) == 2_750_000,
+          "a window on the Investment Portfolio: drawn and distributed within it; the balance stays as of the quarter")
+    # ---- Overview shows the IRR section's fund figure
+    perf = client.get("/api/performance").json()["portfolio"]
+    R = client.get("/api/irr").json()
+    check(perf["irr_pct"] == R["groups"]["funds"]["irr_pct"] and perf["irr_pct"] is not None,
+          "Overview's IRR is the IRR section's fund figure, from the same flows")
 
 
 def deletes_and_odd_names() -> None:

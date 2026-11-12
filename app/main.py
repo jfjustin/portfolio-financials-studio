@@ -393,11 +393,17 @@ def export_direct_investments(year: Optional[int] = None, quarter: Optional[int]
 
 
 @app.get("/api/portfolio")
-def portfolio_report(as_of: Optional[str] = None):
-    """Lam's "Investment Portfolio": funds and direct investments as of a quarter."""
-    if as_of and not re.fullmatch(r"20\d{2}-Q[1-4]", as_of):
-        raise HTTPException(400, "as_of must be a quarter, e.g. 2026-Q2")
-    rep = portfolio.report(as_of)
+def portfolio_report(as_of: Optional[str] = None, vintage_from: Optional[int] = None,
+                     vintage_to: Optional[int] = None, start: Optional[str] = None,
+                     end: Optional[str] = None):
+    """Lam's "Investment Portfolio": funds and direct investments as of a quarter;
+    with vintage years, only those first invested in within them; with a start
+    and end quarter, each entity's activity within that window."""
+    for q in (as_of, start, end):
+        if q and not re.fullmatch(r"20\d{2}-Q[1-4]", q):
+            raise HTTPException(400, "quarters look like 2026-Q2")
+    rep = portfolio.with_window(portfolio.filter_vintage(portfolio.report(as_of), vintage_from, vintage_to),
+                                start, end)
     rep["summary"] = portfolio.summary(rep=rep)      # same reading, no second pass
     return rep
 
@@ -407,12 +413,19 @@ def _parse_date(raw: str) -> Optional[str]:
 
 
 @app.get("/api/irr")
-def irr_report(as_of: Optional[str] = None):
+def irr_report(as_of: Optional[str] = None, start: Optional[str] = None, end: Optional[str] = None,
+               vintage_from: Optional[int] = None, vintage_to: Optional[int] = None):
     """IRR as of a quarter: the whole portfolio, Core vs Life Sciences, direct vs
-    funds, and every entity — with the dated flows behind each figure."""
-    if as_of and not re.fullmatch(r"20\d{2}-Q[1-4]", as_of):
-        raise HTTPException(400, "as_of must be a quarter, e.g. 2026-Q2")
-    return irr.report(as_of)
+    funds, and every entity — with the dated flows behind each figure. With a
+    start and end quarter, the return earned within that window; with vintage
+    years, only entities first invested in within them."""
+    for q in (as_of, start, end):
+        if q and not re.fullmatch(r"20\d{2}-Q[1-4]", q):
+            raise HTTPException(400, "quarters look like 2026-Q2")
+    try:
+        return irr.report(as_of, start, end, vintage_from, vintage_to)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
 
 
 @app.get("/api/portfolio/summary")
@@ -495,7 +508,8 @@ async def add_portfolio_calls(entity: str, request: Request):
         if date_iso is None or amount is None:
             raise HTTPException(400, "date and amount are required")
         rows.append((date_iso, str(body.get("description") or ""), amount))
-    ids = [db.add_capital_call(entity, d, abs(a) * scale, desc, user=user) for d, desc, a in rows]
+    ids = [db.add_capital_call(entity, d, abs(a) * scale, desc, user=user, source="entered by hand")
+           for d, desc, a in rows]
     return {"added": len(ids), "ids": ids}
 
 

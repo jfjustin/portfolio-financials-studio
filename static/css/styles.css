@@ -413,3 +413,16 @@ sup.man { color: var(--brand); margin-left: 2px; cursor: help; }
 .tbl-irr .flows { width: auto; font-size: 12px; }
 .tbl-irr .flows td, .tbl-irr .flows th { padding: 3px 10px; border: 0; background: none; }
 .tbl-irr .flows .in { color: var(--ok); } .tbl-irr .flows .out { color: var(--err); }
+
+/* time-period filters: a window of quarters vs the first-invested years, each saying what it does */
+.period-group { display: inline-flex; align-items: center; gap: 5px; padding: 4px 8px; border: 1px solid var(--line);
+  border-radius: 8px; font-size: 12px; color: var(--muted); background: var(--panel); flex-wrap: wrap; }
+.period-group .pg-name { font-weight: 650; color: var(--ink); }
+.period-group .pg-what { font-size: 11px; color: var(--muted); margin-right: 3px; }
+.period-group select, .period-group input { font: inherit; font-size: 12px; padding: 2px 4px; border: 1px solid var(--line);
+  border-radius: 6px; background: var(--panel); color: var(--ink); }
+.period-group input[type=number] { width: 5.2em; }
+th.pf-win, td.pf-win { display: none; }
+.pf-windowed th.pf-win, .pf-windowed td.pf-win { display: table-cell; background: color-mix(in srgb, var(--accent) 7%, transparent); }
+.tbl-irr td.covers { white-space: normal; min-width: 180px; font-size: 12px; }
+.tbl-irr .cov { display: block; color: var(--muted); }

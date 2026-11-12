@@ -65,6 +65,11 @@
     $("#dif-from").addEventListener("change", pickRange);
     $("#dif-to").addEventListener("change", pickRange);
     $("#irr-asof").addEventListener("change", e => loadIrr(e.target.value));
+    const irrOpts = () => { IRR_OPTS = { start: $("#irr-from").value, end: $("#irr-to").value, vfrom: $("#irr-vfrom").value, vto: $("#irr-vto").value };
+      if (!IRR_OPTS.start !== !IRR_OPTS.end) return; loadIrr($("#irr-asof").value); };
+    ["#irr-from", "#irr-to", "#irr-vfrom", "#irr-vto"].forEach(id => $(id).addEventListener("change", irrOpts));
+    const pfOpts = () => loadPortfolio($("#pf-asof").value);
+    ["#pf-vfrom", "#pf-vto", "#pf-from", "#pf-to"].forEach(id => $(id).addEventListener("change", pfOpts));
     $$(".irr-split .btn").forEach(b => b.addEventListener("click", () => { IRR_SPLIT = b.dataset.split; renderIrr(); }));
     $("#dif-period").addEventListener("change", renderDif);
     $("#pf-asof").addEventListener("change", e => loadPortfolio(e.target.value));
@@ -431,7 +436,18 @@
       ? '<sup class="est" title="Estimate — only the quarters on file">*</sup>' : "");
 
   async function loadPortfolio(asOf) {
-    PF = await api("/api/portfolio" + (asOf ? "?as_of=" + asOf : ""));
+    const qs = [];
+    if (asOf) qs.push("as_of=" + asOf);
+    if ($("#pf-vfrom").value) qs.push("vintage_from=" + $("#pf-vfrom").value);
+    if ($("#pf-vto").value) qs.push("vintage_to=" + $("#pf-vto").value);
+    if ($("#pf-from").value && $("#pf-to").value) qs.push("start=" + $("#pf-from").value, "end=" + $("#pf-to").value);
+    PF = await api("/api/portfolio" + (qs.length ? "?" + qs.join("&") : ""));
+    $("#pf-card .report-title").textContent = "Investment Portfolio"
+      + (PF.window ? ` — activity ${PF.window.start} to ${PF.window.end}` : "")
+      + (PF.vintage ? ` — first invested ${PF.vintage.from || "…"}–${PF.vintage.to || "…"}` : "");
+    $("#pf-card").classList.toggle("pf-windowed", !!PF.window);
+    for (const [id, cur] of [["#pf-from", PF.window && PF.window.start], ["#pf-to", PF.window && PF.window.end]])
+      $(id).innerHTML = '<option value="">—</option>' + PF.quarters.map(q => `<option value="${q}" ${q === cur ? "selected" : ""}>${q}</option>`).join("");
     $("#pf-asof").innerHTML = PF.quarters.slice().reverse().map(q =>
       `<option value="${q}" ${q === PF.as_of ? "selected" : ""}>${q}</option>`).join("");
     $("#pf-export").href = "/api/exports/investment-portfolio.xlsx?as_of=" + PF.as_of;
@@ -457,7 +473,9 @@
         <td title="${srcTitle(f, "distribution_to_date")}">${mfmt(f.distribution_to_date, 3)}${estMark(f, "distribution_to_date")}</td>
         <td>${f.drawn_commit != null ? Math.round(f.drawn_commit * 100) + "%" : '<span class="muted">—</span>'}</td>
         <td title="${srcTitle(f, "investment_balance")}"><b>${mfmt(f.investment_balance, 3)}</b>${estMark(f, "investment_balance")}</td>
-        <td class="small" title="${srcTitle(f, "stats")}">${stats}</td>`;
+        <td class="small" title="${srcTitle(f, "stats")}">${stats}</td>
+        <td class="pf-win">${f.window ? (f.window.drawn != null ? mfmt(f.window.drawn, 3) : mfmt(f.window.invested, 3) + (f.window.n_calls ? ` <span class="small muted">(${f.window.n_calls} call${f.window.n_calls === 1 ? "" : "s"})</span>` : "")) : ""}</td>
+        <td class="pf-win">${f.window && f.window.distributed != null ? mfmt(f.window.distributed, 3) : '<span class="muted">—</span>'}</td>`;
       fb.appendChild(tr);
     });
     const cb = $("#pf-companies"); cb.innerHTML = "";
@@ -472,7 +490,8 @@
         <td title="${srcTitle(c, "total_invested")}">${mfmt(c.total_invested)}</td>
         <td>${mfmt(c.projected_investment)}</td>
         <td title="${srcTitle(c, "total_value")}">${mfmt(c.total_value)}</td>
-        <td class="lbl">${esc(c.operating_status)}${c.exited ? ' <span class="small muted">· exited</span>' : ""}</td>`;
+        <td class="lbl">${esc(c.operating_status)}${c.exited ? ' <span class="small muted">· exited</span>' : ""}</td>
+        <td class="pf-win">${c.window ? mfmt(c.window.invested) + (c.window.n_calls ? ` <span class="small muted">(${c.window.n_calls})</span>` : "") : ""}</td>`;
       cb.appendChild(tr);
     });
     const t = PF.totals, tot = v => v == null ? "—" : (Number(v) < 0 ? "-" : "") + "$" + Math.abs(Number(v) / 1e6).toFixed(1) + "M";
@@ -491,16 +510,30 @@
   let IRR = null, IRR_SPLIT = "all";
   const irrPct = (v, est) => v == null ? '<span class="muted">—</span>'
     : `<span class="${v < 0 ? "is-neg" : "is-pos"}">${v.toFixed(1)}%</span>` + (est ? EST_MARK : "");
+  let IRR_OPTS = { start: "", end: "", vfrom: "", vto: "" };
   async function loadIrr(asOf) {
-    IRR = await api("/api/irr" + (asOf ? "?as_of=" + asOf : ""));
+    const qs = [];
+    if (asOf) qs.push("as_of=" + asOf);
+    if (IRR_OPTS.start && IRR_OPTS.end) qs.push("start=" + IRR_OPTS.start, "end=" + IRR_OPTS.end);
+    if (IRR_OPTS.vfrom) qs.push("vintage_from=" + IRR_OPTS.vfrom);
+    if (IRR_OPTS.vto) qs.push("vintage_to=" + IRR_OPTS.vto);
+    const res = await fetch("/api/irr" + (qs.length ? "?" + qs.join("&") : ""));
+    if (!res.ok) { toast("IRR not shown: " + (await failText(res))); return; }
+    IRR = await res.json();
     $("#irr-asof").innerHTML = IRR.quarters.slice().reverse().map(q =>
       `<option value="${q}" ${q === IRR.as_of ? "selected" : ""}>${q}</option>`).join("");
+    // the window may span any quarter from the earliest roll-forward quarter on file to the as-of
+    const all = IRR.quarters.slice();
+    for (const [id, cur] of [["#irr-from", IRR.window && IRR.window.start], ["#irr-to", IRR.window && IRR.window.end]])
+      $(id).innerHTML = '<option value="">—</option>' + all.map(q => `<option value="${q}" ${q === cur ? "selected" : ""}>${q}</option>`).join("");
     renderIrr();
   }
   function renderIrr() {
     if (!IRR) return;
     $$(".irr-split .btn").forEach(b => b.classList.toggle("on", b.dataset.split === IRR_SPLIT));
     const keys = IRR.splits[IRR_SPLIT];
+    $("#irr-card .report-title").textContent = "IRR" + (IRR.window ? ` — earned ${IRR.window.start} to ${IRR.window.end}` : " — since each first investment")
+      + (IRR.vintage ? ` — first invested ${IRR.vintage.from || "…"}–${IRR.vintage.to || "…"}` : "");
     $("#irr-tiles").innerHTML = keys.map(k => { const g = IRR.groups[k]; return `<div class="perf-tile">
         <div class="pv">${irrPct(g.irr_pct, g.estimated)}</div>
         <div class="pl">${esc(g.label)} · ${g.n} · invested ${psMoney(g.invested)} · returned ${psMoney(g.returned)} · held ${psMoney(g.value)}</div></div>`; }).join("")
@@ -514,7 +547,9 @@
       tr.className = "irr-row";
       tr.innerHTML = `<td class="lbl">${esc(e.name)}${e.name !== e.entity ? `<div class="small muted">${esc(e.entity)}</div>` : ""}</td>
         <td class="lbl">${e.kind === "fund" ? "Fund" : "Direct"}${e.status === "exited" ? ' <span class="small muted">· exited</span>' : ""}</td>
-        <td class="lbl">${esc(e.group)}</td><td>${esc(e.first_date)}</td>
+        <td class="lbl">${esc(e.group)}</td>
+        <td class="lbl covers"><b>${esc(e.first_date)} → ${esc(e.last_date)}</b>${(e.coverage || []).map(c =>
+          `<span class="cov">${esc(c.kind)}${c.n > 1 ? ` ×${c.n}` : ""} ${c.from === c.to ? esc(c.from) : esc(c.from) + "–" + esc(c.to)} · ${esc(c.document)}${c.estimated ? " *" : ""}</span>`).join("")}</td>
         <td>${psMoney(e.invested)}</td><td>${psMoney(e.returned)}</td><td>${psMoney(e.value)}</td>
         <td>${mult == null ? "—" : mult.toFixed(2) + "x"}</td><td>${irrPct(e.irr_pct, e.estimated)}</td>`;
       const fl = document.createElement("tr");
@@ -525,8 +560,9 @@
       tr.onclick = () => { fl.hidden = !fl.hidden; };
       tb.appendChild(tr); tb.appendChild(fl);
     });
-    $("#irr-notes").innerHTML = IRR.left_out.length
-      ? "Not included: " + IRR.left_out.map(x => `<b>${esc(x.name)}</b> — ${esc(x.why)}`).join(" · ") : "";
+    const vl = IRR.vintage && IRR.vintage.left_out.length ? `Outside the vintage years: ${IRR.vintage.left_out.map(esc).join(", ")}. ` : "";
+    $("#irr-notes").innerHTML = vl + (IRR.left_out.length
+      ? "Not included: " + IRR.left_out.map(x => `<b>${esc(x.name)}</b> — ${esc(x.why)}`).join(" · ") : "");
   }
 
   // ---------------- Portfolio Summary (direct by status, funds, all by group) ----------------
@@ -604,7 +640,7 @@
     row.invested.forEach(c => {
       const tr = document.createElement("tr");
       tr.innerHTML = `<td class="lbl">${esc(c.date)}</td><td class="lbl">${esc(c.description || "-")}</td>
-        <td>${mfmt(c.amount, 3)}</td><td class="lbl small muted">${esc(c.source)}</td>
+        <td>${mfmt(c.amount, 3)}</td><td class="lbl small muted">${esc(c.document || c.source)}</td>
         <td>${c.id ? `<button class="btn sm danger pf-del" data-id="${c.id}" aria-label="Delete this row">Delete</button>` : ""}</td>`;
       tb.appendChild(tr);
     });
@@ -733,7 +769,7 @@
     const est = k => (p.estimated || []).includes(k) ? EST_MARK : "";
     $("#perf-tvpi").innerHTML = (p.tvpi != null ? p.tvpi.toFixed(2) + "x" : "—") + est("tvpi");
     $("#perf-dpi").innerHTML = (p.dpi != null ? p.dpi.toFixed(2) + "x" : "—") + est("dpi");
-    $("#perf-irr").textContent = p.irr_pct != null ? p.irr_pct.toFixed(1) + "%" : "—";
+    $("#perf-irr").innerHTML = (p.irr_pct != null ? p.irr_pct.toFixed(1) + "%" : "—") + (p.irr_estimated ? EST_MARK : "");
     $("#perf-nav").textContent = p.total_nav != null ? money(p.total_nav) : "—";
     $("#perf-asof").textContent = p.n_funds
       ? `Across ${p.n_funds} fund${p.n_funds === 1 ? "" : "s"} as of ${p.as_of_label} · ${money(p.total_funding||0)} paid in · ${money(p.total_distributions||0)} distributed`

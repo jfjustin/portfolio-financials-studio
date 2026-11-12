@@ -86,6 +86,14 @@
           <h3 class="report-title">IRR</h3>
           <div class="dif-controls">
             <label class="small muted">As of <select id="irr-asof" aria-label="IRR quarter"></select></label>
+            <span class="period-group" title="Which quarters' cash flows count. What was held at the start is the opening outlay and what was held at the end the closing value, both from balances on file for those quarters — never guessed.">
+              <span class="pg-name">Window</span><span class="pg-what">which quarters' flows count</span>
+              <select id="irr-from" aria-label="Window start"><option value="">—</option></select> to
+              <select id="irr-to" aria-label="Window end"><option value="">—</option></select></span>
+            <span class="period-group" title="Which funds and companies are included: those whose first investment falls in these years.">
+              <span class="pg-name">First invested</span><span class="pg-what">which entities are included</span>
+              <input id="irr-vfrom" type="number" min="1990" max="2100" placeholder="from" aria-label="First invested from"> –
+              <input id="irr-vto" type="number" min="1990" max="2100" placeholder="to" aria-label="First invested to"></span>
             <span class="irr-split" role="group" aria-label="Split">
               <button type="button" class="btn sm on" data-split="all">Portfolio</button>
               <button type="button" class="btn sm" data-split="group">Core vs Life Sciences</button>
@@ -100,7 +108,7 @@
         <div class="perf-strip" id="irr-tiles"></div>
         <div class="scroll"><table class="tbl-report tbl-irr">
           <thead><tr><th class="lbl">Investment</th><th class="lbl">Kind</th><th class="lbl">Group</th>
-            <th>First investment</th><th>Invested</th><th>Returned</th><th>Value held</th>
+            <th class="lbl">Covers</th><th>Invested</th><th>Returned</th><th>Value held</th>
             <th>Multiple</th><th>IRR</th></tr></thead>
           <tbody id="irr-body"></tbody>
         </table></div>
@@ -115,6 +123,14 @@
           <h3 class="report-title">Investment Portfolio</h3>
           <div class="dif-controls">
             <label class="small muted">As of <select id="pf-asof" aria-label="Report quarter"></select></label>
+            <span class="period-group" title="Which quarters' activity to show: investments made, and a fund's funding and distributions, within these quarters. Balances stay as of the quarter above.">
+              <span class="pg-name">Window</span><span class="pg-what">which quarters' activity to show</span>
+              <select id="pf-from" aria-label="Window start"><option value="">—</option></select> to
+              <select id="pf-to" aria-label="Window end"><option value="">—</option></select></span>
+            <span class="period-group" title="Which funds and companies are included: those whose first investment falls in these years.">
+              <span class="pg-name">First invested</span><span class="pg-what">which entities are included</span>
+              <input id="pf-vfrom" type="number" min="1990" max="2100" placeholder="from" aria-label="First invested from"> –
+              <input id="pf-vto" type="number" min="1990" max="2100" placeholder="to" aria-label="First invested to"></span>
             <a class="btn sm primary" id="pf-export" href="/api/exports/investment-portfolio.xlsx">Download xlsx</a>
           </div>
         </div>
@@ -127,7 +143,7 @@
           <thead><tr><th class="lbl">Fund</th><th class="lbl">Type</th><th class="lbl">Region / Sector</th>
             <th>Vintage</th><th>Fund Size</th><th>Commitment</th><th>Drawn to Date</th>
             <th>Future Draw</th><th>Distribution</th><th>Drawn / Commit</th><th>Investment Balance</th>
-            <th>Latest Stats</th></tr></thead>
+            <th>Latest Stats</th><th class="pf-win">Drawn in window</th><th class="pf-win">Distributed in window</th></tr></thead>
           <tbody id="pf-funds"></tbody>
         </table></div>
         <h4 class="pf-sub">Direct investments</h4>
@@ -141,7 +157,7 @@
         <div class="scroll"><table class="tbl-report tbl-pf">
           <thead><tr><th class="lbl">Company</th><th class="lbl">Theme</th><th class="lbl">Round</th>
             <th>Most Recent Investment</th><th>Total Invested</th><th>Projected</th>
-            <th>Total Value</th><th class="lbl">Status</th></tr></thead>
+            <th>Total Value</th><th class="lbl">Status</th><th class="pf-win">Invested in window</th></tr></thead>
           <tbody id="pf-companies"></tbody>
         </table></div>
         <div class="perf-strip">

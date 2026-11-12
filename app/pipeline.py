@@ -86,7 +86,7 @@ def process_path(path: Path, *, save_copy: bool = True,
 def _after_save(result, sub_id: int, user: str = "local") -> None:
     if result.master:
         from .extractors.master import apply_master
-        applied = apply_master(result.master, user=user)
+        applied = apply_master(result.master, user=user, source=result.filename)
         result.warnings.extend(applied["errors"])
         result.master["applied"] = applied
         return
