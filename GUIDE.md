@@ -243,6 +243,28 @@ upload is checked against the entity's earlier quarters:
   as *Contributions / Distributions (since inception)*, and the capital
   commitment fills the Commit column.
 
+## 4b½. A full demo in twelve files (the `samples/` folder)
+
+Every file is made up. Upload them in this order on **Upload & files**, confirming each
+one's values as you go, and every section fills:
+
+| Step | Files | What it shows |
+|---|---|---|
+| 1 | `Investment Portfolio Jun'26 (sample).xlsx` | A master workbook: 2 funds and 4 companies filled at once — names, type, round, security, cost, value, commitments, dated investments, the accounting block; a planning tab is left alone and named in the result. |
+| 2 | `Equity Investments Summary Workbook - Jun26 (sample).xlsx` | The accounting team's workbook: positions, impairment, ownership, dated capital calls; a closed investment becomes an exit. |
+| 3 | `Fund 82_Q1 2026 PCAP…pdf`, `Fund 82_Q1 2026 Financial Statements.pdf`, `Fund 99_2026 Q1 PCAP…pdf`, `Fund 99_2026 Q2 PCAP…pdf` | Capital-account statements → the roll-forward (Q2 follows on from Q1, a year-to-date statement is de-cumulated); the fund's own statements → fund size and Latest Stats. |
+| 4 | `Fund 84_Q1 2026 LP Report.pdf` | A whole-fund report with this quarter beside last year-end: the right column is read, and the report asks for our commitment before working out our share. |
+| 5 | `Company 90A_Financials_Q4_2025.xlsx`, `Company 90A_Financials_Q1_2026.xlsx` | QuickBooks exports, two quarters → Direct Investment Financials, and a run of quarters (Q4'25 to Q1'26) to add up. |
+| 6 | `Company 90B_…Mar26.xlsx`, `Company 90C_Q1_2026_Quarterly_CF.pdf`, `Direct Investment Financials Q1 2026 - Company 90D.csv` | Audited-style statements, a cash-flow-only PDF, a finished report sheet. |
+| 7 | `Company 90G_Q1_2026_Financial_Statements.pdf` | A scanned statement with no text: flagged "unread" for a person (or read by the vision model when one is configured). |
+
+Then walk the sections: **Overview** (TVPI / DPI), **Portfolio Summary** (current / impaired /
+exited, funds, Core vs Life Sciences, with `*` on estimates), **IRR** (portfolio, the two splits,
+each entity's flows), **Investment Portfolio** (open a fund, see its calls; Needs attention lists
+the whole-fund report), **Direct Investment Financials** (pick Q1'26, then *from* Q4'25 *to*
+Q1'26), **Roll-forward**, **Charts**, and the two exports. Finish with **Delete…** on one file
+or entity, and **Clear data** to start over.
+
 ## 4c. Lam Capital Overall Performance (TVPI / DPI / IRR)
 
 Above the trend chart, three ratios summarize the whole fund portfolio:

@@ -587,6 +587,199 @@ def comparative_columns_pdf():
     print("wrote", out.name)
 
 
+def company_prior_quarter_xlsx():
+    """Company 90A, Q4 2025 (made-up): the quarter before the Q1 2026 export, same
+    QuickBooks layout — so a run of quarters (Q4'25 to Q1'26) has two to add up."""
+    wb = openpyxl.Workbook()
+    months = ["Oct 2025", "Nov 2025", "Dec 2025"]
+    pl = wb.active
+    pl.title = "P&L"
+    for row in (["Profit and Loss"], ["Sample Robotics Inc."], ["October 1-December 31, 2025"], [],
+                [None, *months, "Total"], ["Income"], ["4000 Revenue"],
+                ["4010 Product Revenue", 15000, 18000, 22000, 55000],
+                ["Total for 4000 Revenue", 15000, 18000, 22000, 55000],
+                ["Total for Income", 15000, 18000, 22000, 55000], ["Expenses"],
+                ["6100 Payroll", 280000, 280000, 280000, 840000],
+                ["6500 Rent Expense", 50000, 50000, 50000, 150000],
+                ["Total for Expenses", 330000, 330000, 330000, 990000],
+                ["Net Income", -315000, -312000, -308000, -935000]):
+        pl.append(row)
+    bs = wb.create_sheet("BS")
+    for row in (["Balance Sheet"], ["Sample Robotics Inc."], ["As of Dec 31, 2025"], [],
+                [None, *months], ["Assets"], ["Bank Accounts"],
+                ["1000 Operating Account", 4300000, 3860000, 3410000],
+                ["Total for Bank Accounts", 4300000, 3860000, 3410000]):
+        bs.append(row)
+    cf = wb.create_sheet("CF")
+    for row in (["Statement of Cash Flows"], ["Sample Robotics Inc."], ["October 1-December 31, 2025"],
+                [], ["Full name", *months, "Total"], ["OPERATING ACTIVITIES"],
+                ["Net Income", -315000, -312000, -308000, -935000],
+                ["Net cash provided by operating activities", -305000, -300000, -295000, -900000],
+                ["INVESTING ACTIVITIES"],
+                ["16100 Fixed Assets:Computer Equipment", -10000, -10000, -5000, -25000],
+                ["Net cash provided by investing activities", -10000, -10000, -5000, -25000],
+                ["NET CASH INCREASE FOR PERIOD", -315000, -310000, -300000, -925000],
+                ["Cash at the end of the period", 4020000, 3710000, 3410000, 3410000]):
+        cf.append(row)
+    out = OUT / "Company 90A_Financials_Q4_2025.xlsx"
+    wb.save(out)
+    print("wrote", out.name)
+
+
+def master_workbooks():
+    """The team's two master workbooks for the sample portfolio (made-up figures):
+    an "Investment Portfolio" workbook — one sheet per fund / company in the team's
+    layout, the accounting block beside, dated investments, a planning tab — and
+    an accounting "Equity Investments Summary" — the summary table plus backup tabs.
+    Uploading either fills every fund's and company's details at once."""
+    import datetime as dt
+    wb = openpyxl.Workbook()
+    aop = wb.active
+    aop.title = "Investments-AOP"
+    aop.append(["Follow-on 1 Company 90A US/ Robotics H1 2026 1 25"])
+    aop.append(["Planned", "H1 2026", 1.0])
+
+    def fund(title, name, region, vintage, size, commit, future, balance, drawn, dist, stats, calls, acct):
+        ws = wb.create_sheet(title)
+        for r, label, value in ((2, "Investment Name", name), (3, "Investment Type", "LP"),
+                                (4, "Current / Most Recent Round", "-"), (5, "Vintage", vintage),
+                                (6, "Fund Size", size), (7, "Commitment", commit), (9, "Future Draw", future),
+                                (10, "Region / Sector Focus", region), (11, "Investment Balance", balance),
+                                (13, "Drawn to Date", drawn)):
+            ws.cell(r, 1, label)
+            ws.cell(r, 2, value)
+        ws.cell(13, 5, "Distribution to Date")
+        ws.cell(13, 6, -dist)
+        for c, h in zip("BCDEF", ("Date", "# of investments", "Cost Basis", "Value", "Gain / (Loss) %")):
+            ws[f"{c}14"] = h
+        ws["A15"] = "Latest Stats"
+        for c, v in zip("BCDE", stats):
+            ws[f"{c}15"] = v
+        for c, h in zip("BCDEF", ("Date", "Current Round", "Amount Invested", "Total Raise", "Pre Money Valuation")):
+            ws[f"{c}16"] = h
+        for i, (d, desc, amt) in enumerate(calls, start=17):
+            ws.cell(i, 1, "Invested")
+            ws.cell(i, 2, d)
+            ws.cell(i, 3, desc)
+            ws.cell(i, 4, amt)
+        ws["H2"] = "Equity Investments Summary"
+        for r, (label, value) in enumerate(acct, start=3):
+            ws.cell(r, 8, label)
+            ws.cell(r, 9, value)
+
+    fund("Fund 82", "Example Growth Fund I", "US/Software", 2019, 150.0, 5.0, 1.0, 4.2, 4.0, 1.0,
+         (dt.datetime(2026, 3, 31), 14, 40.0, 55.0),
+         [(dt.datetime(2019, 4, 14), "Drawdown Notice #1", 0.5), (dt.datetime(2020, 6, 1), "Drawdown Notice #3", 1.0),
+          (dt.datetime(2022, 3, 1), "Drawdown Notice #6", 1.5), (dt.datetime(2026, 2, 10), "Drawdown Notice #9", 1.0)],
+         (("Entity Type", "Limited Partnership"), ("Method of Accounting", "Equity Method"),
+          ("GL Account", "190100"), ("Company Code", "C100"), ("% Ownership", 0.033),
+          ("Initial Investment Date", dt.datetime(2019, 4, 14)), ("Terms", "10-year term, two 1-year extensions")))
+    fund("Fund 99", "Example Ventures II", "EU/Deep tech", 2021, 220.0, 2.0, 0.8, 1.35, 1.2, 0.1,
+         (dt.datetime(2026, 3, 31), 9, 60.0, 72.0),
+         [(dt.datetime(2021, 9, 1), "Capital Call #1", 0.4), (dt.datetime(2023, 5, 1), "Capital Call #2", 0.4),
+          (dt.datetime(2025, 11, 1), "Capital Call #3", 0.4)],
+         (("Entity Type", "Limited Partnership"), ("Method of Accounting", "Equity Method"),
+          ("GL Account", "190100"), ("Company Code", "C100"), ("% Ownership", 0.009),
+          ("Initial Investment Date", dt.datetime(2021, 9, 1))))
+
+    def company(title, name, rnd, security, theme, invested, projected, value, status, rounds, exit_=None):
+        ws = wb.create_sheet(title)
+        rows = [(2, "Investment Name", name), (3, "Investment Type", "Direct"), (4, "Current / Most Recent Round", rnd),
+                (5, "Most Recent Investment Date", rounds[-1][0]), (6, "Total Investment to Date", invested),
+                (7, "Projected Future Investments", projected), (9, "Investments", security),
+                (10, "Theme", theme), (11, "Total Value", value), (12, "Operating Status", status)]
+        if exit_:
+            rows.append((13, "Date of Exit", exit_[0]))
+            ws.cell(13, 5, "Total Received Proceeds")
+            ws.cell(13, 6, exit_[1])
+            ws.cell(14, 5, "Total Proceeds on Escrow")
+            ws.cell(14, 6, exit_[2])
+        for r, label, v in rows:
+            ws.cell(r, 1, label)
+            ws.cell(r, 2, v)
+        for c, h in zip("BCDEF", ("Date", "Current Round", "Amount Invested", "Total Raise", "Pre Money Valuation")):
+            ws[f"{c}16"] = h
+        for i, (d, desc, amt, raise_, pre) in enumerate(rounds, start=17):
+            for c, v in zip("ABCDEF", ("Invested", d, desc, amt, raise_, pre)):
+                ws[f"{c}{i}"] = v
+
+    company("Company 90A", "Sample Robotics Inc.", "Series A", "Series A Preferred", "Robotics", 3.0, 1.0, 4.6, "Active",
+            [(dt.datetime(2024, 6, 1), "Seed", 1.0, 4.0, 12.0), (dt.datetime(2026, 3, 1), "Series A", 2.0, 20.0, 60.0)])
+    company("Company 90B", "Sample Devices Corp.", "Series B", "Series B Preferred", "Devices", 2.4, None, 7.5, "Inactive",
+            [(dt.datetime(2021, 5, 1), "Series A", 1.4, 10.0, 30.0), (dt.datetime(2024, 9, 15), "Series B", 1.0, 25.0, 90.0)],
+            exit_=(dt.datetime(2026, 6, 15), 6.9, 0.6))
+    company("Company 90C", "Sample Fabrication Ltd.", "Seed", "Seed Preferred", "Advanced manufacturing", 1.5, 0.5, 0.4,
+            "Active", [(dt.datetime(2025, 11, 2), "Seed", 1.5, 5.0, 15.0)])
+    company("Company 90D", "Sample Bio Tools Inc.", "Series A", "Series A Preferred", "Life sciences tools", 2.0, 1.0, 3.8,
+            "Active", [(dt.datetime(2026, 1, 20), "Series A", 2.0, 18.0, 40.0)])
+    sv = wb.create_sheet("Summary-Portfolio Value")
+    sv.append(["Worksheet Reference", None, "Company", "Theme", "Operating Status", "Current/Impaired/Exit",
+               "Impairment ($M)", "Book Value ($M)", "Group"])
+    for row in (("Company 90A", "Active", "Current", None, 3.0, "Core"),
+                ("Company 90B", "Inactive", "Exit", None, 0.0, "Core"),
+                ("Company 90C", "Active", "Impaired", 1.1, 0.4, "Core"),
+                ("Company 90D", "Active", "Current", None, 2.0, "Life Sciences")):
+        sv.append([row[0], None, row[0], None, *row[1:]])
+    sv.append([None, None, "Total Direct"])
+    out = OUT / "Investment Portfolio Jun'26 (sample).xlsx"
+    wb.save(out)
+    print("wrote", out.name)
+
+    # the accounting team's Equity Investments Summary (made-up figures, whole units)
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Investments Summary"
+    ws.append([None, "Equity Investments Summary Workbook", "Summarized presentation of investment balances"])
+    ws.append([None, dt.datetime(2026, 6, 28)])
+    ws.append([])
+    head = [None, "Investment", "Investment Balance", "Gross Investment / Funding", "Equity Income/(Loss)",
+            "Return of Capital/Other Cash Proceeds", "MTM & Conversion Gain/(Loss)", "Acquisition Impact",
+            "Cumulative Impairment", "Total Commitment", "Remaining Commitment", "Ownership %",
+            "Initial Investment Date"]
+    ws.append(head)
+    ws.append([None, "Equity Investments"])
+    ws.append(["Company 90A (2024)", "Company 90A", 3_000_000, 3_000_000, 0, 0, 0, 0, 0, 0, 0, 0.041, dt.datetime(2024, 6, 1)])
+    ws.append(["Company 90C (2025)", "Company 90C", 400_000, 1_500_000, 0, 0, 0, 0, -1_100_000, 0, 0, 0.052, dt.datetime(2025, 11, 2)])
+    ws.append(["Company 90D (2026)", "Company 90D", 2_000_000, 2_000_000, 0, 0, 0, 0, 0, 0, 0, 0.033, dt.datetime(2026, 1, 20)])
+    ws.append([None, None, 5_400_000, 6_500_000])
+    ws.append([None, "Funds"])
+    ws.append(["Fund 82 (2019)", "Fund 82", 4_200_000, 4_000_000, 1_200_000, -1_000_000, 0, 0, 0, 5_000_000, 1_000_000, 0.033, dt.datetime(2019, 4, 14)])
+    ws.append(["Fund 99 (2021)", "Fund 99", 1_350_000, 1_200_000, 250_000, -100_000, 0, 0, 0, 2_000_000, 800_000, 0.009, dt.datetime(2021, 9, 1)])
+    ws.append([None, None, 5_550_000, 5_200_000])
+    ws.append([None, "Total Equity Investments", 10_950_000])
+    ws.append([None, "CLOSED INVESTMENTS"])
+    ws.append(head)
+    ws.append([None, "Equity Investments"])
+    ws.append(["Company 90B (2021)", "Company 90B", 0, 2_400_000, 0, -6_900_000, 4_500_000, 0, 0, 0, 0, None, None])
+    for title, rows in (
+        ("Company 90A", (["Company 90A"], [], ["Entity Type", "Corporation"],
+                         ["Method of Accounting", "Measurement Alternative"], ["GL Account", 190645],
+                         ["Company Code", 1220], ["% Ownership - 12/31/2025", 0.041, "Cap table"],
+                         ["Investment", "Investment Value", "Cash Outlay", "MTM of Shares", "Investment Date"],
+                         ["Company 90A Seed Preferred Shares", 1_000_000, 1_000_000, None, dt.datetime(2024, 6, 1)],
+                         ["Company 90A Series A Preferred Shares", 2_000_000, 2_000_000, None, dt.datetime(2026, 3, 1)],
+                         [None, 3_000_000, 3_000_000])),
+        ("Fund 82", (["Fund 82"], [], ["Entity Type", "Limited Partnership"], ["Method of Accounting", "Equity Method"],
+                     ["GL Account", 190100], ["Company Code", 1220], ["% Ownership", 0.033],
+                     ["Initial Investment Date", dt.datetime(2019, 4, 14)], ["Terms", "- 10-year term"],
+                     ["Total Commitment", 5_000_000], ["Remaining Commitment", 1_000_000],
+                     ["Funding", "Amount", "Investment Date"],
+                     ["Initial Investment", 500_000, dt.datetime(2019, 4, 14)],
+                     ["Capital Call", 1_000_000, dt.datetime(2020, 6, 1)],
+                     ["Capital Call", 1_500_000, dt.datetime(2022, 3, 1)],
+                     ["Capital Call", 1_000_000, dt.datetime(2026, 2, 10)], ["Total Funding", 4_000_000],
+                     ["Investment Balance", 4_200_000]))):
+        tab = wb.create_sheet(title)
+        for r in rows:
+            tab.append(r)
+    sap = wb.create_sheet("SAP")
+    sap.append(["Update quarterly"])
+    sap.append(["Account", "P12 FY25", "P3 FY26"])
+    out = OUT / "Equity Investments Summary Workbook - Jun26 (sample).xlsx"
+    wb.save(out)
+    print("wrote", out.name)
+
+
 if __name__ == "__main__":
     fund_financials()
     jv_holdings()
@@ -604,4 +797,6 @@ if __name__ == "__main__":
     direct_investment_financials_csv()
     portfolio_fund_pdfs()
     comparative_columns_pdf()
+    company_prior_quarter_xlsx()
+    master_workbooks()
     print("\nSample files ready in", OUT)
