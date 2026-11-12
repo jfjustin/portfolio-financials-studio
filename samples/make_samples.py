@@ -626,6 +626,50 @@ def company_prior_quarter_xlsx():
     print("wrote", out.name)
 
 
+def _quickbooks_quarter(filename: str, months: list[str], span: str, as_of: str,
+                        revenue: list[int], opex: list[int], ocf: list[int], capex: list[int],
+                        cash: list[int]) -> None:
+    """A QuickBooks-style export for one quarter: a column per month plus Total."""
+    wb = openpyxl.Workbook()
+    pl = wb.active
+    pl.title = "P&L"
+    for row in (["Profit and Loss"], ["Sample Robotics Inc."], [span], [], [None, *months, "Total"],
+                ["Income"], ["4010 Product Revenue", *revenue, sum(revenue)],
+                ["Total for Income", *revenue, sum(revenue)], ["Expenses"],
+                ["6100 Payroll", *[o - 50000 for o in opex], sum(opex) - 150000],
+                ["6500 Rent Expense", 50000, 50000, 50000, 150000],
+                ["Total for Expenses", *opex, sum(opex)],
+                ["Net Income", *[r - o for r, o in zip(revenue, opex)], sum(revenue) - sum(opex)]):
+        pl.append(row)
+    bs = wb.create_sheet("BS")
+    for row in (["Balance Sheet"], ["Sample Robotics Inc."], [as_of], [], [None, *months], ["Assets"],
+                ["Bank Accounts"], ["1000 Operating Account", *cash], ["Total for Bank Accounts", *cash]):
+        bs.append(row)
+    cf = wb.create_sheet("CF")
+    for row in (["Statement of Cash Flows"], ["Sample Robotics Inc."], [span], [], ["Full name", *months, "Total"],
+                ["OPERATING ACTIVITIES"],
+                ["Net cash provided by operating activities", *ocf, sum(ocf)], ["INVESTING ACTIVITIES"],
+                ["16100 Fixed Assets:Computer Equipment", *capex, sum(capex)],
+                ["Net cash provided by investing activities", *capex, sum(capex)],
+                ["Cash at the end of the period", *cash, cash[-1]]):
+        cf.append(row)
+    wb.save(OUT / filename)
+    print("wrote", filename)
+
+
+def company_year_of_quarters():
+    """Company 90A, Q2 and Q3 2025 (made-up): with Q4'25 and Q1'26, twelve months of
+    QuickBooks exports — "last 12 months" of revenue in one view."""
+    _quickbooks_quarter("Company 90A_Financials_Q2_2025.xlsx", ["Apr 2025", "May 2025", "Jun 2025"],
+                        "April 1-June 30, 2025", "As of Jun 30, 2025", [8000, 9000, 11000],
+                        [300000, 300000, 310000], [-290000, -295000, -300000], [-5000, 0, -5000],
+                        [6000000, 5705000, 5400000])
+    _quickbooks_quarter("Company 90A_Financials_Q3_2025.xlsx", ["Jul 2025", "Aug 2025", "Sep 2025"],
+                        "July 1-September 30, 2025", "As of Sep 30, 2025", [11000, 12000, 14000],
+                        [310000, 320000, 320000], [-300000, -305000, -310000], [-5000, -5000, -10000],
+                        [5095000, 4785000, 4465000])
+
+
 def master_workbooks():
     """The team's two master workbooks for the sample portfolio (made-up figures):
     an "Investment Portfolio" workbook — one sheet per fund / company in the team's
@@ -798,5 +842,6 @@ if __name__ == "__main__":
     portfolio_fund_pdfs()
     comparative_columns_pdf()
     company_prior_quarter_xlsx()
+    company_year_of_quarters()
     master_workbooks()
     print("\nSample files ready in", OUT)

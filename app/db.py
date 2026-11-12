@@ -77,6 +77,7 @@ facts = Table(
     # (carried forward from the prior quarter / de-cumulated from YTD)
     Column("reported_value", String(64)),
     Column("raw_sections", Text),           # json list: heading above each raw_label part
+    Column("breakdown", Text),              # json {"2026-01": value, ...}: the monthly split printed
 )
 
 # --------------------------------------------------------------------------
@@ -311,7 +312,8 @@ def _insert_facts(conn, sub_id: int, result: ExtractionResult, facts_: list) -> 
             period_start=result.period_start, period_end=result.period_end,
             statement_start=result.statement_start, booking_date=result.booking_date,
             reported_value=_fact_value_str(f.reported_value),
-            raw_sections=json.dumps(f.raw_sections) if any(f.raw_sections) else None))
+            raw_sections=json.dumps(f.raw_sections) if any(f.raw_sections) else None,
+            breakdown=json.dumps(f.breakdown) if f.breakdown else None))
         fact_id = int(fres.inserted_primary_key[0])
         conn.execute(insert(audit).values(
             ts=_now(), submission_id=sub_id, fact_id=fact_id,

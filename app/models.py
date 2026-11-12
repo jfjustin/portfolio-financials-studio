@@ -53,6 +53,8 @@ class FinancialFact(BaseModel):
     reported_value: Optional[Decimal] = None
     # heading above each " + "-joined component of raw_label (format memory)
     raw_sections: list[str] = Field(default_factory=list)
+    # the value month by month, when the statement printed it ({"2026-01": "123"})
+    breakdown: dict[str, str] = Field(default_factory=dict)
 
     model_config = {"use_enum_values": True}
 

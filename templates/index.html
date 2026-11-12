@@ -168,12 +168,14 @@
           <div class="dif-controls">
             <label class="small muted">Year <select id="dif-year" aria-label="Report year"></select></label>
             <label class="small muted">Period <select id="dif-period" aria-label="Report period"></select></label>
-            <label class="small muted" title="Any run of quarters, across years: flows added up, cash as of the last quarter, burn over the months">
-              Or from <select id="dif-from" aria-label="Range start quarter"><option value="">—</option></select></label>
-            <label class="small muted">to <select id="dif-to" aria-label="Range end quarter"><option value="">—</option></select></label>
+            <label class="small muted" title="Any run of months, across years: flows added up, cash as of the last month-end, burn over the months">
+              Or from <select id="dif-from" aria-label="Range start month"><option value="">—</option></select></label>
+            <label class="small muted">to <select id="dif-to" aria-label="Range end month"><option value="">—</option></select></label>
             <label class="small muted">Preset <select id="dif-preset" aria-label="Range preset"><option value="">—</option>
-              <option value="trailing4">Trailing 4 quarters</option><option value="ytd">Calendar year to date</option>
-              <option value="fy">Fiscal year of the latest quarter</option><option value="fy_prev">Previous fiscal year</option></select></label>
+              <option value="t12">Last 12 months</option><option value="t6">Last 6 months</option>
+              <option value="ytd">Calendar year to date</option><option value="cy_prev">Previous calendar year</option>
+              <option value="fytd">Fiscal year to date</option><option value="fy">Fiscal year of the latest quarter</option>
+              <option value="fy_prev">Previous fiscal year</option></select></label>
             <a class="btn sm primary" id="dif-export" href="/api/exports/direct-investment-financials.xlsx">Download xlsx</a>
           </div>
         </div>
@@ -181,8 +183,9 @@
           in $000 — approved values only. Burn and runway are computed: Gross Monthly Burn = Operating
           Expense ÷ months · Net Monthly Burn = −(Operating Cash Flow + CapEx) ÷ months · Runway =
           Ending Cash ÷ monthly burn. Type budgets (in $000) into the Budget rows. Pick a quarter, the
-          year, or any run of quarters (from … to, across years): flows add up over the quarters that
-          have figures, cash is as of the last of them, burn is over the months they cover.</p>
+          year, or any run of months (from … to, across years, or a preset): flows add up, cash is as of
+          the last month-end, burn is over the months covered. A quarter partly in the range counts
+          month by month when its statement printed monthly columns.</p>
         <div class="scroll"><table class="tbl-report tbl-dif">
           <thead><tr><th class="lbl">Company</th><th class="lbl"></th><th>Revenue</th>
             <th>Operating Cash Flow</th><th>CapEx</th><th>Ending Cash</th><th>Operating Expense</th>

@@ -101,7 +101,8 @@ def _actuals() -> tuple[dict[tuple[str, str], dict[str, dict]], dict, dict]:
         d = {"value": Decimal(f["value"]), "status": f["status"], "fact_id": f["id"],
              "submission_id": f["submission_id"], "file": names.get(f["submission_id"], ""),
              "line": f["raw_label"] or "", "currency": f["currency"] or "USD",
-             "manual": "manual_entry" in json.loads(f["flags"] or "[]")}
+             "manual": "manual_entry" in json.loads(f["flags"] or "[]"),
+             "breakdown": {m: Decimal(v) for m, v in json.loads(f.get("breakdown") or "{}").items()}}
         out.setdefault((f["entity_name"], q), {})[f["metric_key"]] = d
         seen.setdefault((f["entity_name"], q, f["metric_key"]), []).append(d)
     conflicts: dict[tuple[str, str], dict[str, list[dict]]] = {}
@@ -163,56 +164,167 @@ def _year_total(parts: list[dict[str, Optional[Decimal]]]) -> dict[str, Optional
     return out
 
 
-def quarters_between(start: str, end: str) -> list[str]:
-    """"2025-Q3", "2026-Q2" -> the quarters from one to the other, inclusive."""
-    if not (re.fullmatch(r"20\d{2}-Q[1-4]", start or "") and re.fullmatch(r"20\d{2}-Q[1-4]", end or "")):
-        raise ValueError("start and end must be quarters, e.g. 2025-Q3 and 2026-Q2")
-    a, b = int(start[:4]) * 4 + int(start[-1]) - 1, int(end[:4]) * 4 + int(end[-1]) - 1
-    if b < a:
-        a, b = b, a
-    if b - a >= 40:
+def _month_bounds(p: str) -> tuple[str, str]:
+    """A quarter ("2026-Q1") or a month ("2026-02") as its first and last month."""
+    m = re.fullmatch(r"(20\d{2})-Q([1-4])", p or "")
+    if m:
+        y, q = int(m.group(1)), int(m.group(2))
+        return f"{y}-{3 * q - 2:02d}", f"{y}-{3 * q:02d}"
+    if re.fullmatch(r"20\d{2}-(0[1-9]|1[0-2])", p or ""):
+        return p, p
+    raise ValueError("start and end must be months (2025-11) or quarters (2025-Q4)")
+
+
+def months_between(start: str, end: str) -> list[str]:
+    """Every month from the earlier to the later of two months / quarters."""
+    (a0, a1), (b0, b1) = _month_bounds(start), _month_bounds(end)
+    lo, hi = min(a0, b0), max(a1, b1)
+    n0, n1 = int(lo[:4]) * 12 + int(lo[5:]) - 1, int(hi[:4]) * 12 + int(hi[5:]) - 1
+    if n1 - n0 >= 120:
         raise ValueError("a range covers at most ten years")
-    return [f"{n // 4}-Q{n % 4 + 1}" for n in range(a, b + 1)]
+    return [f"{n // 12}-{n % 12 + 1:02d}" for n in range(n0, n1 + 1)]
 
 
-def range_column(company: str, quarters: list[str], actuals: dict, budgets: dict) -> dict[str, Any]:
-    """One company over several quarters, as one column: flows added up over
-    the quarters that have the figure, cash as of the latest quarter with it,
-    burn over the months those quarters cover, and which quarters are missing."""
-    parts = [{k: d["value"] for k, d in actuals.get((company, q), {}).items() if k in BASE}
-             for q in quarters]
-    have = [q for q, part in zip(quarters, parts) if part]
-    act: dict[str, Optional[Decimal]] = {}
-    covered: dict[str, list[str]] = {}
-    for k in _FLOWS:
-        vals = [(q, part.get(k)) for q, part in zip(quarters, parts) if part.get(k) is not None]
-        act[k] = sum((v for _q, v in vals), Decimal(0)) if vals else None
-        covered[k] = [q for q, _v in vals]
-    cash = [(q, part.get("ending_cash")) for q, part in zip(quarters, parts)
-            if part.get("ending_cash") is not None]
-    act["ending_cash"] = cash[-1][1] if cash else None
-    months = 3 * len(have)
-    bud_parts = [{m: v for (c, p, m), v in budgets.items() if c == company and p == q} for q in quarters]
-    bud: dict[str, Optional[Decimal]] = {}
-    if all(bud_parts):
-        for k in _FLOWS:
-            vals = [b.get(k) for b in bud_parts]
-            bud[k] = sum(vals, Decimal(0)) if all(v is not None for v in vals) else None
-        bud["ending_cash"] = bud_parts[-1].get("ending_cash")
-    missing = [q for q in quarters if q not in have]
-    partial = [k for k in _FLOWS if act[k] is not None and len(covered[k]) < len(have)]
+def _quarter_of_month(m: str) -> str:
+    return f"{m[:4]}-Q{(int(m[5:]) - 1) // 3 + 1}"
+
+
+def _months_of(q: str) -> list[str]:
+    a, _b = _month_bounds(q)
+    return [f"{a[:4]}-{int(a[5:]) + i:02d}" for i in range(3)]
+
+
+def month_label(m: str) -> str:
+    return date(int(m[:4]), int(m[5:]), 1).strftime("%b'%y")
+
+
+def month_runs(months: list[str]) -> str:
+    """["2025-04", "2025-05", "2025-06", "2025-09"] -> "Apr'25–Jun'25, Sep'25"."""
+    out: list[str] = []
+    run: list[str] = []
+    for m in sorted(months):
+        if run and int(m[:4]) * 12 + int(m[5:]) != int(run[-1][:4]) * 12 + int(run[-1][5:]) + 1:
+            out.append(month_label(run[0]) + ("–" + month_label(run[-1]) if len(run) > 1 else ""))
+            run = []
+        run.append(m)
+    if run:
+        out.append(month_label(run[0]) + ("–" + month_label(run[-1]) if len(run) > 1 else ""))
+    return ", ".join(out)
+
+
+def _split(detail: Optional[dict], balance: bool) -> dict[str, Decimal]:
+    """A quarter figure's monthly split, only when it still accounts for the
+    figure (a reviewer's later edit of the quarter total voids it)."""
+    if not detail:
+        return {}
+    bd = detail.get("breakdown") or {}
+    if not bd:
+        return {}
+    v = detail["value"]
+    if balance:
+        return bd if abs(bd[max(bd)] - v) <= 1 else {}
+    return bd if len(bd) == 3 and abs(sum(bd.values()) - v) <= 1 else {}
+
+
+def range_column(company: str, months: list[str], actuals: dict, budgets: dict) -> dict[str, Any]:
+    """One company over any run of months, as one column. A quarter wholly in
+    the range counts as its total; a quarter partly in it counts month by month
+    when its statement printed monthly columns, and is named as unsplittable
+    when it didn't. Flows add up, cash is as of the latest month-end with one,
+    burn is over the months each flow covers."""
+    mset = set(months)
+    quarters = sorted({_quarter_of_month(m) for m in months})
     labels = dict(ROWS)
+    act: dict[str, Optional[Decimal]] = {}
+    covered: dict[str, list[str]] = {k: [] for k in _FLOWS}
+    unsplit: dict[str, list[str]] = {}       # quarter -> months it could not give
+    split_used: set[str] = set()
+    for k in _FLOWS:
+        total: Optional[Decimal] = None
+        for q in quarters:
+            qm = [m for m in _months_of(q) if m in mset]
+            d = actuals.get((company, q), {}).get(k)
+            if d is None:
+                continue
+            if len(qm) == 3:
+                total = (total or Decimal(0)) + d["value"]
+                covered[k] += qm
+                continue
+            bd = _split(d, False)
+            if not bd:
+                unsplit.setdefault(q, [])
+                unsplit[q] = sorted(set(unsplit[q]) | set(qm))
+                continue
+            split_used.add(q)
+            for m in qm:
+                total = (total or Decimal(0)) + bd[m]
+                covered[k].append(m)
+        act[k] = total
+    cash, cash_month = None, None
+    for m in sorted(months, reverse=True):
+        q = _quarter_of_month(m)
+        d = actuals.get((company, q), {}).get("ending_cash")
+        if d is None:
+            continue
+        if m == _months_of(q)[-1]:
+            cash, cash_month = d["value"], m
+            break
+        bd = _split(d, True)
+        if m in bd:
+            cash, cash_month = bd[m], m
+            split_used.add(q)
+            break
+    act["ending_cash"] = cash
+    n = {k: len(covered[k]) for k in _FLOWS}
+    gross = act["operating_expense"] / n["operating_expense"] if act["operating_expense"] is not None else None
+    net = (-(act["operating_cash_flow"] + (act["capex"] or 0)) / n["operating_cash_flow"]
+           if act["operating_cash_flow"] is not None else None)
+    have = sorted(set().union(*covered.values()))
+    actual = ({**act, "gross_monthly_burn": gross, "net_monthly_burn": net,
+               "gross_runway": _runway(cash, gross), "net_runway": _runway(cash, net)}
+              if have or cash is not None else {})
+    # budgets: per quarter as typed; a quarter partly in the range counts pro rata
+    bud: dict[str, Optional[Decimal]] = {}
+    per_q = {q: {m: v for (c, p, m), v in budgets.items() if c == company and p == q} for q in quarters}
+    prorated = False
+    if all(per_q.values()):
+        for k in _FLOWS:
+            parts = []
+            for q in quarters:
+                share = Decimal(len([m for m in _months_of(q) if m in mset])) / 3
+                prorated = prorated or share != 1
+                v = per_q[q].get(k)
+                parts.append(None if v is None else v * share)
+            bud[k] = sum(parts, Decimal(0)) if all(v is not None for v in parts) else None
+        last_q = quarters[-1]
+        bud["ending_cash"] = per_q[last_q].get("ending_cash") if months[-1] == _months_of(last_q)[-1] else None
+        bud = {**bud, **derive(bud, len(months))}
+    missing = [m for m in months if not any(m in covered[k] for k in _FLOWS)]
     issues = []
-    if missing and have:
-        issues.append({"kind": "missing", "message": f"no approved figures for {', '.join(missing)} — "
-                       "the totals cover " + ", ".join(have) + " only"})
+    for q, qm in unsplit.items():
+        issues.append({"kind": "missing", "message":
+                       f"{month_runs(qm)}: "
+                       f"{q} is on file only as a quarter total (its statement has no monthly "
+                       "columns), so part of it can't be taken — widen the range to the whole "
+                       "quarter, or upload a monthly statement"})
+    gap = [m for m in missing if not any(m in qm for qm in unsplit.values())]
+    if gap and have:
+        issues.append({"kind": "missing", "message": "no approved figures for "
+                       + month_runs(gap) + " — the totals cover the other months only"})
+    partial = [k for k in _FLOWS if act[k] is not None and len(covered[k]) < len(have)]
     if partial:
         issues.append({"kind": "estimate", "message": ", ".join(labels[k] for k in partial)
-                       + ": not in every quarter covered — added up over the quarters that have it"})
-    return {"actual": {**act, **derive(act, months)} if have else {},
-            "budget": {**bud, **derive(bud, 3 * len(quarters))} if bud else {},
-            "sources": {}, "pending": {}, "checks": [], "issues": issues,
-            "months": months, "quarters": have, "missing": missing, "partial": partial}
+                       + ": not in every month covered — added up over the months that have it"})
+    if prorated and bud:
+        issues.append({"kind": "check", "message": "budgets are typed per quarter: a quarter only "
+                       "partly in the range counts pro rata by months"})
+    if cash_month and cash_month != months[-1]:
+        issues.append({"kind": "check", "message": f"Ending Cash is as of {month_label(cash_month)}, "
+                       "the latest month-end on file in the range"})
+    return {"actual": actual, "budget": bud, "sources": {}, "pending": {}, "checks": [],
+            "issues": issues, "months": len(have), "covered": have, "missing": missing,
+            "split_from": sorted(split_used), "cash_as_of": cash_month,
+            "quarters": [q for q in quarters if any(actuals.get((company, q), {}).get(k) for k in BASE)]}
 
 
 def report(year: Optional[int] = None, start: Optional[str] = None,
@@ -223,7 +335,8 @@ def report(year: Optional[int] = None, start: Optional[str] = None,
     budgets = db.get_budgets()
     years = sorted({int(q[:4]) for _c, q in actuals}
                    | {int(p[:4]) for _c, p, _m in budgets if p[:4].isdigit()})
-    span = quarters_between(start, end) if start and end else []
+    span = months_between(start, end) if start and end else []
+    span_quarters = sorted({_quarter_of_month(m) for m in span})
     range_key = f"{span[0]}..{span[-1]}" if span else None
     if year is None:
         year = int(span[-1][:4]) if span else (years[-1] if years else date.today().year)
@@ -233,7 +346,7 @@ def report(year: Optional[int] = None, start: Optional[str] = None,
         q = _quarter_of(sub["period"] or "")
         if sub["report_type"] == "company_financials" and q:
             unread.setdefault((sub["entity_name"], q), []).append(sub)
-    companies = sorted({c for c, q in actuals if q in quarters or q in span}
+    companies = sorted({c for c, q in actuals if q in quarters or q in span_quarters}
                        | {c for c, p, _m in budgets if p[:4] == str(year)}
                        | {c for c, q in pending if q in quarters}
                        | {c for c, q in unread if q in quarters}, key=_natural)
@@ -289,8 +402,9 @@ def report(year: Optional[int] = None, start: Optional[str] = None,
                                                       if re.fullmatch(r"20\d{2}-Q[1-4]", p)})
     return {"year": year, "years": years or [year],
             "periods": quarters + [str(year)] + ([range_key] if range_key else []),
-            "range": {"key": range_key, "start": span[0], "end": span[-1], "quarters": span}
-            if span else None,
+            "range": {"key": range_key, "start": span[0], "end": span[-1], "months": span,
+                      "quarters": span_quarters,
+                      "label": f"{month_label(span[0])}–{month_label(span[-1])}"} if span else None,
             "quarters_on_file": all_quarters,
             "latest_quarter": latest, "rows": [{"key": k, "label": l} for k, l in ROWS],
             "companies": out}
@@ -354,9 +468,8 @@ def workbook(year: Optional[int] = None, quarter: Optional[int] = None,
     yy = str(year)[-2:]
     heads = [f"Q{n}'{yy}" for n in range(1, 5)] + [str(year)]
     if rep["range"]:
-        r0, r1 = rep["range"]["start"], rep["range"]["end"]
-        heads.append(f"Q{r0[-1]}'{r0[2:4]}–Q{r1[-1]}'{r1[2:4]}")
-        title += f" ({r0} to {r1})"
+        heads.append(rep["range"]["label"])
+        title += f" ({rep['range']['start']} to {rep['range']['end']})"
     bold = Font(bold=True)
     pending_fill = PatternFill("solid", fgColor="FFF4CE")
 

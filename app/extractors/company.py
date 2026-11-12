@@ -27,7 +27,7 @@ from decimal import Decimal
 from typing import Optional
 
 from ..models import RawItem, parse_number
-from .base import column_fit
+from .base import _MONTH_RX, column_fit, normalize_period
 
 CORE = ("revenue", "operating_expense", "operating_cash_flow", "capex", "ending_cash")
 _BALANCES = {"ending_cash"}
@@ -103,6 +103,9 @@ class Pick:
     source: str = ""          # where known wording came from (taught / learned), if any
     sections: list[str] = field(default_factory=list)
     items: list[RawItem] = field(default_factory=list)
+    # the figure month by month ({"2026-01": value, ...}), when the statement prints
+    # one column per month and they add up to the figure (balances: month-ends)
+    breakdown: dict[str, Decimal] = field(default_factory=dict)
 
 
 def norm(label: str) -> str:
@@ -181,8 +184,53 @@ def _column(line: Line, period: str, balance: bool, dc: Optional[bool]) -> Optio
     return ranked[-1][1]
 
 
+_NOT_ONE_MONTH = re.compile(r"total|ytd|year|quarter|\bq[1-4]\b|ended|ending|through|budget|"
+                            r"forecast|\bplan\b|\bvar|%|prior|\bpy\b", re.I)
+
+
+def _month_of(header: str) -> Optional[str]:
+    """"Jan 2026" / "Jan 31, 2026" -> "2026-01"; a total, range or budget column -> None."""
+    h = (header or "").strip()
+    if len(_MONTH_RX.findall(h)) != 1 or _NOT_ONE_MONTH.search(h):
+        return None
+    p = normalize_period(h)
+    return p[:7] if p and re.match(r"20\d{2}-\d{2}", p) else None
+
+
+def _quarter_months(period: str) -> list[str]:
+    m = re.fullmatch(r"(20\d{2})-Q([1-4])", period or "")
+    if not m:
+        return []
+    y, q = int(m.group(1)), int(m.group(2))
+    return [f"{y}-{3 * q - 2 + i:02d}" for i in range(3)]
+
+
+def _months(line: Line, dc: Optional[bool], scale: int, period: str) -> dict[str, Decimal]:
+    """The line's value per month of the quarter, from its month columns."""
+    want = _quarter_months(period)
+    out: dict[str, Decimal] = {}
+    for it in line.items:
+        m = _month_of(_header(it))
+        v = _value(it, dc)
+        if m in want and v is not None and m not in out:
+            out[m] = v * scale if scale != 1 else v
+    return out
+
+
+def _checked_split(metric: str, split: dict[str, Decimal], value: Optional[Decimal],
+                   period: str) -> dict[str, Decimal]:
+    """Keep a monthly split only when it accounts for the figure exactly: three
+    months adding up to a flow, or the quarter's last month-end for a balance."""
+    want = _quarter_months(period)
+    if value is None or not want or not split:
+        return {}
+    if metric in _BALANCES:
+        return split if split.get(want[-1]) is not None and abs(split[want[-1]] - value) <= 1 else {}
+    return split if len(split) == 3 and abs(sum(split.values()) - value) <= 1 else {}
+
+
 def _pick_line(metric: str, line: Line, item: RawItem, dc: Optional[bool], scale: int,
-               confidence: float, source: str = "") -> Pick:
+               confidence: float, source: str = "", period: str = "") -> Pick:
     value = _value(item, dc)
     flags: list[str] = []
     if value is not None and scale != 1 and metric not in _UNSCALED:
@@ -195,8 +243,10 @@ def _pick_line(metric: str, line: Line, item: RawItem, dc: Optional[bool], scale
     header = _header(item)
     if len(line.items) > 1 and header:
         prov += " · column chosen for the period"
+    split = {} if metric in _UNSCALED else _checked_split(
+        metric, _months(line, dc, scale, period), value, period)
     return Pick(metric, value, line.label, item.value_raw, prov, confidence, flags, source,
-                [line.section] if line.section else [], [item])
+                [line.section] if line.section else [], [item], split)
 
 
 def read_statements(raw_items: list[RawItem], period: str, dc: Optional[bool], scale: int,
@@ -216,7 +266,7 @@ def read_statements(raw_items: list[RawItem], period: str, dc: Optional[bool], s
             item = _column(ln, period, hit[0] in _BALANCES, dc)
             if item is not None:
                 picks[hit[0]] = _pick_line(hit[0], ln, item, dc, scale, max(hit[1], 0.95),
-                                           hit[2])
+                                           hit[2], period)
 
     # 2. standard wording, inside the statement each figure belongs to
     for metric, (statements, patterns) in _RULES.items():
@@ -241,7 +291,7 @@ def read_statements(raw_items: list[RawItem], period: str, dc: Optional[bool], s
                     item = _column(ln, period, metric in _BALANCES, dc)
                     if item is None:
                         continue
-                    picks[metric] = _pick_line(metric, ln, item, dc, scale, 0.95)
+                    picks[metric] = _pick_line(metric, ln, item, dc, scale, 0.95, period=period)
                     break
                 if metric in picks:
                     break
@@ -321,16 +371,20 @@ def _capex(lines: list[Line], period: str, dc: Optional[bool], scale: int) -> Op
                     flags.append(f"investing_total({t})")
                 else:
                     prov += " · adds up to the investing total"
+        split: dict[str, Decimal] = {}
+        for ln, _i, _v in parts.values():
+            for m, v in _months(ln, dc, scale, period).items():
+                split[m] = split.get(m, Decimal(0)) + v
         return Pick("capex", total, " + ".join(ln.label for ln, _i, _v in parts.values()),
                     " + ".join(i.value_raw for _l, i, _v in parts.values()), prov, 0.95, flags,
                     "", sorted({ln.section for ln, _i, _v in parts.values() if ln.section}),
-                    [i for _l, i, _v in parts.values()])
+                    [i for _l, i, _v in parts.values()], _checked_split("capex", split, total, period))
     if totals:
         ln = totals[0]
         item = _column(ln, period, False, dc)
         v = _value(item, dc) if item is not None else None
         if v is not None:
-            pick = _pick_line("capex", ln, item, dc, scale, 0.95)
+            pick = _pick_line("capex", ln, item, dc, scale, 0.95, period=period)
             if v != 0:
                 pick.flags.append("capex_from_investing_total")
             return pick

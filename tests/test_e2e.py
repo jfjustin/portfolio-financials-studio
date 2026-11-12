@@ -1586,28 +1586,67 @@ def period_ranges() -> None:
     col = co["columns"][key]
     a = col["actual"]
     D = lambda x: Decimal(str(x))
-    check(R["year"] == 2026 and key == "2025-Q4..2026-Q2" and R["range"]["quarters"] == ["2025-Q4", "2026-Q1", "2026-Q2"]
+    check(R["year"] == 2026 and key == "2025-10..2026-06" and len(R["range"]["months"]) == 9
+          and R["range"]["quarters"] == ["2025-Q4", "2026-Q1", "2026-Q2"]
           and key in R["periods"] and D(a["revenue"]) == 240_000 and D(a["operating_expense"]) == 630_000
-          and D(a["ending_cash"]) == 1_700_000 and col["months"] == 6 and col["missing"] == ["2026-Q2"],
-          "a range across years: revenue and opex added up over the quarters with figures, cash as of the "
-          "last of them, six months covered, the quarter without figures named")
+          and D(a["ending_cash"]) == 1_700_000 and col["months"] == 6
+          and col["missing"] == ["2026-04", "2026-05", "2026-06"],
+          "a range of quarters across years: revenue and opex added up, cash as of the last month-end "
+          "with one, six months covered, the months without figures named")
     check(D(a["gross_monthly_burn"]) == 105_000 and D(a["net_monthly_burn"]) == 100_000
           and a["gross_runway"] == 16 and a["net_runway"] == 17
-          and any(i["kind"] == "missing" and "2026-Q2" in i["message"] for i in col["issues"]),
+          and any(i["kind"] == "missing" and "Apr'26" in i["message"] for i in col["issues"]),
           "burn = flows ÷ months covered, runway from the last cash; the gap is flagged")
     R2 = client.get("/api/direct-investments?start=2026-Q1&end=2025-Q4").json()
-    check(R2["range"]["key"] == "2025-Q4..2026-Q1" and R2["companies"] and
+    check(R2["range"]["key"] == "2025-10..2026-03" and R2["companies"] and
           client.get("/api/direct-investments?start=2025-Q4&end=2026").status_code == 400
           and client.get("/api/direct-investments?start=2010-Q1&end=2026-Q1").status_code == 400,
-          "from/to in either order; a bad quarter or a range over ten years is refused")
+          "from/to in either order; a bad period or a range over ten years is refused")
     x = client.get("/api/exports/direct-investment-financials.xlsx?start=2025-Q4&end=2026-Q2")
     wb = openpyxl.load_workbook(io.BytesIO(x.content))
     ws = next(w for w in wb.worksheets if w.title.startswith("Company 95R"))
     heads = [c.value for c in ws[1] if c.value]
     rev_row = next(r for r in range(3, 12) if ws.cell(r, 1).value == "Revenue")
-    check("Q4'25–Q2'26" in heads and abs(float(ws.cell(rev_row, 13).value) - 240.0) < 0.001
-          and "2025-Q4 to 2026-Q2" in x.headers.get("content-disposition", ""),
+    check("Oct'25–Jun'26" in heads and abs(float(ws.cell(rev_row, 13).value) - 240.0) < 0.001
+          and "2025-10 to 2026-06" in x.headers.get("content-disposition", ""),
           "the workbook carries the range as a sixth Budget | Actual pair, in $000, named in the file")
+
+    # any run of months: QuickBooks exports print a column per month, so a quarter
+    # partly in the range counts month by month; a quarter-only figure is named
+    samples = ROOT / "samples"
+    for name in ("Company 90A_Financials_Q2_2025.xlsx", "Company 90A_Financials_Q3_2025.xlsx",
+                 "Company 90A_Financials_Q4_2025.xlsx", "Company 90A_Financials_Q1_2026.xlsx"):
+        if not (samples / name).exists():
+            import subprocess
+            subprocess.run([sys.executable, str(samples / "make_samples.py")], check=True)
+        r = process_path(samples / name, allow_duplicate=True)
+        for f in db.get_facts(r["submission_id"]):
+            if f["status"] == "needs_review" and f["value"] is not None:
+                db.update_fact(f["id"], status="confirmed")
+    R = client.get("/api/direct-investments?start=2025-11&end=2026-02").json()
+    key = R["range"]["key"]
+    cols = {c["company"]: c["columns"][key] for c in R["companies"]}
+    a90 = cols["Company 90A"]
+    act = a90["actual"]
+    check(key == "2025-11..2026-02" and R["range"]["label"] == "Nov'25–Feb'26" and a90["months"] == 4
+          and D(act["revenue"]) == 18_000 + 22_000 + 20_000 + 25_000
+          and D(act["operating_expense"]) == 330_000 * 2 + 350_000 * 2
+          and D(act["ending_cash"]) == 2_700_000 and a90["cash_as_of"] == "2026-02"
+          and a90["split_from"] == ["2025-Q4", "2026-Q1"] and not a90["issues"],
+          "Nov'25 to Feb'26: two months from each quarter's monthly columns, cash as of the end of February")
+    check(D(act["gross_monthly_burn"]) == 340_000 and D(act["net_monthly_burn"]) == 317_500,
+          "burn over the four months: opex ÷ 4, −(operating cash flow + capex) ÷ 4")
+    r95 = cols.get("Company 95R")
+    check(r95 is not None and r95["months"] == 0 and r95["actual"]["revenue"] is None
+          and D(r95["actual"]["ending_cash"]) == 2_000_000 and r95["cash_as_of"] == "2025-12"
+          and sum("only as a quarter total" in i["message"] for i in r95["issues"]) == 2
+          and any("as of Dec'25" in i["message"] for i in r95["issues"]),
+          "a company whose quarters have no monthly columns: nothing guessed, the quarter named as unsplittable")
+    R12 = client.get("/api/direct-investments?start=2025-04&end=2026-03").json()
+    a12 = next(c for c in R12["companies"] if c["company"] == "Company 90A")["columns"][R12["range"]["key"]]
+    check(a12["months"] == 12 and D(a12["actual"]["revenue"]) == 28_000 + 37_000 + 55_000 + 75_000
+          and not [i for i in a12["issues"] if i["kind"] == "missing"],
+          "a full year (Apr'25 to Mar'26): revenue across twelve months in one figure")
 
 
 def xirr_roots() -> None:

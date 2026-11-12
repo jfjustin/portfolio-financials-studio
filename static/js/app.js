@@ -43,18 +43,19 @@
     $("#ledger-filter").addEventListener("input", renderLedger);
     $("#dif-year").addEventListener("change", e => { DIF_RANGE = null; loadDirectInvestments(+e.target.value); });
     $("#dif-preset").addEventListener("change", e => {
-      const v = e.target.value; if (!v) return;
-      const all = [...$("#dif-from").options].map(o => o.value).filter(Boolean);
-      const latest = DIF.latest_quarter || all[all.length - 1];
-      const qn = q => parseInt(q.slice(0, 4)) * 4 + parseInt(q.slice(-1)) - 1, qs = n => `${Math.floor(n / 4)}-Q${n % 4 + 1}`;
-      const fye = FYE_MONTH, n = qn(latest);          // fiscal year ends in month FYE_MONTH
-      const fyEndQ = Math.ceil(fye / 3), year = parseInt(latest.slice(0, 4)), q = parseInt(latest.slice(-1));
-      const fyEnd = q <= fyEndQ ? qn(`${year}-Q${fyEndQ}`) : qn(`${year + 1}-Q${fyEndQ}`);
-      const r = v === "trailing4" ? [qs(n - 3), latest] : v === "ytd" ? [`${year}-Q1`, latest]
-        : v === "fy" ? [qs(fyEnd - 3), qs(fyEnd)] : v === "fy_prev" ? [qs(fyEnd - 7), qs(fyEnd - 4)] : null;
-      e.target.value = "";
+      const v = e.target.value; e.target.value = "";
+      if (!v) return;
+      // the latest month with figures: the end of the latest quarter on file
+      const onFile = DIF.quarters_on_file || [];
+      const lq = onFile[onFile.length - 1] || DIF.latest_quarter || `${DIF.year}-Q4`, end = mNum(qMonths(lq)[2]);
+      const fyeIdx = FYE_MONTH - 1, mo = end % 12, yr = Math.floor(end / 12);
+      const fyEnd = (yr * 12 + fyeIdx) >= end ? yr * 12 + fyeIdx : (yr + 1) * 12 + fyeIdx;   // fiscal year holding the latest month
+      const r = v === "t12" ? [end - 11, end] : v === "t6" ? [end - 5, end]
+        : v === "ytd" ? [yr * 12, end] : v === "fytd" ? [fyEnd - 11, end]
+        : v === "fy" ? [fyEnd - 11, fyEnd] : v === "fy_prev" ? [fyEnd - 23, fyEnd - 12]
+        : v === "cy_prev" ? [(yr - 1) * 12, (yr - 1) * 12 + 11] : null;
       if (!r) return;
-      DIF_RANGE = { start: r[0], end: r[1] }; loadDirectInvestments(null);
+      DIF_RANGE = { start: mStr(r[0]), end: mStr(r[1]) }; loadDirectInvestments(null);
     });
     const pickRange = () => {
       const a = $("#dif-from").value, b = $("#dif-to").value;
@@ -252,6 +253,11 @@
   let DIF_RANGE = null;   // {start, end} when a run of quarters is chosen
   const FYE_MONTH = Number(document.body.dataset.fye || 12);
   const qLabel = q => `Q${q.slice(-1)}'${q.slice(2, 4)}`;
+  const MON = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+  const mLabel = m => `${MON[+m.slice(5) - 1]}'${m.slice(2, 4)}`;
+  const mNum = m => +m.slice(0, 4) * 12 + (+m.slice(5)) - 1;
+  const mStr = n => `${Math.floor(n / 12)}-${String(n % 12 + 1).padStart(2, "0")}`;
+  const qMonths = q => { const s = (+q.slice(-1) - 1) * 3; return [0, 1, 2].map(i => `${q.slice(0, 4)}-${String(s + i + 1).padStart(2, "0")}`); };
   async function loadDirectInvestments(year) {
     const qs = [];
     if (year) qs.push("year=" + year);
@@ -264,12 +270,13 @@
     const ps = $("#dif-period"), keep = ps.value, yy = String(DIF.year).slice(2);
     ps.innerHTML = DIF.periods.map((p, i) =>
       `<option value="${p}">${i < 4 ? `Q${i + 1}'${yy}` : i === 4 ? `${DIF.year} (year)`
-        : `${qLabel(DIF.range.start)} – ${qLabel(DIF.range.end)} (${DIF.range.quarters.length} quarters)`}</option>`).join("");
+        : `${DIF.range.label} (${DIF.range.months.length} months)`}</option>`).join("");
     ps.value = DIF.range ? DIF.range.key : (DIF.periods.includes(keep) ? keep : (DIF.latest_quarter || DIF.periods[0]));
-    // any quarter on file, plus the chosen year's, as range ends
-    const all = [...new Set((DIF.quarters_on_file || []).concat([1, 2, 3, 4].map(n => `${DIF.year}-Q${n}`)))].sort();
-    for (const [id, cur] of [["#dif-from", DIF_RANGE && DIF_RANGE.start], ["#dif-to", DIF_RANGE && DIF_RANGE.end]])
-      $(id).innerHTML = '<option value="">—</option>' + all.map(q => `<option value="${q}" ${q === cur ? "selected" : ""}>${qLabel(q)}</option>`).join("");
+    // every month of the quarters on file and of the chosen year, as range ends
+    const onFile = [...new Set((DIF.quarters_on_file || []).concat([1, 2, 3, 4].map(n => `${DIF.year}-Q${n}`)))].sort();
+    const months = onFile.flatMap(qMonths);
+    for (const [id, cur] of [["#dif-from", DIF.range && DIF.range.start], ["#dif-to", DIF.range && DIF.range.end]])
+      $(id).innerHTML = '<option value="">—</option>' + months.map(m => `<option value="${m}" ${m === cur ? "selected" : ""}>${mLabel(m)}</option>`).join("");
     $("#dif-companies").innerHTML = DIF.companies.map(c => `<option value="${esc(c.company)}">`).join("");
     $("#dif-manual-q").innerHTML = DIF.periods.slice(0, 4).map(p =>
       `<option ${p === (DIF.latest_quarter || DIF.periods[0]) ? "selected" : ""}>${p}</option>`).join("");
@@ -292,7 +299,7 @@
     const editable = /^\d{4}-Q\d$/.test(per) || /^\d{4}$/.test(per);
     const quarter = /^\d{4}-Q\d$/.test(per);
     $("#dif-card .report-title").textContent = "Direct Investment Financials" +
-      (DIF.range && per === DIF.range.key ? ` — ${qLabel(DIF.range.start)} to ${qLabel(DIF.range.end)}` : "");
+      (DIF.range && per === DIF.range.key ? ` — ${DIF.range.label} (${DIF.range.months.length} months)` : "");
     DIF.companies.forEach(c => {
       const col = c.columns[per] || { actual: {}, budget: {}, sources: {}, pending: [], checks: [] };
       const tr = document.createElement("tr");

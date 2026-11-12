@@ -254,7 +254,7 @@ one's values as you go, and every section fills:
 | 2 | `Equity Investments Summary Workbook - Jun26 (sample).xlsx` | The accounting team's workbook: positions, impairment, ownership, dated capital calls; a closed investment becomes an exit. |
 | 3 | `Fund 82_Q1 2026 PCAP…pdf`, `Fund 82_Q1 2026 Financial Statements.pdf`, `Fund 99_2026 Q1 PCAP…pdf`, `Fund 99_2026 Q2 PCAP…pdf` | Capital-account statements → the roll-forward (Q2 follows on from Q1, a year-to-date statement is de-cumulated); the fund's own statements → fund size and Latest Stats. |
 | 4 | `Fund 84_Q1 2026 LP Report.pdf` | A whole-fund report with this quarter beside last year-end: the right column is read, and the report asks for our commitment before working out our share. |
-| 5 | `Company 90A_Financials_Q4_2025.xlsx`, `Company 90A_Financials_Q1_2026.xlsx` | QuickBooks exports, two quarters → Direct Investment Financials, and a run of quarters (Q4'25 to Q1'26) to add up. |
+| 5 | `Company 90A_Financials_Q2_2025.xlsx` … `Q3_2025`, `Q4_2025`, `Q1_2026` | Four quarters of QuickBooks exports (a column per month) → Direct Investment Financials over any period: one quarter, the year, *Last 12 months* (Apr'25–Mar'26 revenue in one figure), or a custom run like Nov'25 to Feb'26 taken month by month. |
 | 6 | `Company 90B_…Mar26.xlsx`, `Company 90C_Q1_2026_Quarterly_CF.pdf`, `Direct Investment Financials Q1 2026 - Company 90D.csv` | Audited-style statements, a cash-flow-only PDF, a finished report sheet. |
 | 7 | `Company 90G_Q1_2026_Financial_Statements.pdf` | A scanned statement with no text: flagged "unread" for a person (or read by the vision model when one is configured). |
 
@@ -262,7 +262,8 @@ Then walk the sections: **Overview** (TVPI / DPI), **Portfolio Summary** (curren
 exited, funds, Core vs Life Sciences, with `*` on estimates), **IRR** (portfolio, the two splits,
 each entity's flows), **Investment Portfolio** (open a fund, see its calls; Needs attention lists
 the whole-fund report), **Direct Investment Financials** (pick Q1'26, then *from* Q4'25 *to*
-Q1'26), **Roll-forward**, **Charts**, and the two exports. Finish with **Delete…** on one file
+Q1'26, then *Preset → Last 12 months*, then *from* Nov'25 *to* Feb'26 — Company 90B shows why a
+quarter-only statement can't be split), **Roll-forward**, **Charts**, and the two exports. Finish with **Delete…** on one file
 or entity, and **Clear data** to start over.
 
 ## 4c. Lam Capital Overall Performance (TVPI / DPI / IRR)
@@ -365,10 +366,14 @@ closed investments as exits), and the backup tab behind each entity adds the acc
 capital calls or securities bought. The "Other" block, converted notes and tabs with no row in
 the summary are left out and named in the result; its date cell sets the quarter.
 
-**Any run of quarters** (Direct Investment Financials → *Or from … to*)
-Besides a quarter or the year, pick a start and end quarter, across years ("Q3'25 to Q1'26"), or a
-preset: trailing 4 quarters, calendar year to date, the fiscal year of the latest quarter, or the
-previous fiscal year (the fiscal year end is the `FISCAL_YEAR_END_MONTH` setting). The
+**Any run of months** (Direct Investment Financials → *Or from … to*, or *Preset*)
+Besides a quarter or the year, pick a start and end month, across years ("Nov'25 to Feb'26"), or a
+preset: last 12 / 6 months, calendar year to date, previous calendar year, fiscal year to date,
+the fiscal year of the latest quarter, the previous fiscal year (the fiscal year end is the
+`FISCAL_YEAR_END_MONTH` setting). A quarter wholly in the range counts as its total; a quarter
+partly in it counts month by month when its statement printed a column per month (QuickBooks
+exports do), and is named under the table when it was only a quarter total — nothing is
+pro-rated or guessed. The
 flows (revenue, operating cash flow, CapEx, operating expense) add up over the quarters that have
 approved figures, Ending Cash is as of the last of them, burn is over the months those quarters
 cover, and runway follows. Quarters with no figures, and a figure missing from some of them, are

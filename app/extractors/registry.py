@@ -340,6 +340,7 @@ def _company_result(raw_items: list[RawItem], text_blob: str, filename: str, fil
             provenance=f"{extractor}:{pk.provenance}"
                        + (f" · known wording ({pk.source})" if pk.source else ""),
             raw_sections=pk.sections, confidence=round(confidence, 3),
+            breakdown={m: str(v) for m, v in pk.breakdown.items()},
             status=(FactStatus.AUTO
                     if confidence >= settings.auto_accept_confidence and not pk.flags
                     else FactStatus.NEEDS_REVIEW),
