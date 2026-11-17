@@ -4,7 +4,11 @@ Money-weighted (XIRR) returns as of a quarter, for the whole portfolio and for
 the splits the team reports: Core vs Life Sciences investments, direct
 investments vs fund investments, and each fund or company on its own.
 
-The flows behind every figure, in USD (a non-USD entity converts at its rate):
+Each entity's figure is computed in its own currency — the currency of its
+statements (a euro fund in euros), so an exchange rate never moves its return.
+Group figures are in USD: every flow is converted at its own rate — the rate
+the accounting workbook recorded for that transaction, else the entity's rate
+for that quarter. The flows behind every figure:
 
     out  dated capital calls / investments entered or imported for the entity;
          failing those, each quarter's funding from the roll-forward (funds);
@@ -51,11 +55,13 @@ def _flows(row: dict, quarters: list[dict], as_of_end: date, factor: Decimal) ->
     notes: list[str] = []
     det = row.get("details") or {}
 
-    def add(d: Optional[date], amount: Optional[Decimal], kind: str, source: str, est: bool = False):
+    def add(d: Optional[date], amount: Optional[Decimal], kind: str, source: str, est: bool = False,
+            usd: Optional[Decimal] = None):
         if d is None or amount is None or amount == 0 or d > as_of_end:
             return
         flows.append({"date": d.isoformat(), "amount": float(amount * factor), "kind": kind,
-                      "source": source, "estimated": est})
+                      "source": source, "estimated": est,
+                      "usd": None if usd is None else float(usd if amount >= 0 else -abs(usd))})
 
     # ---- money out
     entered = [c for c in row.get("invested", []) if c["source"] == "entered"]
@@ -63,10 +69,12 @@ def _flows(row: dict, quarters: list[dict], as_of_end: date, factor: Decimal) ->
     if entered or rolled:
         for c in entered:
             add(_iso(c["date"]), -abs(Decimal(str(c["amount"]))), "call",
-                f"{c.get('description') or 'investment'} · {c.get('document') or 'entered by hand'}")
+                f"{c.get('description') or 'investment'} · {c.get('document') or 'entered by hand'}",
+                usd=_d(c.get("amount_usd")))
         for c in rolled:
             add(_iso(c["date"]), -abs(Decimal(str(c["amount"]))), "call",
-                f"{c.get('description') or 'funding'} · {c.get('document') or 'roll-forward'}", est=True)
+                f"{c.get('description') or 'funding'} · {c.get('document') or 'roll-forward'}", est=True,
+                usd=_d(c.get("amount_usd")))
         if rolled:
             notes.append("some calls are a quarter's funding from the roll-forward, dated at the "
                          "quarter end")
@@ -163,20 +171,44 @@ def _coverage(flows: list[dict]) -> list[dict[str, str]]:
     return out
 
 
-def _rate(flows: list[dict]) -> Optional[float]:
-    cf = [(date.fromisoformat(f["date"]), f["amount"]) for f in flows]
+def _rate(flows: list[dict], key: str = "amount") -> Optional[float]:
+    cf = [(date.fromisoformat(f["date"]), f[key]) for f in flows]
     return xirr(sorted(cf, key=lambda x: x[0]))
 
 
+def _in_usd(flows: list[dict], row: dict) -> tuple[Optional[list[dict]], str]:
+    """The flows in USD: a USD entity's as they are; a non-USD entity's at each
+    flow's own recorded rate, else the entity's rate for that quarter. None when
+    the entity has no rate at all."""
+    ccy = (row.get("currency") or "USD").upper()
+    det = row.get("details") or {}
+    out = []
+    for f in flows:
+        g = dict(f)
+        if ccy == "USD":
+            g["usd"] = f["amount"]
+        elif f.get("usd") is None:
+            r = portfolio.usd_rate_at(det, f["date"])
+            if r is None:
+                return None, f"reports in {ccy} and has no USD rate on file — enter its rates to include it in the USD groups"
+            g["usd"] = float(Decimal(str(f["amount"])) * r)
+        out.append(g)
+    return out, ""
+
+
 def _totals(flows: list[dict]) -> dict[str, float]:
+    return _totals_by(flows, "amount")
+
+
+def _totals_by(flows: list[dict], key: str) -> dict[str, float]:
     out = {"invested": 0.0, "returned": 0.0, "value": 0.0}
     for f in flows:
         if f["kind"] in ("call", "opening"):
-            out["invested"] += -f["amount"]
+            out["invested"] += -f[key]
         elif f["kind"] == "value":
-            out["value"] += f["amount"]
+            out["value"] += f[key]
         else:
-            out["returned"] += f["amount"]
+            out["returned"] += f[key]
     return out
 
 
@@ -227,11 +259,12 @@ def _window(entity: dict, flows: list[dict], row: dict, quarters: list[dict], st
 
 
 def report(as_of: Optional[str] = None, start: Optional[str] = None, end: Optional[str] = None,
-           vintage_from: Optional[int] = None, vintage_to: Optional[int] = None) -> dict[str, Any]:
+           vintage_from: Optional[int] = None, vintage_to: Optional[int] = None,
+           base: Optional[dict] = None) -> dict[str, Any]:
     """IRR per entity and per group, as of a quarter (default: the latest).
     With `start` and `end` quarters, the return earned within that window;
     with vintage years, only entities first invested in within them."""
-    rep = portfolio.filter_vintage(portfolio.report(as_of), vintage_from, vintage_to)
+    rep = portfolio.filter_vintage(base or portfolio.report(as_of), vintage_from, vintage_to)
     summ = portfolio.summary(rep=rep)
     as_of_end = quarter_bounds(rep["as_of"])[1]
     if (start and not end) or (end and not start):
@@ -253,24 +286,25 @@ def report(as_of: Optional[str] = None, start: Optional[str] = None, end: Option
     entities: list[dict[str, Any]] = []
     left_out: list[dict[str, str]] = []
     for row in rep["funds"] + rep["companies"]:
-        factor, why, fx_note = portfolio._usd(row, rep["as_of"])
-        if factor is None:
-            left_out.append({"entity": row["entity"], "name": row["investment_name"], "why": why})
-            continue
+        factor = Decimal(1)                      # each entity in its own currency
         flows, notes = _flows(row, quarters_by.get(row["entity"], []), as_of_end, factor)
-        if fx_note:
-            notes.append(fx_note)
         # the calls on file should add up to what was paid in: a shortfall means
         # the dated investments are incomplete, and the return rests on them
         paid = row.get("drawn_to_date") if row["kind"] == "fund" else row.get("total_invested")
         called = sum(-f["amount"] for f in flows if f["kind"] == "call")
-        if paid is not None and called and abs(called - float(Decimal(str(paid)) * factor)) > max(
-                1.0, 0.01 * float(Decimal(str(paid)) * factor)):
+        paid_usd = float(Decimal(str(paid)) * factor) if paid is not None else None   # in its own currency
+        if paid_usd and called and abs(called - paid_usd) > max(1.0, 0.01 * paid_usd):
+            # the return rests on what was paid in, placed on the first call's date,
+            # until the dated calls on file add up to it
+            first_call = min(f["date"] for f in flows if f["kind"] == "call")
+            flows = [f for f in flows if f["kind"] != "call"]
+            flows.append({"date": first_call, "amount": -paid_usd, "kind": "call", "estimated": True,
+                          "source": "paid-in, placed on the first call's date — the dated calls on file "
+                                    f"add up to {called:,.0f}, not {paid_usd:,.0f}"})
+            flows.sort(key=lambda f: (f["date"], f["amount"]))
             notes.append(f"the dated investments on file add up to {called:,.0f}, but paid-in is "
-                         f"{float(Decimal(str(paid)) * factor):,.0f} — enter the missing calls")
-            for f in flows:
-                if f["kind"] == "call":
-                    f["estimated"] = True
+                         f"{paid_usd:,.0f}: the paid-in is used, on the first call's date — fix or "
+                         "delete the calls in its details")
         if start and end:
             flows, why = _window({}, flows, row, quarters_by.get(row["entity"], []), start, end,
                                  rep["as_of"], factor)
@@ -289,7 +323,14 @@ def report(as_of: Optional[str] = None, start: Optional[str] = None, end: Option
         if not has_in:
             notes.append("nothing back yet and no value held: the return is a total loss (−100%)")
             rate = -1.0
+        usd_flows, fx_why = _in_usd(flows, row)
+        if fx_why:
+            notes.append(fx_why)
         entities.append({"entity": row["entity"], "name": row["investment_name"], "kind": row["kind"],
+                         "currency": (row.get("currency") or "USD").upper(),
+                         "usd": ({k: round(v, 2) for k, v in _totals_by(usd_flows, "usd").items()}
+                                 if usd_flows else None),
+                         "usd_flows": usd_flows,
                          "group": group, "status": ln["status"] if ln else ("fund" if row["kind"] == "fund" else "current"),
                          "irr_pct": round(rate * 100, 1) if rate is not None else None,
                          **{k: round(v, 2) for k, v in _totals(flows).items()},
@@ -304,16 +345,56 @@ def report(as_of: Optional[str] = None, start: Optional[str] = None, end: Option
                    or (key == "life_sciences" and e["group"] != "Core")
                    or (key == "direct" and e["kind"] == "direct_investment")
                    or (key == "funds" and e["kind"] == "fund")]
-        flows = [f for e in members for f in e["flows"]]
-        rate = _rate(flows) if flows else None
-        groups[key] = {"key": key, "label": label, "n": len(members),
+        included = [e for e in members if e["usd_flows"] is not None]
+        flows = [f for e in included for f in e["usd_flows"]]
+        rate = _rate(flows, "usd") if flows else None
+        groups[key] = {"key": key, "label": label, "n": len(included), "currency": "USD",
                        "irr_pct": round(rate * 100, 1) if rate is not None else None,
-                       **{k: round(v, 2) for k, v in _totals(flows).items()},
+                       **{k: round(v, 2) for k, v in _totals_by(flows, "usd").items()},
+                       "no_rate": [e["entity"] for e in members if e["usd_flows"] is None],
+                       "currencies": sorted({e["currency"] for e in included}),
                        "first_date": min((e["first_date"] for e in members), default=None),
                        "estimated": any(e["estimated"] for e in members),
-                       "members": [e["entity"] for e in members]}
+                       "members": [e["entity"] for e in included]}
     return {"as_of": rep["as_of"], "as_of_label": rep["as_of_label"], "quarters": rep["quarters"],
             "as_of_end": as_of_end.isoformat(), "groups": groups, "splits": SPLITS,
             "window": {"start": start, "end": end} if start and end else None,
             "vintage": rep.get("vintage"),
             "entities": entities, "left_out": left_out}
+
+
+def enrich_summary(summ: dict, rep: dict) -> dict:
+    """The Portfolio Summary with an IRR per row — over the same dated USD flows
+    as the IRR section, for exactly the entities each row adds up — and the
+    currencies each row converts to USD."""
+    R = report(rep["as_of"], base=rep)
+    ents = {e["entity"]: e for e in R["entities"]}
+    lines = summ["lines"]
+
+    def members(row: dict) -> list[dict]:
+        kind, label = row["kind"], row["label"]
+        if kind == "status":
+            st = {"Current Direct Investments": "current", "Impaired Direct Investments": "impaired",
+                  "Exited Direct Investments": "exited"}.get(label)
+            return [ln for ln in lines if ln["kind"] == "direct" and ln["status"] == st]
+        if label == "Total Direct Investments":
+            return [ln for ln in lines if ln["kind"] == "direct"]
+        if kind == "fund":
+            return [ln for ln in lines if ln["kind"] == "fund"]
+        if kind == "group":
+            return [ln for ln in lines if f"{ln['group']} Investments" == label]
+        return list(lines)                                  # Total Investments
+
+    for row in summ["rows"] + summ["totals"]:
+        mem = members(row)
+        flows = [f for ln in mem for f in (ents.get(ln["entity"]) or {}).get("usd_flows") or []]
+        rate = _rate(flows, "usd") if flows and any(f["usd"] < 0 for f in flows) and any(f["usd"] > 0 for f in flows) else None
+        row["irr_pct"] = round(rate * 100, 1) if rate is not None else None
+        row["currencies"] = ", ".join(sorted({ln.get("currency") or "USD" for ln in mem})) or "USD"
+        est = set(row.get("estimated") or [])
+        if any((ents.get(ln["entity"]) or {}).get("estimated") for ln in mem):
+            est.add("irr_pct")
+        row["estimated"] = sorted(est)
+    cols = [c for c in summ["columns"] if c["key"] not in ("irr_pct", "currencies")]
+    summ["columns"] = cols + [{"key": "irr_pct", "label": "IRR"}, {"key": "currencies", "label": "Currencies (→ USD)"}]
+    return summ

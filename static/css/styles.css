@@ -426,3 +426,17 @@ th.pf-win, td.pf-win { display: none; }
 .pf-windowed th.pf-win, .pf-windowed td.pf-win { display: table-cell; background: color-mix(in srgb, var(--accent) 7%, transparent); }
 .tbl-irr td.covers { white-space: normal; min-width: 180px; font-size: 12px; }
 .tbl-irr .cov { display: block; color: var(--muted); }
+
+.ccy-tag { display: inline-block; margin-left: 5px; padding: 0 5px; border-radius: 4px; font-size: 10.5px; font-weight: 650;
+  letter-spacing: .03em; color: var(--accent); border: 1px solid color-mix(in srgb, var(--accent) 45%, var(--line)); vertical-align: 1px; }
+
+/* dashboard KPI cards (Overview) */
+.kpi-grid { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 12px; margin: 4px 0 16px; }
+@container (max-width: 1000px) { .kpi-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+@container (max-width: 520px) { .kpi-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+.kpi { border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; background: var(--panel); min-width: 0; }
+.kpi.primary { background: linear-gradient(175deg, color-mix(in srgb, var(--brand) 7%, var(--panel)), var(--panel)); }
+.kpi .kl { font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); }
+.kpi .kv { font-family: var(--font-serif); font-size: 24px; font-weight: 600; color: var(--brand); margin-top: 4px; }
+.kpi .kv.gain { color: var(--ok); } .kpi .kv.loss { color: var(--err); }
+.kpi .kn { font-size: 11px; color: var(--muted); margin-top: 3px; }

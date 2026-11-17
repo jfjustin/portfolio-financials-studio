@@ -789,6 +789,8 @@ def master_workbooks():
     ws.append([None, "Funds"])
     ws.append(["Fund 82 (2019)", "Fund 82", 4_200_000, 4_000_000, 1_200_000, -1_000_000, 0, 0, 0, 5_000_000, 1_000_000, 0.033, dt.datetime(2019, 4, 14)])
     ws.append(["Fund 99 (2021)", "Fund 99", 1_350_000, 1_200_000, 250_000, -100_000, 0, 0, 0, 2_000_000, 800_000, 0.009, dt.datetime(2021, 9, 1)])
+    # a euro fund: the summary in USD, its tab in EUR with each transaction's rate
+    ws.append(["Fund 86 (2020)", "Fund 86", 3_105_000, 2_319_830, 640_000, -340_000, 0, 0, 0, 3_300_000, 990_000, 0.012, dt.datetime(2020, 5, 4)])
     ws.append([None, None, 5_550_000, 5_200_000])
     ws.append([None, "Total Equity Investments", 10_950_000])
     ws.append([None, "CLOSED INVESTMENTS"])
@@ -802,7 +804,8 @@ def master_workbooks():
                          ["Investment", "Investment Value", "Cash Outlay", "MTM of Shares", "Investment Date"],
                          ["Company 90A Seed Preferred Shares", 1_000_000, 1_000_000, None, dt.datetime(2024, 6, 1)],
                          ["Company 90A Series A Preferred Shares", 2_000_000, 2_000_000, None, dt.datetime(2026, 3, 1)],
-                         [None, 3_000_000, 3_000_000])),
+                         ["Company 90A Seed Preferred Shares, marked up to the Series A price", 600_000, 0, 600_000, dt.datetime(2026, 3, 1)],
+                         [None, 3_600_000, 3_000_000, 600_000])),
         ("Fund 82", (["Fund 82"], [], ["Entity Type", "Limited Partnership"], ["Method of Accounting", "Equity Method"],
                      ["GL Account", 190100], ["Company Code", 1220], ["% Ownership", 0.033],
                      ["Initial Investment Date", dt.datetime(2019, 4, 14)], ["Terms", "- 10-year term"],
@@ -812,7 +815,24 @@ def master_workbooks():
                      ["Capital Call", 1_000_000, dt.datetime(2020, 6, 1)],
                      ["Capital Call", 1_500_000, dt.datetime(2022, 3, 1)],
                      ["Capital Call", 1_000_000, dt.datetime(2026, 2, 10)], ["Total Funding", 4_000_000],
-                     ["Investment Balance", 4_200_000]))):
+                     ["Investment Balance", 4_200_000])),
+        ("Fund 86", (["Fund 86"], [], ["Entity Type", "Limited Partnership"], ["Method of Accounting", "Equity Method"],
+                     ["GL Account", 190644], ["Company Code", 1220], ["% Ownership", 0.012],
+                     ["Initial Investment Date", dt.datetime(2020, 5, 4)], ["Terms", "- 10-year term, EUR fund"], [],
+                     [None, "EUR", "FX Rate", "USD"], ["Total Commitment", 3_000_000, 1.10, 3_300_000],
+                     ["Remaining Commitment", 900_000, 1.10, 990_000], [],
+                     ["Funding", "EUR", "FX Rate", "USD", "Investment Date"],
+                     ["Initial Investment", 800_000, 1.0934, 874_720, dt.datetime(2020, 5, 4)],
+                     ["Capital Call", 600_000, 1.1840, 710_400, dt.datetime(2021, 4, 12)],
+                     ["Capital Call", 400_000, 1.0189, 407_560, dt.datetime(2022, 9, 20)],
+                     ["Capital Call", 300_000, 1.0905, 327_150, dt.datetime(2024, 2, 8)],
+                     ["Total Funding", 2_100_000, None, 2_319_830], [],
+                     ["Equity Income/(Loss)", "EUR", "FX Rate", "USD"],
+                     [dt.datetime(2021, 12, 31), 120_000, 1.1326, 135_912], [dt.datetime(2022, 12, 31), -60_000, 1.0666, -63_996],
+                     [dt.datetime(2023, 12, 31), 180_000, 1.1039, 198_702], [dt.datetime(2024, 12, 31), 140_000, 1.0389, 145_446],
+                     [dt.datetime(2025, 12, 31), 110_000, 1.1745, 129_195], [dt.datetime(2026, 3, 31), 30_000, 1.0810, 32_430],
+                     ["Total Equity Income/(Loss)", 520_000, None, 577_689], [],
+                     ["Investment Balance", 2_620_000, 1.1851, 3_105_000]))):
         tab = wb.create_sheet(title)
         for r in rows:
             tab.append(r)

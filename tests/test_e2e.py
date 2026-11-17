@@ -102,11 +102,14 @@ def main() -> int:
     password_gate()
     master_workbook()
     equity_investments_workbook()
+    currencies_and_fx()
+    repeated_rows()
     xirr_roots()
     irr_section()
     irr_windows_and_precedence()
     period_ranges()
     deletes_and_odd_names()
+    history_section()
     clear_data(samples)
 
     print()
@@ -1515,6 +1518,11 @@ def equity_investments_workbook() -> None:
               ["Closed 9R Common Stock", 2_330_410, 0, 2_330_410, 2_330_410, dt.datetime(2021, 9, 20)],
               ["Closed 9R sale of all shares", -2_411_500, 2_032_570, -378_931, None, dt.datetime(2021, 12, 9)]):
         two.append(r)
+    wrong = wb.create_sheet("Fund 97")
+    for r in (["Fund 97"], [], ["Entity Type", "Limited Partnership"], ["Funding", "Amount", "Investment Date"],
+              ["Capital Call", 60_000_000, dt.datetime(2020, 1, 1)], ["Capital Call", 78_000_000, dt.datetime(2021, 1, 1)],
+              ["Total Funding", 138_000_000]):
+        wrong.append(r)
     sap = wb.create_sheet("SAP")
     sap.append(["Update quarterly"]); sap.append(["Account", "P12 FY25", "P3 FY26"]); sap.append([190644, 13_353_400, 13_334_400])
     buf = io.BytesIO()
@@ -1537,9 +1545,12 @@ def equity_investments_workbook() -> None:
           and D(f98["accounting"]["ownership_pct"]) == Decimal("7.298") and f98["accounting"]["gl_account"] == "190645"
           and f98["accounting"]["initial_investment_date"] == "2016-12-15"
           and len([c for c in f98["invested"] if c["source"] == "entered"]) == 3
-          and D(f97["distribution_to_date"]) == 1_339_361 and D(f97["drawn_to_date"]) == 6_871_259,
+          and D(f97["distribution_to_date"]) == 1_339_361 and D(f97["drawn_to_date"]) == 6_871_259
+          and not [c for c in f97["invested"] if Decimal(str(c["amount"])) in (60_000_000, 78_000_000)]
+          and any("Fund 97" in w and "calls not imported" in w for w in res["warnings"]),
           "funds: funding, commitment, balance, remaining commitment, distributions (sign dropped), ownership "
-          "from a fraction, dated capital calls from the tab named after the fund")
+          "from a fraction, dated capital calls from the tab named after the fund; a tab whose calls don't "
+          "add up to the summary's funding is named and its calls left out")
     a, b, g, q = cos["Company 98A"], cos["Company 98B"], cos["Company 98G"], cos["Closed 9Q"]
     da, db_, dq = a["details"], b["details"], q["details"]
     check(D(a["total_invested"]) == Decimal("2239872.67") and D(da["book_value"]) == Decimal("2979349.49")
@@ -1705,7 +1716,7 @@ def irr_section() -> None:
     g = R["groups"]
     check(g["life_sciences"]["n"] >= 1 and "Company 96B" in g["life_sciences"]["members"]
           and "Fund 96" in g["funds"]["members"] and "Company 96B" in g["direct"]["members"]
-          and g["all"]["n"] == len(R["entities"]) and g["all"]["irr_pct"] is not None
+          and g["all"]["n"] + len(g["all"]["no_rate"]) == len(R["entities"]) and g["all"]["irr_pct"] is not None
           and set(R["splits"]) == {"all", "group", "kind"}
           and g["core"]["n"] + g["life_sciences"]["n"] == g["all"]["n"]
           and g["direct"]["n"] + g["funds"]["n"] == g["all"]["n"],
@@ -1761,8 +1772,18 @@ def irr_windows_and_precedence() -> None:
     client.post(P + "Company 97P/calls", json={"date": "2024-01-01", "description": "Seed", "amount": "1000000"})
     R = client.get("/api/irr?as_of=2026-Q2").json()
     pp = {e["entity"]: e for e in R["entities"]}["Company 97P"]
-    check(pp["estimated"] and any("add up to 1,000,000, but paid-in is 3,000,000" in n for n in pp["notes"]),
-          "calls that fall short of the paid-in: the figure is marked as an estimate and says why")
+    calls = [f for f in pp["flows"] if f["kind"] == "call"]
+    check(pp["estimated"] and any("add up to 1,000,000, but paid-in is 3,000,000" in n for n in pp["notes"])
+          and len(calls) == 1 and calls[0]["amount"] == -3_000_000 and calls[0]["date"] == "2024-01-01"
+          and pp["invested"] == 3_000_000,
+          "calls that don't add up to the paid-in: the paid-in stands in on the first call's date, marked, with the reason")
+    # a wildly wrong call must not blank the portfolio's figure
+    client.post(P + "Company 97Z/details", json={"kind": "direct_investment", "total_invested": "2m", "total_value": "2.5m"})
+    client.post(P + "Company 97Z/calls", json={"date": "2023-01-01", "description": "typo", "amount": "2000000000"})
+    R = client.get("/api/irr?as_of=2026-Q2").json()
+    z = {e["entity"]: e for e in R["entities"]}["Company 97Z"]
+    check(z["invested"] == 2_000_000 and R["groups"]["all"]["irr_pct"] is not None and R["groups"]["direct"]["irr_pct"] is not None,
+          "a call a thousand times too large does not reach the group IRRs")
     # ---- a fund over a window of quarters: opening and closing from the roll-forward
     for q, beg, fund, dist, end in (("2024-Q4", "0", "2,000,000", "0", "2,000,000"),
                                     ("2025-Q1", "2,000,000", "0", "(100,000)", "2,100,000"),
@@ -1799,7 +1820,7 @@ def irr_windows_and_precedence() -> None:
           ("Company 97X" in {c["entity"] for c in PF["companies"]} and "Company 97H" not in {c["entity"] for c in PF["companies"]}),
           "the Investment Portfolio filtered to 2022–2023 vintages")
     # ---- a statement newer than the workbook supersedes the workbook's figure
-    client.post(P + "Fund 97W/details", json={"investment_balance": "2,000,000", "drawn_to_date": "2,000,000"})
+    client.post(P + "Fund 97W/details", json={"investment_balance": "2,000,000", "drawn_to_date": "2,500,000"})
     db.set_details("Fund 97W", {"workbook_as_of": "2024-Q4", "workbook_fields": ["investment_balance", "drawn_to_date"]})
     PF = client.get("/api/portfolio?as_of=2025-Q3").json()
     f = {x["entity"]: x for x in PF["funds"]}["Fund 97W"]
@@ -1836,6 +1857,190 @@ def irr_windows_and_precedence() -> None:
     R = client.get("/api/irr").json()
     check(perf["irr_pct"] == R["groups"]["funds"]["irr_pct"] and perf["irr_pct"] is not None,
           "Overview's IRR is the IRR section's fund figure, from the same flows")
+
+
+def currencies_and_fx() -> None:
+    """The accounting workbook's EUR | FX Rate | USD tables: a euro fund and a
+    TWD fund (quoted the other way round) keep their own currency; each
+    transaction's rate is USD ÷ native; quarterly rates come from the equity-
+    income rows; the entity's IRR is in its own currency, the groups in USD;
+    the Investment Portfolio workbook's USD figures never override it; one
+    investment listed by both workbooks is one row."""
+    import datetime as dt
+    import io
+
+    import openpyxl
+    from fastapi.testclient import TestClient
+
+    from app.main import app
+    from app.performance import xirr
+
+    client = TestClient(app)
+    D = lambda x: Decimal(str(x))
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Investments Summary"
+    ws.append([None, "Equity Investments Summary Workbook"]); ws.append([None, dt.datetime(2026, 6, 28)]); ws.append([])
+    ws.append([None, "Investment", "Investment Balance", "Gross Investment / Funding", "Equity Income/(Loss)",
+               "Return of Capital/Other Cash Proceeds", "MTM & Conversion Gain/(Loss)", "Acquisition Impact",
+               "Cumulative Impairment", "Total Commitment", "Remaining Commitment", "Ownership %", "Initial Investment Date"])
+    ws.append([None, "Funds"])
+    # summary figures are USD
+    ws.append(["Fund 95E (2022)", "Fund 95E", 2_300_000, 1_700_000, 600_000, 0, 0, 0, 0, 2_200_000, 550_000, 0.02, dt.datetime(2022, 3, 1)])
+    ws.append(["Fund 95T (2022)", "Fund 95T", 1_000_000, 1_000_000, 0, 0, 0, 0, 0, 1_000_000, 0, 0.05, dt.datetime(2022, 6, 1)])
+    e = wb.create_sheet("Fund 95E")
+    for r in (["Fund 95E"], [], ["Entity Type", "Limited Partnership"], ["Method of Accounting", "Equity Method"],
+              ["Initial Investment Date", dt.datetime(2022, 3, 1)], [],
+              [None, "EUR", "FX Rate", "USD"], ["Total Commitment", 2_000_000, 1.1, 2_200_000],
+              ["Remaining Commitment", 500_000, 1.1, 550_000], [],
+              ["Funding", "EUR", "FX Rate", "USD", "Investment Date"],
+              ["Initial Investment", 1_000_000, 1.0, 1_000_000, dt.datetime(2022, 3, 1)],
+              ["Capital Call", 500_000, 1.4, 700_000, dt.datetime(2024, 3, 1)], [],
+              ["Total Funding", 1_500_000, None, 1_700_000], [],
+              ["Equity Income/(Loss)", "EUR", "FX Rate", "USD"],
+              [dt.datetime(2025, 12, 31), 200_000, 1.15, 230_000], [dt.datetime(2026, 3, 31), 100_000, 1.2, 120_000]):
+        e.append(r)
+    t = wb.create_sheet("Fund 95T")
+    for r in (["Fund 95T"], [], ["Entity Type", "Limited Partnership"], ["Method of Accounting", "Equity Method"], [],
+              [None, "TWD", "FX Rate", "USD"], ["Total Commitment", 30_000_000, 30.0, 1_000_000],
+              ["Remaining Commitment", 0, 30.0, 0], [],
+              ["Funding", "TWD", "FX Rate", "USD", "Investment Date"],
+              ["Initial Investment", 30_000_000, 30.0, 1_000_000, dt.datetime(2022, 6, 1)],
+              ["Total Funding", 30_000_000, None, 1_000_000]):
+        t.append(r)
+    buf = io.BytesIO()
+    wb.save(buf)
+    res = client.post("/api/upload", files={"files": ("Equity Investments Summary - Jun26 (fx test).xlsx", buf.getvalue())}).json()["results"][0]
+    det = db.get_details("Fund 95E")
+    rates = {q: D(v) for q, v in (x.split("=") for x in det["usd_rates"].split("; "))}
+    check(res["status"] == "ok" and det["currency"] == "EUR" and db.get_details("Fund 95T")["currency"] == "TWD"
+          and rates["2022-Q1"] == 1 and rates["2024-Q1"] == D("1.4") and rates["2025-Q4"] == D("1.15")
+          and rates["2026-Q1"] == D("1.2"),
+          "the tab's currency is kept; each transaction's and each quarter's rate is USD ÷ native")
+    calls = {c["call_date"]: c for c in db.get_capital_calls("Fund 95T")}
+    check(calls["2022-06-01"]["currency"] == "TWD" and D(calls["2022-06-01"]["amount"]) == 30_000_000
+          and D(calls["2022-06-01"]["amount_usd"]) == 1_000_000,
+          "a TWD call (quoted TWD per dollar) is kept as TWD 30,000,000 = USD 1,000,000, not $30M")
+    rep = client.get("/api/portfolio?as_of=2026-Q2").json()
+    f = {x["entity"]: x for x in rep["funds"]}
+    fe, ft = f["Fund 95E"], f["Fund 95T"]
+    check(fe["currency"] == "EUR" and D(fe["commitment"]) == 2_000_000 and D(fe["drawn_to_date"]) == 1_500_000
+          and D(fe["future_draw"]) == 500_000
+          and abs(D(fe["investment_balance"]) - D("1916666.67")) < 1
+          and "converted from USD" in fe["sources"]["investment_balance"]
+          and ft["currency"] == "TWD" and D(ft["drawn_to_date"]) == 30_000_000,
+          "the Investment Portfolio shows each fund in its own currency: native figures from the tab, "
+          "the USD balance converted at the workbook quarter's rate")
+    R = client.get("/api/irr?as_of=2026-Q2").json()
+    ent = {x["entity"]: x for x in R["entities"]}
+    e95 = ent["Fund 95E"]
+    native_flows = [(dt.date.fromisoformat(x["date"]), x["amount"]) for x in e95["flows"]]
+    usd_flows = [(dt.date.fromisoformat(x["date"]), x["usd"]) for x in e95["usd_flows"]]
+    check(e95["currency"] == "EUR" and abs(e95["irr_pct"] - round(xirr(native_flows) * 100, 1)) < 0.11
+          and [round(x["usd"]) for x in e95["usd_flows"] if x["kind"] == "call"] == [-1_000_000, -700_000]
+          and e95["usd"]["invested"] == 1_700_000 and e95["invested"] == 1_500_000
+          and "Fund 95E" in R["groups"]["funds"]["members"] and "EUR" in R["groups"]["funds"]["currencies"],
+          "IRR: the euro fund's own figure in euros; in the USD groups each call at its recorded rate")
+    check(xirr(native_flows) != xirr(usd_flows),
+          "the euro return and the dollar return differ — the rate moved between the calls and today")
+    # the Investment Portfolio workbook (USD) never overrides the accounting workbook
+    ip = openpyxl.Workbook()
+    sh = ip.active
+    sh.title = "Fund 95E"
+    for r_, label, value in ((2, "Investment Name", "Example Euro Fund"), (3, "Investment Type", "LP"),
+                             (7, "Commitment", 2.2), (13, "Drawn to Date", 1.7), (11, "Investment Balance", 2.3)):
+        sh.cell(r_, 1, label); sh.cell(r_, 2, value)
+    for c, h in zip("BCDEF", ("Date", "Current Round", "Amount Invested", "Total Raise", "Pre Money Valuation")):
+        sh[f"{c}16"] = h
+    sh["A17"] = "Invested"; sh["B17"] = dt.datetime(2022, 3, 31); sh["C17"] = "Initial"; sh["D17"] = 1.0
+    sh["A18"] = "Invested"; sh["B18"] = dt.datetime(2024, 3, 31); sh["C18"] = "Call"; sh["D18"] = 0.7
+    buf = io.BytesIO()
+    ip.save(buf)
+    client.post("/api/upload", files={"files": ("Investment Portfolio Jun'26 (fx test).xlsx", buf.getvalue())})
+    rep = client.get("/api/portfolio?as_of=2026-Q2").json()
+    fe = {x["entity"]: x for x in rep["funds"]}["Fund 95E"]
+    entered = [c for c in fe["invested"] if c["source"] == "entered"]
+    check(D(fe["drawn_to_date"]) == 1_500_000 and D(fe["commitment"]) == 2_000_000
+          and fe["investment_name"] == "Example Euro Fund" and len(entered) == 2
+          and all(c["doc_kind"] == "equity" for c in entered),
+          "the Investment Portfolio workbook adds its name but leaves the accounting workbook's figures, "
+          "and its two calls are recognised as the same investments (dates within weeks, USD within 1%)")
+    S = client.get("/api/portfolio/summary?as_of=2026-Q2").json()
+    funds_row = next(r for r in S["rows"] if r["kind"] == "fund")
+    total = next(r for r in S["totals"] if r["label"] == "Total Investments")
+    keys = [c["key"] for c in S["columns"]]
+    check("irr_pct" in keys and "currencies" in keys and funds_row["irr_pct"] is not None
+          and "EUR" in funds_row["currencies"] and "TWD" in funds_row["currencies"]
+          and total["irr_pct"] is not None,
+          "the Portfolio Summary carries an IRR per row and the currencies each row converts to USD")
+    import openpyxl as _ox
+    wbx = _ox.load_workbook(io.BytesIO(client.get("/api/exports/investment-portfolio.xlsx?as_of=2026-Q2").content))
+    dash = wbx["Dashboard"]
+    heads = [dash.cell(3, c).value for c in range(1, dash.max_column + 1)]
+    check("IRR" in heads and "Currencies (→ USD)" in heads, "and so does the workbook's Dashboard sheet")
+
+
+def repeated_rows() -> None:
+    """One round listed by both workbooks is one row; two equal calls weeks
+    apart in one document stay two."""
+    from fastapi.testclient import TestClient
+
+    from app.main import app
+
+    client = TestClient(app)
+    P = "/api/portfolio/"
+    client.post(P + "Company 94M/details", json={"kind": "direct_investment", "total_invested": "4m", "total_value": "6m"})
+    for d_, desc, amt in (("2022-09-30", "Series B", "1500000"), ("2025-07-11", "Series B-1", "2500000")):
+        db.add_capital_call("Company 94M", d_, Decimal(amt), desc, source="Investment Portfolio Jun'26.xlsx",
+                            doc_kind="portfolio", currency="USD")
+    for d_, desc, amt in (("2022-09-21", "Series B Preferred Shares", "1499987.5"), ("2025-07-17", "Series B-1 Preferred Shares", "2500000")):
+        db.add_capital_call("Company 94M", d_, Decimal(amt), desc, source="Equity Investments Summary.xlsx",
+                            doc_kind="equity", currency="USD", amount_usd=Decimal(amt))
+    # legacy rows (no source): worded differently, same round
+    db.add_capital_call("Company 94M", "2021-06-14", Decimal("2999999"), "Series A", source=None)
+    db.add_capital_call("Company 94M", "2021-06-30", Decimal("3000000"), "Series A Preferred Shares", source=None)
+    # two genuine calls of one size, three weeks apart, in one document
+    db.add_capital_call("Fund 94Q", "2024-01-05", Decimal("500000"), "Capital Call", source="Equity Investments Summary.xlsx", doc_kind="equity")
+    db.add_capital_call("Fund 94Q", "2024-01-26", Decimal("500000"), "Capital Call", source="Equity Investments Summary.xlsx", doc_kind="equity")
+    client.post(P + "Fund 94Q/details", json={"kind": "fund", "drawn_to_date": "1m", "investment_balance": "1.1m"})
+    rep = client.get("/api/portfolio?as_of=2026-Q2").json()
+    m = {x["entity"]: x for x in rep["companies"]}["Company 94M"]
+    rows = [(c["date"], c["description"]) for c in m["invested"]]
+    check(rows == [("2021-06-14", "Series A"), ("2022-09-21", "Series B Preferred Shares"),
+                   ("2025-07-17", "Series B-1 Preferred Shares")]
+          and all(c.get("also_in") for c in m["invested"]),
+          "each round once: the accounting workbook's row kept, the other listing named on it")
+    q = {x["entity"]: x for x in rep["funds"]}["Fund 94Q"]
+    check(len([c for c in q["invested"] if c["source"] == "entered"]) == 2,
+          "two equal calls three weeks apart in one document stay two")
+
+
+def history_section() -> None:
+    """One company's or fund's history: quarterly figures, investments with
+    the running total, and the carrying value over time."""
+    from fastapi.testclient import TestClient
+
+    from app.main import app
+
+    client = TestClient(app)
+    names = {e["entity"] for e in client.get("/api/history").json()["entities"]}
+    check({"Company 98A", "Fund 95E", "Company 90A"} <= names, "the history list offers every fund and company")
+    h = client.get("/api/history/Company 98A?as_of=2026-Q2").json()
+    vals = [(p[0], round(p[1], 2)) for p in h["value"] if "value change" in p[2]]
+    check(vals == [("2022-09-21", 1_097_254.9), ("2025-10-07", 2_337_127.57), ("2025-12-01", 2_979_349.57)]
+          and [round(i["cumulative"], 2) for i in h["investments"]] == [1_000_000, 2_239_872.67]
+          and "value changes" in h["value_basis"],
+          "a company's carrying value over time: the accounting workbook's purchases and mark-ups added up")
+    f = client.get("/api/history/Fund 95E?as_of=2026-Q2").json()
+    check(f["currency"] == "EUR" and [round(i["cumulative"]) for i in f["investments"]] == [1_000_000, 1_500_000]
+          and [round(i["amount_usd"]) for i in f["investments"]] == [1_000_000, 700_000]
+          and any("income" in p[2] for p in f["value"]) and f["value"][-1][2] == "value now",
+          "a euro fund's history in euros: calls with their USD, income from the workbook, today's balance")
+    a = client.get("/api/history/Company 90A?as_of=2026-Q2").json()
+    check([r["period"] for r in a["financials"]][-4:] == ["2025-Q2", "2025-Q3", "2025-Q4", "2026-Q1"]
+          and round(a["financials"][-1]["revenue"]) == 75_000,
+          "a company's own quarterly figures, oldest to latest")
+    check(client.get("/api/history/Nobody 1").status_code == 404, "an unknown name is a 404")
 
 
 def deletes_and_odd_names() -> None:

@@ -140,6 +140,9 @@ capital_calls = Table(
     Column("total_raise", String(64)),                    # direct investments: the round's size
     Column("pre_money", String(64)),                      # direct investments: pre-money valuation
     Column("source", Text),                               # the document it came from, else "entered by hand"
+    Column("currency", String(8)),                        # the amount's currency (None: the entity's own)
+    Column("amount_usd", String(64)),                     # its USD value as the source document gave it
+    Column("doc_kind", String(16)),                       # equity | portfolio | hand — which source wins
     Column("created_by", String(128)),
     Column("created_at", String(40)),
 )
@@ -792,11 +795,14 @@ def get_capital_calls(entity: Optional[str] = None) -> list[dict[str, Any]]:
 
 def add_capital_call(entity: str, call_date: str, amount: Decimal, description: str = "",
                      total_raise: Optional[Decimal] = None, pre_money: Optional[Decimal] = None,
-                     user: str = "local", source: str = "entered by hand") -> int:
+                     user: str = "local", source: str = "entered by hand",
+                     currency: Optional[str] = None, amount_usd: Optional[Decimal] = None,
+                     doc_kind: str = "hand") -> int:
     with get_engine().begin() as conn:
         res = conn.execute(insert(capital_calls).values(
             entity_name=entity, call_date=call_date, amount=str(amount),
-            description=description.strip(), source=source,
+            description=description.strip(), source=source, currency=currency,
+            amount_usd=None if amount_usd is None else str(amount_usd), doc_kind=doc_kind,
             total_raise=None if total_raise is None else str(total_raise),
             pre_money=None if pre_money is None else str(pre_money),
             created_by=user, created_at=_now()))

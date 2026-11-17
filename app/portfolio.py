@@ -165,6 +165,57 @@ def _rates(raw) -> dict[str, Decimal]:
     return out
 
 
+def usd_rate_at(det: dict, when: Any) -> Optional[Decimal]:
+    """USD per unit of the entity's currency at a date or quarter: that
+    quarter's rate, else the latest earlier one, else the earliest later one,
+    else the single rate entered."""
+    w = str(when or "")
+    q = w if re.fullmatch(r"20\d{2}-Q[1-4]", w) else (quarter_label(_iso(w)) if _iso(w) else "")
+    rates = _rates(det.get("usd_rates"))
+    if rates:
+        if q and q in rates:
+            return rates[q]
+        if q:
+            earlier = [k for k in rates if _order(k) <= _order(q)]
+            return rates[max(earlier, key=_order)] if earlier else rates[min(rates, key=_order)]
+        return rates[max(rates, key=_order)]
+    return _d(det.get("usd_rate"))
+
+
+def same_investment(d1: Any, amount1: Optional[Decimal], d2: Any, amount2: Optional[Decimal]) -> bool:
+    """One investment listed twice: dates within 45 days (a month-end in one
+    workbook, the exact day in another) and amounts within 1% or 1,000 (one
+    rounded to $0.001M), in the same currency."""
+    a, b = _iso(d1), _iso(d2)
+    if a is None or b is None or amount1 is None or amount2 is None:
+        return False
+    if abs((a - b).days) > 45:
+        return False
+    x, y = abs(Decimal(str(amount1))), abs(Decimal(str(amount2)))
+    return abs(x - y) <= max(Decimal(1000), max(x, y) * Decimal("0.01"))
+
+
+def native_details(det: dict, ccy: str, as_of: str) -> tuple[dict, list[str], dict[str, str]]:
+    """The entity's details with every money figure in its own currency: a
+    figure a workbook gave in USD (the summaries) is converted at the entity's
+    USD rate for the workbook's quarter. Returns (details, notes, {field: how})."""
+    fc = det.get("field_ccy") or {}
+    out, notes, how = dict(det), [], {}
+    for field, src in fc.items():
+        if field == "commitment" or src in (None, "", "native", ccy) or out.get(field) in (None, ""):
+            continue
+        v = _d(out.get(field))
+        when = det.get("workbook_as_of") or as_of
+        r = usd_rate_at(det, when)
+        if v is not None and src == "USD" and r:
+            out[field] = str((v / r).quantize(Decimal("0.01")))
+            how[field] = f"converted from USD at {r} USD/{ccy} ({when})"
+        elif v is not None:
+            notes.append(f"{field.replace('_', ' ')} is on file in {src}, but there's no {ccy}/USD rate "
+                         "to convert it — enter USD rates in its details")
+    return out, notes, how
+
+
 def coerce_details(body: dict[str, Any]) -> dict[str, Any]:
     """Typed master-data values from what a person typed or a sheet holds: money
     ("3m", "1,250,000"), dates, years, choices. An empty value removes the
@@ -308,7 +359,7 @@ def filter_vintage(rep: dict, year_from: Optional[int], year_to: Optional[int]) 
     out = dict(rep)
     out["funds"] = [f for f in rep["funds"] if keep(f)]
     out["companies"] = [c for c in rep["companies"] if keep(c)]
-    out["totals"] = _totals(out["funds"], out["companies"])
+    out["totals"] = _totals(out["funds"], out["companies"], rep["as_of"])
     out["vintage"] = {"from": year_from, "to": year_to,
                       "left_out": [r["investment_name"] for r in rep["funds"] + rep["companies"]
                                    if not keep(r)]}
@@ -375,18 +426,51 @@ def report(as_of: Optional[str] = None) -> dict[str, Any]:
     for f in db.trusted_facts():
         if f["report_type"] == RF:
             rf_trusted.setdefault((f["entity_name"], f["period"]), {})[f["metric_key"]] = f
-    funds = [_fund(name, quarters_by.get(name, []), details.get(name, {}),
-                   profiles.get(name, {}), facts, [c for c in calls if c["entity_name"] == name],
-                   until, waiting.get(name, []),
-                   {"files": files_by.get(name, []), "own_statement": name in own_statement,
-                    "unread": {sub["id"] for sub in unread.get(name, [])},
-                    "rf_trusted": rf_trusted, "names": names})
-             for name in sorted((k for k, v in kinds.items() if v == "fund"), key=_natural)]
-    companies = [_company(name, details.get(name, {}), facts,
-                          [c for c in calls if c["entity_name"] == name], until,
-                          files_by.get(name, []))
-                 for name in sorted((k for k, v in kinds.items() if v == "direct_investment"),
-                                    key=_natural)]
+    # each entity's currency: its statements', else the accounting workbook's
+    # tab, else USD; figures the workbooks gave in USD are converted to it
+    currency_by: dict[str, str] = {}
+    for f in sorted(db.trusted_facts(), key=lambda f: f["id"]):
+        if f.get("currency") and f["unit"] == "currency" and f["entity_kind"] == "fund":
+            currency_by[f["entity_name"]] = f["currency"]
+    conversions: dict[str, tuple[list[str], dict[str, str]]] = {}
+
+    def native(name: str, ccy: str) -> tuple[dict, dict]:
+        det = details.get(name, {})
+        out, notes, how = native_details(det, ccy, as_of)
+        conversions[name] = (notes, how)
+        prof = dict(profiles.get(name, {}))
+        if (det.get("field_ccy") or {}).get("commitment") == "USD" and ccy != "USD" and _d(prof.get("commitment")):
+            r = usd_rate_at(det, det.get("workbook_as_of") or as_of)
+            if r:
+                prof["commitment"] = str((_d(prof["commitment"]) / r).quantize(Decimal("0.01")))
+                how["commitment"] = f"converted from USD at {r} USD/{ccy}"
+        return out, prof
+
+    funds = []
+    for name in sorted((k for k, v in kinds.items() if v == "fund"), key=_natural):
+        ccy = currency_by.get(name) or details.get(name, {}).get("currency") or "USD"
+        det_n, prof_n = native(name, ccy)
+        row = _fund(name, quarters_by.get(name, []), det_n, prof_n, facts,
+                    [c for c in calls if c["entity_name"] == name], until, waiting.get(name, []),
+                    {"files": files_by.get(name, []), "own_statement": name in own_statement,
+                     "unread": {sub["id"] for sub in unread.get(name, [])},
+                     "rf_trusted": rf_trusted, "names": names, "currency": ccy})
+        row["currency"] = ccy
+        funds.append(row)
+    companies = []
+    for name in sorted((k for k, v in kinds.items() if v == "direct_investment"), key=_natural):
+        ccy = details.get(name, {}).get("currency") or "USD"
+        det_n, _p = native(name, ccy)
+        row = _company(name, det_n, facts, [c for c in calls if c["entity_name"] == name], until,
+                       files_by.get(name, []), ccy)
+        row["currency"] = ccy
+        companies.append(row)
+    for row in funds + companies:
+        notes, how = conversions.get(row["entity"], ([], {}))
+        for field, text in how.items():
+            if row["sources"].get(field) in ("entered", "details", "fund parameters", None):
+                row["sources"][field] = text
+        row["issues"] += [{"kind": "check", "message": n} for n in notes]
     for co in companies:
         files: dict[int, list[str]] = {}
         for w in waiting.get(co["entity"], []):
@@ -395,21 +479,13 @@ def report(as_of: Optional[str] = None) -> dict[str, Any]:
         co["issues"] += [{"kind": "review", "submission_id": sid,
                           "message": ", ".join(m) + ": read from a file, waiting for review"}
                          for sid, m in files.items()]
-    currency_by: dict[str, str] = {}
-    for f in sorted(db.trusted_facts(), key=lambda f: f["id"]):
-        if f.get("currency") and f["unit"] == "currency":
-            currency_by[f["entity_name"]] = f["currency"]
-    for row in funds:
-        row["currency"] = currency_by.get(row["entity"], "USD")
-    for row in companies:
-        row["currency"] = "USD"        # holding records are kept in USD
     for row in funds + companies:
         row["issues"] = [{"kind": "unread", "submission_id": sub["id"],
                           "message": f"No figures could be read from {sub['filename']} — open "
                                      "it to see why, or enter the figures in the details"}
                          for sub in unread.get(row["entity"], [])] + row["issues"]
     return {"as_of": as_of, "as_of_label": _month_label(as_of), "quarters": qs or [as_of],
-            "funds": funds, "companies": companies, "totals": _totals(funds, companies),
+            "funds": funds, "companies": companies, "totals": _totals(funds, companies, as_of),
             "fund_fields": [{"key": k, "label": l, "type": t} for k, l, t in FUND_FIELDS],
             "company_fields": [{"key": k, "label": l, "type": t} for k, l, t in COMPANY_FIELDS]}
 
@@ -573,7 +649,7 @@ def _fund(name: str, quarters: list[dict], det: dict, prof: dict, facts: dict,
     if stats_src:
         src["stats"] = stats_src
 
-    invested = _invested(calls, quarters, until)
+    invested = _invested(calls, quarters, until, det, ctx.get("currency") or "USD")
     # the first call the team entered — a quarter inferred from the roll-forward
     # on file is not the fund's first investment
     entered = [r for r in invested if r["source"] == "entered"]
@@ -705,35 +781,79 @@ def _fund_issues(values: dict, estimated: set, src: dict, mismatches: list,
     return out
 
 
-def _invested(calls: list[dict], quarters: list[dict], until: int) -> list[dict]:
-    """Dated calls entered for the entity; each quarter without one shows that
-    quarter's funding from the roll-forward."""
+_DOC_ORDER = {"equity": 0, "portfolio": 1, None: 1, "hand": 2}
+
+
+def _invested(calls: list[dict], quarters: list[dict], until: int, det: Optional[dict] = None,
+              ccy: str = "USD") -> list[dict]:
+    """Dated calls for the entity, in its own currency and in USD; each quarter
+    without one shows that quarter's funding from the roll-forward. An
+    investment listed by both workbooks (a month-end date and a rounded amount
+    in one) is one row: the accounting workbook's, naming the other."""
+    det = det or {}
     rows = []
     for c in calls:
         d = _iso(c["call_date"])
         if d is None or _order(quarter_label(d)) > until:
             continue
+        amt, cur = Decimal(c["amount"]), (c.get("currency") or ccy)
+        usd = _d(c.get("amount_usd"))
+        r = usd_rate_at(det, d.isoformat()) if ccy != "USD" else Decimal(1)
+        if cur == ccy:
+            native = amt
+            usd = usd if usd is not None else (amt * r if r else None)
+        elif cur == "USD":
+            usd = amt
+            native = (amt / r) if r else None
+        else:
+            native = (usd / r) if usd is not None and r else None
         rows.append({"date": d.isoformat(), "description": c["description"] or "",
-                     "amount": Decimal(c["amount"]), "total_raise": _d(c.get("total_raise")),
-                     "pre_money": _d(c.get("pre_money")), "source": "entered", "id": c["id"],
-                     "document": c.get("source") or "entered by hand"})
-    covered = {quarter_label(_iso(r["date"])) for r in rows}
+                     "amount": native if native is not None else amt, "amount_usd": usd,
+                     "currency": ccy if native is not None else cur,
+                     "original": {"amount": amt, "currency": cur} if cur != ccy else None,
+                     "total_raise": _d(c.get("total_raise")), "pre_money": _d(c.get("pre_money")),
+                     "source": "entered", "id": c["id"], "doc_kind": c.get("doc_kind"),
+                     "document": c.get("source") or "entered by hand", "doc": c.get("source")})
+    rows.sort(key=lambda x: (_DOC_ORDER.get(x["doc_kind"], 1), x["amount_usd"] is None, x["id"]))
+    kept: list[dict] = []
+    for x in rows:
+        def comparable(y: dict) -> tuple[Any, Any]:
+            if x["amount_usd"] is not None and y["amount_usd"] is not None:
+                return x["amount_usd"], y["amount_usd"]
+            return x["amount"], y["amount"]
+        def other_listing(y: dict) -> bool:
+            # two rows of one document are two investments; rows imported before
+            # sources were kept count as one when worded differently
+            if x["doc"] and y["doc"]:
+                return x["doc"] != y["doc"]
+            return (x["description"] or "").strip().lower() != (y["description"] or "").strip().lower()
+        twin = next((y for y in kept if other_listing(y)
+                     and same_investment(y["date"], comparable(y)[1], x["date"], comparable(y)[0])), None)
+        if twin is not None:
+            twin.setdefault("also_in", []).append(f"{x['document']} ({x['date']}, {x['description'] or 'investment'})")
+            continue
+        kept.append(x)
+    rows = kept
+    covered = {quarter_label(_iso(x["date"])) for x in rows}
     for q in quarters:
         funding = Decimal(str(q["funding"] or 0))
         label = q["period_label"]
         if funding > 0 and re.fullmatch(r"20\d{2}-Q[1-4]", label or "") and label not in covered:
             end = quarter_bounds(label)[1]
+            r = usd_rate_at(det, label) if ccy != "USD" else Decimal(1)
             rows.append({"date": end.isoformat(),
                          "description": f"Called in Q{label[-1]} {label[:4]} (roll-forward)",
-                         "amount": funding, "total_raise": None, "pre_money": None,
-                         "source": "roll-forward", "id": None, "document": f"roll-forward {label}"})
-    return sorted(rows, key=lambda r: r["date"])
+                         "amount": funding, "amount_usd": funding * r if r else None, "currency": ccy,
+                         "original": None, "total_raise": None, "pre_money": None,
+                         "source": "roll-forward", "id": None, "doc_kind": None,
+                         "document": f"roll-forward {label}"})
+    return sorted(rows, key=lambda x: x["date"])
 
 
 def _company(name: str, det: dict, facts: dict, calls: list[dict], until: int,
-             files: Optional[list[dict]] = None) -> dict[str, Any]:
+             files: Optional[list[dict]] = None, ccy: str = "USD") -> dict[str, Any]:
     src: dict[str, str] = {}
-    invested = _invested(calls, [], until)
+    invested = _invested(calls, [], until, det, ccy)
     superseded: list[str] = []
     total = _d(det.get("total_invested"))
     cost_fact = facts.get((name, "cost_basis"))
@@ -786,13 +906,19 @@ def _company(name: str, det: dict, facts: dict, calls: list[dict], until: int,
     }
 
 
-def _totals(funds: list[dict], companies: list[dict]) -> dict[str, Any]:
+def _totals(funds: list[dict], companies: list[dict], as_of: str = "") -> dict[str, Any]:
+    """The cash-flow totals, in USD: each entity's figures at its USD rate;
+    one without a rate is left out of them and named."""
+    factor = {r["entity"]: _usd(r, as_of)[0] for r in funds + companies}
+
     def s(rows, key):
-        return sum((r[key] for r in rows if r.get(key) is not None), Decimal(0))
+        return sum((r[key] * factor[r["entity"]] for r in rows
+                    if r.get(key) is not None and factor[r["entity"]] is not None), Decimal(0))
     drawn, future = s(funds, "drawn_to_date"), s(funds, "future_draw")
     commit, dist = s(funds, "commitment"), s(funds, "distribution_to_date")
     direct = s(companies, "total_invested")
-    proceeds = sum((c["exit"]["proceeds"] or 0 for c in companies if c["exited"]), Decimal(0))
+    proceeds = sum(((c["exit"]["proceeds"] or 0) * factor[c["entity"]] for c in companies
+                    if c["exited"] and factor[c["entity"]] is not None), Decimal(0))
     inflow = dist + proceeds
     outflow = -(drawn + direct)
     committed = -future
@@ -803,7 +929,9 @@ def _totals(funds: list[dict], companies: list[dict]) -> dict[str, Any]:
                                          if c["operating_status"] == "Active"], "total_invested"),
             "direct_projected": s(companies, "projected_investment"),
             "exit_proceeds": proceeds, "cash_inflow": inflow, "cash_outflow": outflow,
-            "committed": committed, "net_cash_flow": inflow + outflow + committed}
+            "committed": committed, "net_cash_flow": inflow + outflow + committed,
+            "currency": "USD",
+            "left_out": [r["investment_name"] for r in funds + companies if factor[r["entity"]] is None]}
 
 
 # --------------------------------------------------------------------------
@@ -1176,7 +1304,8 @@ def workbook(as_of: Optional[str] = None) -> tuple[bytes, str]:
             ws.column_dimensions[c].width = 18
 
     _summary(cash_flows, rep, names)
-    _dashboard(wb, summary(rep=rep))
+    from . import irr
+    _dashboard(wb, irr.enrich_summary(summary(rep=rep), rep))
     wb.calculation.fullCalcOnLoad = True          # Excel computes the summary's references
     buf = io.BytesIO()
     wb.save(buf)
@@ -1212,7 +1341,9 @@ def _dashboard(wb, summ: dict) -> None:
                     continue
                 if k == "count":
                     c.value = int(v)
-                elif k in ("gain_pct", "alloc_pct"):
+                elif k == "currencies":
+                    c.value = v
+                elif k in ("gain_pct", "alloc_pct", "irr_pct"):
                     c.value, c.number_format = v / 100, pct
                 elif k in ("tvpi", "dpi"):
                     c.value, c.number_format = v, ratio
@@ -1225,9 +1356,10 @@ def _dashboard(wb, summ: dict) -> None:
                                         "the notes below.", "PFS")
         return r
 
-    first = [k for k, _l in SUMMARY_COLUMNS if k not in ("dpi", "aum")]
+    every = [c["key"] for c in summ["columns"]]
+    first = [k for k in every if k not in ("dpi", "aum")]
     r = table(3, summ["rows"], first)
-    r = table(r + 2, summ["totals"], [k for k, _l in SUMMARY_COLUMNS])
+    r = table(r + 2, summ["totals"], every)
     for n in summ["notes"]:
         r += 1
         ws.cell(r + 1, 1, f"{n['name']}: {n['message']}")

@@ -23,7 +23,7 @@ from fastapi.staticfiles import StaticFiles
 from starlette.concurrency import run_in_threadpool
 from fastapi.templating import Jinja2Templates
 
-from . import (auth, carry_forward, db, direct_investments, fabric_export, irr, lake, performance,
+from . import (auth, carry_forward, db, direct_investments, fabric_export, history, irr, lake, performance,
                portfolio, terms)
 from .config import settings
 from .llm import get_provider
@@ -404,7 +404,7 @@ def portfolio_report(as_of: Optional[str] = None, vintage_from: Optional[int] = 
             raise HTTPException(400, "quarters look like 2026-Q2")
     rep = portfolio.with_window(portfolio.filter_vintage(portfolio.report(as_of), vintage_from, vintage_to),
                                 start, end)
-    rep["summary"] = portfolio.summary(rep=rep)      # same reading, no second pass
+    rep["summary"] = irr.enrich_summary(portfolio.summary(rep=rep), rep)   # same reading, no second pass
     return rep
 
 
@@ -428,13 +428,32 @@ def irr_report(as_of: Optional[str] = None, start: Optional[str] = None, end: Op
         raise HTTPException(400, str(e))
 
 
+@app.get("/api/history")
+def history_entities(as_of: Optional[str] = None):
+    """The funds and companies a history can be shown for."""
+    return {"entities": history.entities(as_of)}
+
+
+@app.get("/api/history/{entity:path}")
+def entity_history(entity: str, as_of: Optional[str] = None):
+    """One fund's or company's history: quarterly financials or roll-forward,
+    dated investments with the running total, and its value over time."""
+    if as_of and not re.fullmatch(r"20\d{2}-Q[1-4]", as_of):
+        raise HTTPException(400, "as_of must be a quarter, e.g. 2026-Q2")
+    try:
+        return history.history(entity, as_of)
+    except KeyError:
+        raise HTTPException(404, f"no fund or company named '{entity}'")
+
+
 @app.get("/api/portfolio/summary")
 def portfolio_summary(as_of: Optional[str] = None):
     """Cost, value, book value, impairment, proceeds, gains, TVPI, DPI and AUM —
     direct investments by status, funds, and all investments by group."""
     if as_of and not re.fullmatch(r"20\d{2}-Q[1-4]", as_of):
         raise HTTPException(400, "as_of must be a quarter, e.g. 2026-Q2")
-    return portfolio.summary(as_of)
+    rep = portfolio.report(as_of)
+    return irr.enrich_summary(portfolio.summary(rep=rep), rep)
 
 
 @app.get("/api/portfolio/holdings.csv")

@@ -65,6 +65,7 @@
     $("#dif-from").addEventListener("change", pickRange);
     $("#dif-to").addEventListener("change", pickRange);
     $("#irr-asof").addEventListener("change", e => loadIrr(e.target.value));
+    $("#hist-entity").addEventListener("change", e => loadHistory(e.target.value));
     const irrOpts = () => { IRR_OPTS = { start: $("#irr-from").value, end: $("#irr-to").value, vfrom: $("#irr-vfrom").value, vto: $("#irr-vto").value };
       if (!IRR_OPTS.start !== !IRR_OPTS.end) return; loadIrr($("#irr-asof").value); };
     ["#irr-from", "#irr-to", "#irr-vfrom", "#irr-vto"].forEach(id => $(id).addEventListener("change", irrOpts));
@@ -107,6 +108,7 @@
     if (CHARTS.byType) window.Charts.barChart($("#chart-type"), CHARTS.byType, { title: "Value by report type" });
     if (CHARTS.byEntity) window.Charts.barChart($("#chart-entity"), CHARTS.byEntity, { title: "Value by entity" });
     if (CHARTS.ts) window.Charts.lineChart($("#chart-time"), CHARTS.ts, { title: "Portfolio value over time" });
+    drawDashboard();
   }
   let SELECTED = [];
   const panes = () => $$("#panes > .pane");
@@ -144,6 +146,13 @@
       const w = Math.round(e.contentRect.width);
       if (w !== chartW) { chartW = w; if (w) requestAnimationFrame(drawCharts); }
     }).observe($('.pane[data-pane="charts"]'));
+    const widths = {};
+    for (const [pane, draw] of [["overview", () => drawDashboard()], ["history", () => drawHistory()]]) {
+      new ResizeObserver(([e]) => {
+        const w = Math.round(e.contentRect.width);
+        if (w !== widths[pane]) { widths[pane] = w; if (w) requestAnimationFrame(draw); }
+      }).observe($(`.pane[data-pane="${pane}"]`));
+    }
     renderPanes();
   }
   function setNavCollapsed(on) {
@@ -202,6 +211,8 @@
     await loadDirectInvestments(DIF ? DIF.year : null);
     await loadPortfolio(PF ? PF.as_of : null);
     await loadIrr(IRR ? IRR.as_of : null);
+    drawDashboard();
+    await loadHistoryList();
 
     CHARTS.ts = await api("/api/timeseries");
     drawCharts();
@@ -422,12 +433,19 @@
 
   // ---------------- Investment Portfolio (Lam's quarterly report) ----------------
   let PF = null, PF_ENTITY = null;
-  // $M as Lam's report prints them
-  const mfmt = (v, d) => {
+  // in millions, as Lam's report prints them — in the entity's own currency
+  const CCY_SIGN = { USD: "$", EUR: "€", GBP: "£", JPY: "¥", CNY: "¥", KRW: "₩", TWD: "NT$", HKD: "HK$",
+                     SGD: "S$", CAD: "C$", AUD: "A$", CHF: "CHF ", SEK: "SEK ", NOK: "NOK ", DKK: "DKK " };
+  const sign = ccy => CCY_SIGN[(ccy || "USD").toUpperCase()] || ((ccy || "") + " ");
+  const mfmt = (v, d, ccy) => {
     if (v == null || v === "") return '<span class="muted">—</span>';
-    const n = Number(v) / 1e6, s = "$" + Math.abs(n).toFixed(d == null ? 1 : d);
+    const n = Number(v) / 1e6, s = sign(ccy) + Math.abs(n).toLocaleString("en-US", {
+      minimumFractionDigits: d == null ? 1 : d, maximumFractionDigits: d == null ? 1 : d });
     return n < 0 ? `(${s})` : s;
   };
+  const ccyTag = ccy => (ccy && ccy !== "USD") ? ` <span class="ccy-tag" title="Figures in ${ccy} — converted to USD in the Portfolio Summary and the IRR groups">${esc(ccy)}</span>` : "";
+  const cmoney = (v, ccy) => v == null ? '<span class="muted">—</span>'
+    : (Number(v) < 0 ? "-" : "") + sign(ccy) + Math.abs(Number(v) / 1e6).toLocaleString("en-US", { minimumFractionDigits: 1, maximumFractionDigits: 1 }) + "M";
   const srcTitle = (r, k) => esc((r.sources || {})[k] || "");
   // a figure built only from the quarters on file, until a statement gives the since-inception one
   const estMark = (r, k) => ((r.sources || {})[k] === "entered" || (r.sources || {})[k] === "fund parameters"
@@ -462,20 +480,20 @@
       ].filter(Boolean);
       const stats = parts.length ? parts.join(" · ") : '<span class="muted">—</span>';
       const tr = document.createElement("tr");
-      tr.innerHTML = `<td class="lbl"><a href="#" class="pf-open" data-entity="${esc(f.entity)}">${esc(f.investment_name)}</a>` +
+      tr.innerHTML = `<td class="lbl"><a href="#" class="pf-open" data-entity="${esc(f.entity)}">${esc(f.investment_name)}</a>${ccyTag(f.currency)}` +
           (f.investment_name !== f.entity ? `<div class="small muted">${esc(f.entity)}</div>` : "") + `</td>
         <td class="lbl">${esc(f.investment_type)}</td><td class="lbl">${esc(f.region_sector) || '<span class="muted">—</span>'}</td>
         <td title="${srcTitle(f, "vintage")}">${f.vintage || '<span class="muted">—</span>'}</td>
-        <td title="${srcTitle(f, "fund_size")}">${mfmt(f.fund_size, 3)}</td>
-        <td title="${srcTitle(f, "commitment")}">${mfmt(f.commitment, 3)}${estMark(f, "commitment")}</td>
-        <td title="${srcTitle(f, "drawn_to_date")}">${mfmt(f.drawn_to_date, 3)}${estMark(f, "drawn_to_date")}</td>
-        <td title="${srcTitle(f, "future_draw")}">${mfmt(f.future_draw, 3)}${estMark(f, "future_draw")}</td>
-        <td title="${srcTitle(f, "distribution_to_date")}">${mfmt(f.distribution_to_date, 3)}${estMark(f, "distribution_to_date")}</td>
+        <td title="${srcTitle(f, "fund_size")}">${mfmt(f.fund_size, 3, f.currency)}</td>
+        <td title="${srcTitle(f, "commitment")}">${mfmt(f.commitment, 3, f.currency)}${estMark(f, "commitment")}</td>
+        <td title="${srcTitle(f, "drawn_to_date")}">${mfmt(f.drawn_to_date, 3, f.currency)}${estMark(f, "drawn_to_date")}</td>
+        <td title="${srcTitle(f, "future_draw")}">${mfmt(f.future_draw, 3, f.currency)}${estMark(f, "future_draw")}</td>
+        <td title="${srcTitle(f, "distribution_to_date")}">${mfmt(f.distribution_to_date, 3, f.currency)}${estMark(f, "distribution_to_date")}</td>
         <td>${f.drawn_commit != null ? Math.round(f.drawn_commit * 100) + "%" : '<span class="muted">—</span>'}</td>
-        <td title="${srcTitle(f, "investment_balance")}"><b>${mfmt(f.investment_balance, 3)}</b>${estMark(f, "investment_balance")}</td>
+        <td title="${srcTitle(f, "investment_balance")}"><b>${mfmt(f.investment_balance, 3, f.currency)}</b>${estMark(f, "investment_balance")}</td>
         <td class="small" title="${srcTitle(f, "stats")}">${stats}</td>
-        <td class="pf-win">${f.window ? (f.window.drawn != null ? mfmt(f.window.drawn, 3) : mfmt(f.window.invested, 3) + (f.window.n_calls ? ` <span class="small muted">(${f.window.n_calls} call${f.window.n_calls === 1 ? "" : "s"})</span>` : "")) : ""}</td>
-        <td class="pf-win">${f.window && f.window.distributed != null ? mfmt(f.window.distributed, 3) : '<span class="muted">—</span>'}</td>`;
+        <td class="pf-win">${f.window ? (f.window.drawn != null ? mfmt(f.window.drawn, 3, f.currency) : mfmt(f.window.invested, 3, f.currency) + (f.window.n_calls ? ` <span class="small muted">(${f.window.n_calls} call${f.window.n_calls === 1 ? "" : "s"})</span>` : "")) : ""}</td>
+        <td class="pf-win">${f.window && f.window.distributed != null ? mfmt(f.window.distributed, 3, f.currency) : '<span class="muted">—</span>'}</td>`;
       fb.appendChild(tr);
     });
     const cb = $("#pf-companies"); cb.innerHTML = "";
@@ -483,15 +501,15 @@
       cb.innerHTML = '<tr><td colspan="8" class="muted" style="text-align:left">No direct investments yet.</td></tr>';
     PF.companies.forEach(c => {
       const tr = document.createElement("tr");
-      tr.innerHTML = `<td class="lbl"><a href="#" class="pf-open" data-entity="${esc(c.entity)}">${esc(c.investment_name)}</a></td>
+      tr.innerHTML = `<td class="lbl"><a href="#" class="pf-open" data-entity="${esc(c.entity)}">${esc(c.investment_name)}</a>${ccyTag(c.currency)}</td>
         <td class="lbl">${esc(c.theme) || '<span class="muted">—</span>'}</td>
         <td class="lbl">${esc(c.current_round) || '<span class="muted">—</span>'}</td>
         <td>${esc(c.last_investment_date || "") || '<span class="muted">—</span>'}</td>
-        <td title="${srcTitle(c, "total_invested")}">${mfmt(c.total_invested)}</td>
-        <td>${mfmt(c.projected_investment)}</td>
-        <td title="${srcTitle(c, "total_value")}">${mfmt(c.total_value)}</td>
+        <td title="${srcTitle(c, "total_invested")}">${mfmt(c.total_invested, null, c.currency)}</td>
+        <td>${mfmt(c.projected_investment, null, c.currency)}</td>
+        <td title="${srcTitle(c, "total_value")}">${mfmt(c.total_value, null, c.currency)}</td>
         <td class="lbl">${esc(c.operating_status)}${c.exited ? ' <span class="small muted">· exited</span>' : ""}</td>
-        <td class="pf-win">${c.window ? mfmt(c.window.invested) + (c.window.n_calls ? ` <span class="small muted">(${c.window.n_calls})</span>` : "") : ""}</td>`;
+        <td class="pf-win">${c.window ? mfmt(c.window.invested, null, c.currency) + (c.window.n_calls ? ` <span class="small muted">(${c.window.n_calls})</span>` : "") : ""}</td>`;
       cb.appendChild(tr);
     });
     const t = PF.totals, tot = v => v == null ? "—" : (Number(v) < 0 ? "-" : "") + "$" + Math.abs(Number(v) / 1e6).toFixed(1) + "M";
@@ -504,6 +522,151 @@
     renderAttention("#pf-attention", PF.funds.concat(PF.companies).flatMap(r =>
       (r.issues || []).map(i => Object.assign({ who: r.investment_name, entity: r.entity }, i))),
       i => openPortfolioEntity(i.entity));
+  }
+
+  // ---------------- Portfolio dashboard (Overview) and investment analysis (Charts) ----------------
+  // after PR #2's dashboard, drawn from the app's own Portfolio Summary and IRR
+  const usdM = v => v == null ? "—" : (Number(v) < 0 ? "-" : "") + "$" + Math.abs(Number(v) / 1e6).toFixed(1) + "M";
+  const xMult = v => v == null ? "—" : Number(v).toFixed(2) + "x";
+  const pctF = v => v == null ? "—" : Number(v).toFixed(1) + "%";
+  const COL = { cost: "#2d4a73", value: "#0f8a7e", realized: "#157f4a", unrealized: "#b7791f", dpi: "#8b5cf6" };
+  function summaryRows() {
+    const S = PF && PF.summary;
+    if (!S) return null;
+    const by = Object.fromEntries(S.rows.concat(S.totals).map(r => [r.label, r]));
+    const groups = S.totals.filter(r => r.kind === "group");
+    const types = [["Current", "Current Direct Investments"], ["Impaired", "Impaired Direct Investments"],
+                   ["Exited", "Exited Direct Investments"], ["Funds", "Fund Investments"]]
+      .map(([short, label]) => [short, by[label]]).filter(([, r]) => r && r.count);
+    return { S, by, total: by["Total Investments"], groups, types };
+  }
+  function drawDashboard() {
+    const d = summaryRows(), C = window.Charts;
+    const ov = $('.pane[data-pane="overview"]');
+    if (d && d.total && ov && !ov.hidden) {
+      const t = d.total, irrAll = IRR && IRR.groups && IRR.groups.all;
+      const gain = Number(t.total_gain);
+      $("#dash-asof").textContent = "As of " + d.S.as_of_label + " · USD";
+      $("#dash-kpis").innerHTML = [
+        ["TVPI", xMult(t.tvpi), "total value ÷ paid-in", "", true],
+        ["DPI", xMult(t.dpi), "proceeds ÷ paid-in", "", true],
+        ["IRR", irrAll && irrAll.irr_pct != null ? pctF(irrAll.irr_pct) + (irrAll.estimated ? "*" : "") : "—",
+         "money-weighted, all investments", irrAll && irrAll.irr_pct < 0 ? "loss" : "", true],
+        ["Total gain / (loss)", (gain > 0 ? "+" : "") + usdM(gain), `realized ${usdM(t.realized)} · unrealized ${usdM(t.unrealized)}`, gain < 0 ? "loss" : "gain"],
+        ["Paid-in capital", usdM(t.paid_in), `${t.count} investments`, ""],
+        ["Total value", usdM(t.value), `still held (AUM) ${usdM(t.aum)}`, ""]]
+        .map(([l, v, n, cls, primary]) => `<div class="kpi${primary ? " primary" : ""}"><div class="kl">${esc(l)}</div>
+          <div class="kv ${cls}">${esc(v)}</div><div class="kn">${esc(n)}</div></div>`).join("");
+      C.columnChart($("#dash-category"), { categories: d.groups.map(r => r.label.replace(" Investments", "")),
+        series: [{ name: "Paid-in capital", color: COL.cost, values: d.groups.map(r => Number(r.paid_in)) },
+                 { name: "Total value", color: COL.value, values: d.groups.map(r => Number(r.value)) }] },
+        { fmt: usdM, notes: d.groups.map(r => "TVPI " + xMult(r.tvpi)) });
+      C.allocationBar($("#dash-alloc-group"), d.groups.map((r, i) => ({ label: r.label.replace(" Investments", ""), value: Number(r.paid_in), color: [COL.cost, COL.value, COL.unrealized, COL.dpi][i % 4] })));
+      const dir = d.by["Total Direct Investments"], fund = d.by["Fund Investments"];
+      C.allocationBar($("#dash-alloc-kind"), [{ label: "Direct", value: dir ? Number(dir.paid_in) : 0, color: COL.cost },
+                                              { label: "Funds", value: fund ? Number(fund.paid_in) : 0, color: COL.value }]);
+      C.allocationBar($("#dash-alloc-status"), d.types.filter(([k]) => k !== "Funds").map(([k, r], i) =>
+        ({ label: k, value: Number(r.paid_in), color: [COL.value, COL.unrealized, COL.cost][i % 3] })));
+    }
+    const ch = $('.pane[data-pane="charts"]');
+    if (d && ch && !ch.hidden) {
+      const cats = d.types.map(([k]) => k), rows = d.types.map(([, r]) => r);
+      C.columnChart($("#chart-type-capital"), { categories: cats,
+        series: [{ name: "Paid-in capital", color: COL.cost, values: rows.map(r => Number(r.paid_in)) },
+                 { name: "Total value", color: COL.value, values: rows.map(r => Number(r.value)) }] }, { fmt: usdM });
+      C.columnChart($("#chart-type-gain"), { categories: cats,
+        series: [{ name: "Realized", color: COL.realized, values: rows.map(r => Number(r.realized)) },
+                 { name: "Unrealized", color: COL.unrealized, values: rows.map(r => Number(r.unrealized)) }] },
+        { fmt: usdM, stacked: true, notes: rows.map(r => usdM(r.total_gain)) });
+      C.columnChart($("#chart-type-multiple"), { categories: cats,
+        series: [{ name: "TVPI", color: COL.value, values: rows.map(r => r.tvpi) },
+                 { name: "DPI", color: COL.dpi, values: rows.map(r => r.dpi) }] }, { fmt: xMult });
+      const g = (IRR && IRR.groups) || {};
+      const keys = ["all", "core", "life_sciences", "direct", "funds"].filter(k => g[k] && g[k].irr_pct != null);
+      C.columnChart($("#chart-irr-group"), { categories: keys.map(k => g[k].label.replace(" investments", "").replace("All", "Portfolio")),
+        series: [{ name: "IRR", color: COL.cost, values: keys.map(k => g[k].irr_pct) }] },
+        { fmt: v => v.toFixed(1) + "%", empty: "No IRR yet — dated investments are needed." });
+    }
+  }
+
+  // ---------------- Company history ----------------
+  // $950K below a million, $1.05M from there
+  const kM = v => { const a = Math.abs(v), s = v < 0 ? "-" : "";
+    return a >= 1e6 ? `${s}$${(a / 1e6).toFixed(2).replace(/0$/, "")}M` : `${s}$${Math.round(a / 1000)}K`; };
+  let HIST = null;
+  async function loadHistoryList() {
+    const r = await api("/api/history");
+    const sel = $("#hist-entity"), keep = sel.value;
+    const cos = r.entities.filter(e => e.kind !== "fund"), funds = r.entities.filter(e => e.kind === "fund");
+    sel.innerHTML = (cos.length ? `<optgroup label="Direct investments">${cos.map(e => `<option value="${esc(e.entity)}">${esc(e.name)}${e.name !== e.entity ? " (" + esc(e.entity) + ")" : ""}</option>`).join("")}</optgroup>` : "")
+      + (funds.length ? `<optgroup label="Funds">${funds.map(e => `<option value="${esc(e.entity)}">${esc(e.name)}${e.name !== e.entity ? " (" + esc(e.entity) + ")" : ""}</option>`).join("")}</optgroup>` : "");
+    if (!r.entities.length) { HIST = null; $("#hist-title").textContent = "Company history"; $("#hist-tiles").innerHTML = '<div class="muted small">No funds or companies yet.</div>'; return; }
+    sel.value = r.entities.some(e => e.entity === keep) ? keep : r.entities[0].entity;
+    await loadHistory(sel.value);
+  }
+  async function loadHistory(entity) {
+    const res = await fetch("/api/history/" + encodeURIComponent(entity));
+    if (!res.ok) { toast("History not shown: " + (await failText(res))); return; }
+    HIST = await res.json();
+    drawHistory();
+  }
+  function drawHistory() {
+    const pane = $('.pane[data-pane="history"]');
+    if (!HIST || !pane || pane.hidden) return;
+    const h = HIST, C = window.Charts, cm = v => cmoney(v, h.currency);
+    $("#hist-title").textContent = h.name + (h.name !== h.entity ? ` (${h.entity})` : "");
+    $("#hist-sub").innerHTML = `${h.kind === "fund" ? "Fund" : "Direct investment"}${h.theme ? " · " + esc(h.theme) : ""}${h.status ? " · " + esc(h.status) : ""} · figures in ${esc(h.currency)}`
+      + (h.currency !== "USD" && h.usd_rate ? ` (USD ${Number(h.usd_rate).toFixed(4)} per ${esc(h.currency)} as of ${esc(h.as_of)})` : "") + ` · as of ${esc(h.as_of_label)}`;
+    const mult = h.paid_in ? (h.value_now || 0) / h.paid_in : null;
+    $("#hist-tiles").innerHTML = [["Invested", cm(h.paid_in)], ["Value now", cm(h.value_now)],
+      ["Multiple", mult == null ? "—" : mult.toFixed(2) + "x"], ["IRR", h.irr_pct == null ? "—" : h.irr_pct.toFixed(1) + "%" + (h.irr_estimated ? "*" : "")]]
+      .map(([l, v]) => `<div class="perf-tile"><div class="pv">${v}</div><div class="pl">${esc(l)}</div></div>`).join("");
+    const fmtM = v => (v < 0 ? "-" : "") + sign(h.currency) + Math.abs(v / 1e6).toFixed(1) + "M";
+    C.timeChart($("#hist-value"), { series: [
+      { name: "Total invested", color: "#2d4a73", step: true, points: h.investments.map(i => [i.date, i.cumulative, i.description]) },
+      { name: "Value", color: "#0f8a7e", step: true, points: h.value.map(p => [p[0], p[1], p[2]]) }] },
+      { fmt: fmtM, empty: "No dated investments or values on file yet." });
+    $("#hist-value-note").textContent = h.value_basis ? "Value from " + h.value_basis + (h.value_now != null ? "; the last point is today's value." : ".") : "";
+    if (h.kind === "fund" && !h.roll_forward.length && (h.by_year || []).length) {
+      // no statements yet: the accounting workbook's calls, income and distributions, by year
+      $("#hist-fin-title").textContent = "Calls, income and distributions by year";
+      C.columnChart($("#hist-fin"), { categories: h.by_year.map(r => r.year),
+        series: [{ name: "Called", color: "#2d4a73", values: h.by_year.map(r => r.call) },
+                 { name: "Income / (loss)", color: "#0f8a7e", values: h.by_year.map(r => r.income) },
+                 { name: "Distributed", color: "#157f4a", values: h.by_year.map(r => r.distribution) }] },
+        { fmt: fmtM, labels: false });
+      $("#hist-fin-note").textContent = "From the accounting workbook; upload the fund's capital-account statements for the quarterly roll-forward.";
+      $("#hist-table-title").textContent = "By year (accounting workbook)";
+      $("#hist-table").innerHTML = '<thead><tr><th class="lbl">Year</th><th>Called</th><th>Income / (loss)</th><th>Distributed</th></tr></thead><tbody>'
+        + h.by_year.map(r => `<tr><td class="lbl">${esc(r.year)}</td><td>${cm(r.call)}</td><td>${cm(r.income)}</td><td>${cm(r.distribution)}</td></tr>`).join("") + "</tbody>";
+    } else if (h.kind === "fund") {
+      $("#hist-fin-title").textContent = "Roll-forward by quarter";
+      $("#hist-table-title").textContent = "Quarterly roll-forward";
+      C.columnChart($("#hist-fin"), { categories: h.roll_forward.map(r => r.period),
+        series: [{ name: "Funding", color: "#2d4a73", values: h.roll_forward.map(r => r.funding) },
+                 { name: "Distributions", color: "#157f4a", values: h.roll_forward.map(r => r.distributions) }] },
+        { fmt: fmtM, empty: "No roll-forward quarters on file — upload the fund's capital-account statements." });
+      $("#hist-fin-note").textContent = "";
+      $("#hist-table").innerHTML = '<thead><tr><th class="lbl">Quarter</th><th>Beginning</th><th>Funding</th><th>Distributions</th><th>Ending balance</th></tr></thead><tbody>'
+        + (h.roll_forward.map(r => `<tr><td class="lbl">${esc(r.period)}</td><td>${cm(r.beginning)}</td><td>${cm(r.funding)}</td><td>${cm(r.distributions)}</td><td><b>${cm(r.ending)}</b></td></tr>`).join("")
+           || '<tr><td colspan="5" class="muted" style="text-align:left">No roll-forward quarters on file.</td></tr>') + "</tbody>";
+    } else {
+      $("#hist-fin-title").textContent = "Revenue and operating expense by quarter";
+      $("#hist-table-title").textContent = "Quarterly figures (the company's own statements)";
+      C.columnChart($("#hist-fin"), { categories: h.financials.map(r => qLabel(r.period)),
+        series: [{ name: "Revenue", color: "#0f8a7e", values: h.financials.map(r => r.revenue) },
+                 { name: "Operating expense", color: "#b7791f", values: h.financials.map(r => r.operating_expense) }] },
+        { fmt: kM, empty: "No approved quarterly statements for this company yet." });
+      const last = h.financials[h.financials.length - 1];
+      $("#hist-fin-note").textContent = last && last.ending_cash != null ? `Ending cash ${qLabel(last.period)}: ${kM(last.ending_cash)}` : "";
+      const k = v => v == null ? '<span class="muted">—</span>' : (v < 0 ? "(" + kM(-v) + ")" : kM(v));
+      $("#hist-table").innerHTML = '<thead><tr><th class="lbl">Quarter</th><th>Revenue</th><th>Operating expense</th><th>Operating cash flow</th><th>CapEx</th><th>Ending cash</th><th>Net monthly burn</th><th>Net runway</th></tr></thead><tbody>'
+        + (h.financials.map(r => `<tr><td class="lbl">${qLabel(r.period)}</td><td>${k(r.revenue)}</td><td>${k(r.operating_expense)}</td><td>${k(r.operating_cash_flow)}</td><td>${k(r.capex)}</td><td><b>${k(r.ending_cash)}</b></td><td>${k(r.net_monthly_burn)}</td><td>${r.net_runway == null ? "—" : r.net_runway + " mo"}</td></tr>`).join("")
+           || '<tr><td colspan="8" class="muted" style="text-align:left">No approved quarterly statements for this company yet — upload its P&amp;L, balance sheet and cash-flow statement.</td></tr>') + "</tbody>";
+    }
+    $("#hist-inv").innerHTML = '<thead><tr><th class="lbl">Date</th><th class="lbl">Investment</th><th>Amount</th><th>Total invested</th><th class="lbl">Source</th></tr></thead><tbody>'
+      + (h.investments.map(i => `<tr><td class="lbl">${esc(i.date)}</td><td class="lbl">${esc(i.description || "—")}${i.estimated ? EST_MARK : ""}</td><td title="${i.amount_usd != null && h.currency !== "USD" ? "USD " + Math.round(i.amount_usd).toLocaleString("en-US") : ""}">${cm(i.amount)}</td><td>${cm(i.cumulative)}</td><td class="lbl small muted">${esc(i.document || "")}${i.also_in.length ? " · also listed in " + i.also_in.length + " other" : ""}</td></tr>`).join("")
+         || '<tr><td colspan="5" class="muted" style="text-align:left">No dated investments on file.</td></tr>') + "</tbody>";
   }
 
   // ---------------- IRR (the workbook's IRR tab) ----------------
@@ -536,7 +699,7 @@
       + (IRR.vintage ? ` — first invested ${IRR.vintage.from || "…"}–${IRR.vintage.to || "…"}` : "");
     $("#irr-tiles").innerHTML = keys.map(k => { const g = IRR.groups[k]; return `<div class="perf-tile">
         <div class="pv">${irrPct(g.irr_pct, g.estimated)}</div>
-        <div class="pl">${esc(g.label)} · ${g.n} · invested ${psMoney(g.invested)} · returned ${psMoney(g.returned)} · held ${psMoney(g.value)}</div></div>`; }).join("")
+        <div class="pl">${esc(g.label)} · ${g.n} · in USD${g.currencies && g.currencies.some(c => c !== "USD") ? ` (${g.currencies.filter(c => c !== "USD").join(", ")} converted at each flow's rate)` : ""} · invested ${psMoney(g.invested)} · returned ${psMoney(g.returned)} · held ${psMoney(g.value)}${(g.no_rate || []).length ? ` · no USD rate: ${g.no_rate.map(esc).join(", ")}` : ""}</div></div>`; }).join("")
       + (IRR_SPLIT === "all" ? "" : `<div class="perf-tile"><div class="pv">${irrPct(IRR.groups.all.irr_pct, IRR.groups.all.estimated)}</div><div class="pl">All investments · ${IRR.groups.all.n}</div></div>`);
     const show = IRR.entities.filter(e => IRR_SPLIT === "all" || keys.some(k => IRR.groups[k].members.includes(e.entity)));
     const tb = $("#irr-body"); tb.innerHTML = "";
@@ -546,16 +709,21 @@
       const tr = document.createElement("tr");
       tr.className = "irr-row";
       tr.innerHTML = `<td class="lbl">${esc(e.name)}${e.name !== e.entity ? `<div class="small muted">${esc(e.entity)}</div>` : ""}</td>
-        <td class="lbl">${e.kind === "fund" ? "Fund" : "Direct"}${e.status === "exited" ? ' <span class="small muted">· exited</span>' : ""}</td>
+        <td class="lbl">${e.kind === "fund" ? "Fund" : "Direct"}${e.status === "exited" ? ' <span class="small muted">· exited</span>' : ""}${ccyTag(e.currency)}</td>
         <td class="lbl">${esc(e.group)}</td>
         <td class="lbl covers"><b>${esc(e.first_date)} → ${esc(e.last_date)}</b>${(e.coverage || []).map(c =>
           `<span class="cov">${esc(c.kind)}${c.n > 1 ? ` ×${c.n}` : ""} ${c.from === c.to ? esc(c.from) : esc(c.from) + "–" + esc(c.to)} · ${esc(c.document)}${c.estimated ? " *" : ""}</span>`).join("")}</td>
-        <td>${psMoney(e.invested)}</td><td>${psMoney(e.returned)}</td><td>${psMoney(e.value)}</td>
+        <td title="${e.usd && e.currency !== "USD" ? "USD " + (e.usd.invested / 1e6).toFixed(1) + "M" : ""}">${cmoney(e.invested, e.currency)}</td>
+        <td title="${e.usd && e.currency !== "USD" ? "USD " + (e.usd.returned / 1e6).toFixed(1) + "M" : ""}">${cmoney(e.returned, e.currency)}</td>
+        <td title="${e.usd && e.currency !== "USD" ? "USD " + (e.usd.value / 1e6).toFixed(1) + "M" : ""}">${cmoney(e.value, e.currency)}</td>
         <td>${mult == null ? "—" : mult.toFixed(2) + "x"}</td><td>${irrPct(e.irr_pct, e.estimated)}</td>`;
       const fl = document.createElement("tr");
       fl.className = "irr-flows"; fl.hidden = true;
-      fl.innerHTML = `<td colspan="9"><table class="flows"><thead><tr><th>Date</th><th>Flow</th><th>Amount (USD)</th><th>Source</th></tr></thead><tbody>` +
-        e.flows.map(f => `<tr><td>${esc(f.date)}</td><td>${esc(f.kind)}</td><td class="${f.amount < 0 ? "out" : "in"}">${(f.amount < 0 ? "-" : "+") + "$" + Math.abs(f.amount).toLocaleString("en-US", { maximumFractionDigits: 0 })}</td><td>${esc(f.source)}${f.estimated ? " (estimate)" : ""}</td></tr>`).join("") +
+      fl.innerHTML = `<td colspan="9"><table class="flows"><thead><tr><th>Date</th><th>Flow</th><th>Amount (${esc(e.currency)})</th>${e.currency !== "USD" ? "<th>In USD (for the groups)</th>" : ""}<th>Source</th></tr></thead><tbody>` +
+        e.flows.map((f, i) => { const u = (e.usd_flows || [])[i];
+          return `<tr><td>${esc(f.date)}</td><td>${esc(f.kind)}</td><td class="${f.amount < 0 ? "out" : "in"}">${(f.amount < 0 ? "-" : "+") + sign(e.currency) + Math.abs(f.amount).toLocaleString("en-US", { maximumFractionDigits: 0 })}</td>`
+            + (e.currency !== "USD" ? `<td class="small muted">${u ? (u.usd < 0 ? "-" : "+") + "$" + Math.abs(u.usd).toLocaleString("en-US", { maximumFractionDigits: 0 }) + (f.usd != null ? " (recorded rate)" : " (quarter rate)") : "—"}</td>` : "")
+            + `<td>${esc(f.source)}${f.estimated ? " (estimate)" : ""}</td></tr>`; }).join("") +
         `</tbody></table>${e.notes.length ? `<div class="small warn-text" style="margin-top:6px">${e.notes.map(esc).join(" · ")}</div>` : ""}</td>`;
       tr.onclick = () => { fl.hidden = !fl.hidden; };
       tb.appendChild(tr); tb.appendChild(fl);
@@ -574,6 +742,8 @@
     if (k === "count") return String(v);
     if (k === "gain_pct") return `<span class="${v < 0 ? "is-neg" : "is-pos"}">${v.toFixed(1)}%</span>`;
     if (k === "alloc_pct") return v.toFixed(1) + "%";
+    if (k === "irr_pct") return `<span class="${v < 0 ? "is-neg" : "is-pos"}">${v.toFixed(1)}%</span>`;
+    if (k === "currencies") return `<span class="small muted">${esc(v)}</span>`;
     if (k === "tvpi" || k === "dpi") return v.toFixed(2) + "x";
     return psMoney(v);
   }
@@ -591,7 +761,7 @@
                            : '<th class="blank"></th>').join("") + "</tr>";
     const body = (rows, keys) => rows.map(r => `<tr class="${r.kind === "total" ? "ps-total" : ""}">` +
       `<td class="lbl">${esc(r.label)}</td>` + S.columns.map(c => !keys.includes(c.key) ? '<td class="blank"></td>' :
-        `<td class="num ${c.key !== "gain_pct" && c.key !== "alloc_pct" && Number(r[c.key]) < 0 ? "is-neg" : ""}">${psCell(c.key, r[c.key])}` +
+        `<td class="num ${!["gain_pct", "alloc_pct", "irr_pct", "currencies"].includes(c.key) && Number(r[c.key]) < 0 ? "is-neg" : ""}">${psCell(c.key, r[c.key])}` +
         `${r[c.key] != null && (r.estimated || []).includes(c.key) ? EST_MARK : ""}</td>`).join("") +
       "</tr>").join("");
     $("#ps-table").innerHTML = `<thead>${head(first, "")}</thead><tbody>${body(S.rows, first)}</tbody>` +
@@ -608,7 +778,8 @@
     PF_ENTITY = row;
     const fields = row.kind === "fund" ? PF.fund_fields : PF.company_fields;
     $("#pf-m-title").textContent = row.investment_name;
-    $("#pf-m-kind").textContent = row.kind === "fund" ? "Fund · " + entity : "Direct investment · " + entity;
+    $("#pf-m-kind").textContent = (row.kind === "fund" ? "Fund · " : "Direct investment · ") + entity
+      + " · figures in " + (row.currency || "USD");
     const det = row.details || {};
     const val = f => {
       const v = det[f.key];
@@ -640,7 +811,8 @@
     row.invested.forEach(c => {
       const tr = document.createElement("tr");
       tr.innerHTML = `<td class="lbl">${esc(c.date)}</td><td class="lbl">${esc(c.description || "-")}</td>
-        <td>${mfmt(c.amount, 3)}</td><td class="lbl small muted">${esc(c.document || c.source)}</td>
+        <td title="${c.amount_usd != null ? "USD " + Number(c.amount_usd).toLocaleString("en-US", { maximumFractionDigits: 0 }) : ""}">${mfmt(c.amount, 3, c.currency)}${c.original ? ` <span class="small muted">(${esc(c.original.currency)} ${Number(c.original.amount).toLocaleString("en-US", { maximumFractionDigits: 0 })})</span>` : ""}</td>
+        <td class="lbl small muted">${esc(c.document || c.source)}${(c.also_in || []).length ? `<div title="${esc(c.also_in.join("\n"))}">also listed in ${c.also_in.length} other document${c.also_in.length === 1 ? "" : "s"} — shown once</div>` : ""}</td>
         <td>${c.id ? `<button class="btn sm danger pf-del" data-id="${c.id}" aria-label="Delete this row">Delete</button>` : ""}</td>`;
       tb.appendChild(tr);
     });

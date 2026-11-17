@@ -60,6 +60,22 @@
           <div class="perf-tile"><div class="pv" id="perf-nav">—</div><div class="pl">Current NAV</div></div>
         </div>
       </section>
+      <section class="report-card" id="dash-card">
+        <div class="report-head">
+          <h3 class="report-title">Portfolio dashboard</h3>
+          <span class="small muted" id="dash-asof"></span>
+        </div>
+        <p class="report-sub">Every fund and direct investment, in USD (other currencies at their recorded rates) —
+          the Portfolio Summary's figures and the IRR section's returns, drawn.</p>
+        <div class="kpi-grid" id="dash-kpis"></div>
+        <section class="grid cols-2">
+          <div class="card"><h2>Capital and value by category</h2><div id="dash-category"></div></div>
+          <div class="card"><h2>Capital allocation</h2>
+            <div class="small muted">By portfolio group</div><div id="dash-alloc-group"></div>
+            <div class="small muted" style="margin-top:6px">Direct vs funds</div><div id="dash-alloc-kind"></div>
+            <div class="small muted" style="margin-top:6px">By status (direct investments)</div><div id="dash-alloc-status"></div></div>
+        </section>
+      </section>
     </div>
 
     <div class="pane" data-pane="summary" data-title="Portfolio Summary">
@@ -69,7 +85,9 @@
           <h3 class="report-title">Portfolio Summary</h3>
           <span class="small muted" id="ps-asof"></span>
         </div>
-        <p class="report-sub">In $M (USD), approved values only. Total gain = realized + unrealized ·
+        <p class="report-sub">In $M (USD) — a fund or company in another currency is converted at its USD rate
+          (the accounting workbook's), and the last column names those currencies. IRR is over the same dated
+          flows as the IRR section, for the investments in each row. Approved values only. Total gain = realized + unrealized ·
           Gain % = total gain ÷ cost · TVPI = total value ÷ cost · DPI = proceeds ÷ cost · AUM = value still
           held. For funds, realized gain is distributions less returned capital. * marks a figure that
           rests on an estimate. Impairment, book value and portfolio group come from each company's details.</p>
@@ -113,6 +131,30 @@
           <tbody id="irr-body"></tbody>
         </table></div>
         <div id="irr-notes" class="small muted ps-notes"></div>
+      </section>
+    </div>
+
+    <div class="pane" data-pane="history" data-title="Company history">
+      <section class="report-card" id="hist-card">
+        <div class="report-head">
+          <h3 class="report-title" id="hist-title">Company history</h3>
+          <div class="dif-controls">
+            <label class="small muted">Fund or company <select id="hist-entity" aria-label="Fund or company"></select></label>
+          </div>
+        </div>
+        <p class="report-sub" id="hist-sub">One fund or company over time: its own quarterly figures, every
+          investment made, and what the holding has been worth — in its own currency.</p>
+        <div class="perf-strip" id="hist-tiles"></div>
+        <section class="grid cols-2">
+          <div class="card"><h2>Invested and value over time</h2><div id="hist-value"></div>
+            <div class="legend" id="hist-value-note"></div></div>
+          <div class="card"><h2 id="hist-fin-title">Revenue and operating expense by quarter</h2><div id="hist-fin"></div>
+            <div class="legend" id="hist-fin-note"></div></div>
+        </section>
+        <h4 class="pf-sub" id="hist-table-title">Quarterly figures</h4>
+        <div class="scroll"><table class="tbl-report" id="hist-table"></table></div>
+        <h4 class="pf-sub">Investments</h4>
+        <div class="scroll"><table class="tbl-report" id="hist-inv"></table></div>
       </section>
     </div>
 
@@ -291,6 +333,16 @@
         <div id="chart-time"></div>
       </section>
       <!-- Charts -->
+      <section class="grid cols-2">
+        <div class="card"><h2>Capital and value by investment type</h2><div id="chart-type-capital"></div>
+          <div class="legend">Paid-in vs total value, USD — current, impaired and exited direct investments, and funds.</div></div>
+        <div class="card"><h2>Realized and unrealized gain by type</h2><div id="chart-type-gain"></div>
+          <div class="legend">Stacked: realized + unrealized = total gain.</div></div>
+        <div class="card"><h2>Multiples by type</h2><div id="chart-type-multiple"></div>
+          <div class="legend">TVPI = total value ÷ paid-in · DPI = proceeds ÷ paid-in.</div></div>
+        <div class="card"><h2>IRR by group</h2><div id="chart-irr-group"></div>
+          <div class="legend">The IRR section's figures, in USD.</div></div>
+      </section>
       <section class="grid cols-2">
         <div class="card"><h2>Value by report type</h2><div id="chart-type"></div>
           <div class="legend">Sums NAV / fair value / carrying value / JV equity of confirmed data.</div></div>

@@ -384,8 +384,41 @@ company's details, commitments, dated investments and budgets — nothing shows 
 something is uploaded or entered again. Taught statement wording and the audit trail stay; a
 backup snapshot is saved first.
 
+**Currencies and exchange rates**
+- Each fund or company has its own currency: its statements' (a euro PCAP makes the fund EUR),
+  else the accounting workbook tab's (*EUR | FX Rate | USD* columns), else USD. The Investment
+  Portfolio, the IRR rows and the history show it in that currency (€, NT$, ₩ …, tagged with the
+  code); the Portfolio Summary, the IRR groups and the dashboard are in USD.
+- Rates come from the **Equity Investments Summary** — the primary source: each transaction's own
+  rate (USD ÷ native, whichever way the workbook quotes it — EUR as USD per euro, TWD as TWD per
+  dollar) and each quarter-end's rate from the *Equity Income/(Loss)* rows. They are stored as the
+  entity's *USD rate by quarter* and used everywhere else, including for the Investment Portfolio
+  workbook's figures, which are in USD.
+- The summaries in both workbooks are in USD: a non-USD entity's figures from them are converted at
+  the rate for the workbook's quarter (the source note says so); its own-currency figures from the
+  tab (commitment, remaining commitment, total funding) are used as they are.
+- The accounting workbook wins: an Investment Portfolio workbook never overwrites a figure, a rate
+  or a dated investment that the accounting workbook set.
+- **One investment, one row:** a round listed by both workbooks (a month-end date and a rounded
+  amount in one, the exact day in the other) is shown once — the accounting workbook's row, noting
+  the other listing. Two equal calls in one document stay two.
+
+**Company history** (its own section)
+Pick a fund or company: what was invested and what the holding has been worth over time (the
+accounting workbook's dated purchases, mark-ups and sales; or money put in plus income less
+distributions; and the roll-forward's balances), its own quarterly figures (revenue, operating
+expense, cash flow, CapEx, ending cash, burn and runway) or a fund's roll-forward, and every
+dated investment with the running total — in its own currency.
+
+**Portfolio dashboard** (Overview) and **investment analysis** (Charts)
+KPI cards (TVPI, DPI, IRR, total gain with realized / unrealized, paid-in, total value), capital
+and value by portfolio group, capital allocation (by group, direct vs funds, by status); and on
+Charts, capital and value by investment type, realized and unrealized gain by type, TVPI and DPI by
+type, and IRR by group — all from the Portfolio Summary and the IRR section, in USD.
+
 **IRR** (its own section — the workbook's IRR tab)
-Money-weighted (XIRR) returns as of a quarter, from dated cash flows in USD: capital calls and
+Money-weighted (XIRR) returns as of a quarter, from dated cash flows — each entity's in its own
+currency, the groups in USD with each flow at its own rate: capital calls and
 investments out (the dated calls entered or imported; failing those a fund's quarterly funding
 from the roll-forward; failing that the total invested on the initial investment date);
 distributions by quarter and exit proceeds in; what is still held (a fund's balance, a held
@@ -408,8 +441,11 @@ it does:
   kind of flow, its date range and count — so a fund whose calls came from the accounting
   workbook (2020–2025) and whose distributions and balance come from this year's statements
   says exactly that, and a call typed in is named as entered by hand.
-- The dated investments on file are checked against the paid-in: when they fall short, the
-  figure is marked `*` and the note asks for the missing calls.
+- The dated investments on file are checked against the paid-in: when they don't add up to it
+  (incomplete, or at the wrong scale), the paid-in stands in on the first call's date, the figure
+  is marked `*` and the note says so — one bad row never blanks the portfolio's figure. Fix or
+  delete the rows in the entity's details. A master workbook's backup tab whose calls don't add
+  up to the summary's funding is named in the upload result and its calls are not imported.
 - Figures from a master workbook are as of the workbook's quarter: a statement for a later
   quarter (a new PCAP, a roll-forward) supersedes them, so uploading a newer statement moves the
   IRR, the balance and the summary. Overview's IRR is the IRR section's fund figure.
