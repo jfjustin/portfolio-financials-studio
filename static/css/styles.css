@@ -34,6 +34,7 @@ header.top {
 /* header content sits on the same centred width as the page below it */
 .top-inner { display: flex; align-items: center; gap: 14px; padding: 13px 22px;
   max-width: 1680px; margin: 0 auto; }
+@media (max-width: 720px) { .top-inner { flex-wrap: wrap; gap: 8px 12px; padding: 10px 16px; } }
 header.top h1 { font-size: 16px; margin: 0; font-weight: 650; letter-spacing: .2px; }
 header.top .sub { color: var(--muted); font-size: 12px; }
 
@@ -348,6 +349,43 @@ sup.man { color: var(--brand); margin-left: 2px; cursor: help; }
 .tbl-ps tbody.ps-mid tr .lbl { background-image: none; }
 .tbl-ps tr.ps-gap td { border: 0; padding: 0; height: 18px; }
 .tbl-ps tr.ps-total td:not(.blank) { font-weight: 700; border-top: 2px solid var(--ink); }
+/* Company history — the one-page summary: facts grid, filters, print */
+.hist-facts { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 0 24px;
+  border-top: 1px solid var(--line); margin-bottom: 6px; }
+.hist-facts .hf { display: flex; justify-content: space-between; gap: 12px; padding: 6px 0;
+  border-bottom: 1px solid var(--line); font-size: 13px; }
+.hist-facts .hf-l { color: var(--muted); }
+.hist-facts .hf-v { font-weight: 600; text-align: right; font-variant-numeric: tabular-nums; }
+.hist-filters { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 14px; margin: 14px 0 4px; }
+.col-pick { position: relative; }
+.col-pick > summary { list-style: none; cursor: pointer; }
+.col-pick > summary::-webkit-details-marker { display: none; }
+.col-pick-list { position: absolute; z-index: 5; top: calc(100% + 4px); left: 0; min-width: 210px;
+  background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, .12); }
+.col-pick-list label { display: flex; align-items: center; gap: 8px; padding: 3px 0; font-size: 13px; white-space: nowrap; }
+@media print {
+  /* "Print one-page summary": only the Company history card, fitted to a page */
+  body.print-hist * { visibility: hidden; }
+  body.print-hist #hist-card, body.print-hist #hist-card * { visibility: visible; }
+  body.print-hist #hist-card { position: absolute; left: 0; top: 0; width: 100%; margin: 0; padding: 0;
+    border: 0; box-shadow: none; font-size: 11px; zoom: var(--print-zoom, 1); }
+  body.print-hist .no-print { display: none !important; }
+  body.print-hist #hist-card .grid.cols-2 { grid-template-columns: 1fr 1fr; gap: 10px; }
+  body.print-hist #hist-card .card { break-inside: avoid; padding: 8px; }
+  body.print-hist #hist-card table { font-size: 10px; }
+  body.print-hist #hist-card .perf-tile { padding: 6px 8px; }
+  body.print-hist #hist-card .perf-tile .pv { font-size: 18px; }
+  @page { size: letter landscape; margin: 10mm; }
+}
+
+/* the IRR Summary box under the table, as in the team's workbook */
+.ps-irr { margin-top: 16px; max-width: 460px; }
+.ps-irr-table { width: 100%; }
+.ps-irr-table th.lbl { font-size: 13px; text-transform: none; letter-spacing: 0; color: var(--ink); }
+.ps-irr-table td.num { font-weight: 700; width: 90px; }
+.ps-irr-table tr.muted td { color: var(--muted); font-weight: 400; }
+.ps-irr p { margin: 6px 0 0; }
 .ps-notes { margin-top: 10px; line-height: 1.6; }
 
 /* ---- Section menu (left, retractable) + selected sections side by side ---- */

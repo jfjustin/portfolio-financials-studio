@@ -66,6 +66,7 @@
     $("#dif-to").addEventListener("change", pickRange);
     $("#irr-asof").addEventListener("change", e => loadIrr(e.target.value));
     $("#hist-entity").addEventListener("change", e => loadHistory(e.target.value));
+    wireHistoryView();
     const irrOpts = () => { IRR_OPTS = { start: $("#irr-from").value, end: $("#irr-to").value, vfrom: $("#irr-vfrom").value, vto: $("#irr-vto").value };
       if (!IRR_OPTS.start !== !IRR_OPTS.end) return; loadIrr($("#irr-asof").value); };
     ["#irr-from", "#irr-to", "#irr-vfrom", "#irr-vto"].forEach(id => $(id).addEventListener("change", irrOpts));
@@ -443,7 +444,7 @@
       minimumFractionDigits: d == null ? 1 : d, maximumFractionDigits: d == null ? 1 : d });
     return n < 0 ? `(${s})` : s;
   };
-  const ccyTag = ccy => (ccy && ccy !== "USD") ? ` <span class="ccy-tag" title="Figures in ${ccy} — converted to USD in the Portfolio Summary and the IRR groups">${esc(ccy)}</span>` : "";
+  const ccyTag = ccy => (ccy && ccy !== "USD") ? ` <span class="ccy-tag" title="Its statements are in ${ccy}: every figure shown is in USD, converted at the accounting workbook's rates">${esc(ccy)}→USD</span>` : "";
   const cmoney = (v, ccy) => v == null ? '<span class="muted">—</span>'
     : (Number(v) < 0 ? "-" : "") + sign(ccy) + Math.abs(Number(v) / 1e6).toLocaleString("en-US", { minimumFractionDigits: 1, maximumFractionDigits: 1 }) + "M";
   const srcTitle = (r, k) => esc((r.sources || {})[k] || "");
@@ -480,7 +481,7 @@
       ].filter(Boolean);
       const stats = parts.length ? parts.join(" · ") : '<span class="muted">—</span>';
       const tr = document.createElement("tr");
-      tr.innerHTML = `<td class="lbl"><a href="#" class="pf-open" data-entity="${esc(f.entity)}">${esc(f.investment_name)}</a>${ccyTag(f.currency)}` +
+      tr.innerHTML = `<td class="lbl"><a href="#" class="pf-open" data-entity="${esc(f.entity)}">${esc(f.investment_name)}</a>${ccyTag(f.native_currency)}` +
           (f.investment_name !== f.entity ? `<div class="small muted">${esc(f.entity)}</div>` : "") + `</td>
         <td class="lbl">${esc(f.investment_type)}</td><td class="lbl">${esc(f.region_sector) || '<span class="muted">—</span>'}</td>
         <td title="${srcTitle(f, "vintage")}">${f.vintage || '<span class="muted">—</span>'}</td>
@@ -501,7 +502,7 @@
       cb.innerHTML = '<tr><td colspan="8" class="muted" style="text-align:left">No direct investments yet.</td></tr>';
     PF.companies.forEach(c => {
       const tr = document.createElement("tr");
-      tr.innerHTML = `<td class="lbl"><a href="#" class="pf-open" data-entity="${esc(c.entity)}">${esc(c.investment_name)}</a>${ccyTag(c.currency)}</td>
+      tr.innerHTML = `<td class="lbl"><a href="#" class="pf-open" data-entity="${esc(c.entity)}">${esc(c.investment_name)}</a>${ccyTag(c.native_currency)}</td>
         <td class="lbl">${esc(c.theme) || '<span class="muted">—</span>'}</td>
         <td class="lbl">${esc(c.current_round) || '<span class="muted">—</span>'}</td>
         <td>${esc(c.last_investment_date || "") || '<span class="muted">—</span>'}</td>
@@ -610,63 +611,141 @@
     HIST = await res.json();
     drawHistory();
   }
+  // the one-page summary's view: a period, and which table columns show (remembered per browser)
+  const HIST_VIEW = { from: "", to: "", hide: new Set() };
+  try { (JSON.parse(localStorage.getItem("pfs.hist.hide") || "[]") || []).forEach(k => HIST_VIEW.hide.add(k)); }
+  catch (e) { /* no storage: every column shows */ }
+  const saveHistHide = () => { try { localStorage.setItem("pfs.hist.hide", JSON.stringify([...HIST_VIEW.hide])); } catch (e) { /* no storage */ } };
+  const quarterOf = d => {
+    const t = String(d || "");
+    if (/^\d{4}-Q[1-4]$/.test(t)) return t;
+    const m = t.match(/^(\d{4})-(\d{2})/);
+    return m ? `${m[1]}-Q${Math.ceil(Number(m[2]) / 3)}` : "";
+  };
+  const inHistView = q => (!HIST_VIEW.from || q >= HIST_VIEW.from) && (!HIST_VIEW.to || q <= HIST_VIEW.to);
   function drawHistory() {
     const pane = $('.pane[data-pane="history"]');
     if (!HIST || !pane || pane.hidden) return;
     const h = HIST, C = window.Charts, cm = v => cmoney(v, h.currency);
     $("#hist-title").textContent = h.name + (h.name !== h.entity ? ` (${h.entity})` : "");
-    $("#hist-sub").innerHTML = `${h.kind === "fund" ? "Fund" : "Direct investment"}${h.theme ? " · " + esc(h.theme) : ""}${h.status ? " · " + esc(h.status) : ""} · figures in ${esc(h.currency)}`
-      + (h.currency !== "USD" && h.usd_rate ? ` (USD ${Number(h.usd_rate).toFixed(4)} per ${esc(h.currency)} as of ${esc(h.as_of)})` : "") + ` · as of ${esc(h.as_of_label)}`;
+    $("#hist-sub").innerHTML = `${h.kind === "fund" ? "Fund" : "Direct investment"}${h.theme ? " · " + esc(h.theme) : ""}${h.status ? " · " + esc(h.status) : ""} · figures in ${esc(h.currency)}${h.native_currency && h.native_currency !== h.currency ? " (converted from " + esc(h.native_currency) + ")" : ""}`
+      + ` · as of ${esc(h.as_of_label)}`;
     const mult = h.paid_in ? (h.value_now || 0) / h.paid_in : null;
     $("#hist-tiles").innerHTML = [["Invested", cm(h.paid_in)], ["Value now", cm(h.value_now)],
       ["Multiple", mult == null ? "—" : mult.toFixed(2) + "x"], ["IRR", h.irr_pct == null ? "—" : h.irr_pct.toFixed(1) + "%" + (h.irr_estimated ? "*" : "")]]
       .map(([l, v]) => `<div class="perf-tile"><div class="pv">${v}</div><div class="pl">${esc(l)}</div></div>`).join("");
+    const fact = f => f.kind === "money" ? cm(f.value) : f.kind === "pct" ? Number(f.value).toFixed(2) + "%"
+      : f.kind === "multiple" ? Number(f.value).toFixed(2) + "x" : esc(String(f.value));
+    $("#hist-facts").innerHTML = (h.facts || []).map(f =>
+      `<div class="hf"><span class="hf-l">${esc(f.label)}</span><span class="hf-v">${fact(f)}</span></div>`).join("")
+      || '<div class="muted small">No details on file.</div>';
+
+    // the period: every quarter with a figure, an investment or a value on file
+    const years = h.by_year || [];
+    const qs = [...new Set([...h.financials.map(r => r.period), ...h.roll_forward.map(r => r.period),
+      ...h.investments.map(i => quarterOf(i.date)), ...h.value.map(p => quarterOf(p[0])),
+      ...years.flatMap(r => [`${r.year}-Q1`, `${r.year}-Q4`])].filter(q => /^\d{4}-Q[1-4]$/.test(q)))].sort();
+    if (HIST_VIEW.from && !qs.includes(HIST_VIEW.from)) HIST_VIEW.from = "";
+    if (HIST_VIEW.to && !qs.includes(HIST_VIEW.to)) HIST_VIEW.to = "";
+    const opts = (first, v) => `<option value="">${first}</option>` +
+      qs.map(q => `<option value="${q}"${q === v ? " selected" : ""}>${qLabel(q)}</option>`).join("");
+    $("#hist-from").innerHTML = opts("the start", HIST_VIEW.from);
+    $("#hist-to").innerHTML = opts("the latest", HIST_VIEW.to);
+    const fin = h.financials.filter(r => inHistView(r.period));
+    const roll = h.roll_forward.filter(r => inHistView(r.period));
+    const byYear = years.filter(r => (!HIST_VIEW.from || `${r.year}-Q4` >= HIST_VIEW.from)
+      && (!HIST_VIEW.to || `${r.year}-Q1` <= HIST_VIEW.to));
+    const inv = h.investments.filter(i => inHistView(quarterOf(i.date)));
+    const val = h.value.filter(p => inHistView(quarterOf(p[0])));
+
     const fmtM = v => (v < 0 ? "-" : "") + sign(h.currency) + Math.abs(v / 1e6).toFixed(1) + "M";
     C.timeChart($("#hist-value"), { series: [
-      { name: "Total invested", color: "#2d4a73", step: true, points: h.investments.map(i => [i.date, i.cumulative, i.description]) },
-      { name: "Value", color: "#0f8a7e", step: true, points: h.value.map(p => [p[0], p[1], p[2]]) }] },
-      { fmt: fmtM, empty: "No dated investments or values on file yet." });
+      { name: "Total invested", color: "#2d4a73", step: true, points: inv.map(i => [i.date, i.cumulative, i.description]) },
+      { name: "Value", color: "#0f8a7e", step: true, points: val.map(p => [p[0], p[1], p[2]]) }] },
+      { fmt: fmtM, empty: "No dated investments or values in this period." });
     $("#hist-value-note").textContent = h.value_basis ? "Value from " + h.value_basis + (h.value_now != null ? "; the last point is today's value." : ".") : "";
-    if (h.kind === "fund" && !h.roll_forward.length && (h.by_year || []).length) {
+
+    // the table: its columns can be picked; a hidden one stays hidden for every company
+    const k = v => v == null ? '<span class="muted">—</span>' : (v < 0 ? "(" + kM(-v) + ")" : kM(v));
+    let cols, first, rows, empty;
+    if (h.kind === "fund" && !h.roll_forward.length && years.length) {
       // no statements yet: the accounting workbook's calls, income and distributions, by year
       $("#hist-fin-title").textContent = "Calls, income and distributions by year";
-      C.columnChart($("#hist-fin"), { categories: h.by_year.map(r => r.year),
-        series: [{ name: "Called", color: "#2d4a73", values: h.by_year.map(r => r.call) },
-                 { name: "Income / (loss)", color: "#0f8a7e", values: h.by_year.map(r => r.income) },
-                 { name: "Distributed", color: "#157f4a", values: h.by_year.map(r => r.distribution) }] },
-        { fmt: fmtM, labels: false });
+      C.columnChart($("#hist-fin"), { categories: byYear.map(r => r.year),
+        series: [{ name: "Called", color: "#2d4a73", values: byYear.map(r => r.call) },
+                 { name: "Income / (loss)", color: "#0f8a7e", values: byYear.map(r => r.income) },
+                 { name: "Distributed", color: "#157f4a", values: byYear.map(r => r.distribution) }] },
+        { fmt: fmtM, labels: false, empty: "Nothing in this period." });
       $("#hist-fin-note").textContent = "From the accounting workbook; upload the fund's capital-account statements for the quarterly roll-forward.";
       $("#hist-table-title").textContent = "By year (accounting workbook)";
-      $("#hist-table").innerHTML = '<thead><tr><th class="lbl">Year</th><th>Called</th><th>Income / (loss)</th><th>Distributed</th></tr></thead><tbody>'
-        + h.by_year.map(r => `<tr><td class="lbl">${esc(r.year)}</td><td>${cm(r.call)}</td><td>${cm(r.income)}</td><td>${cm(r.distribution)}</td></tr>`).join("") + "</tbody>";
+      cols = [["call", "Called", r => cm(r.call)], ["income", "Income / (loss)", r => cm(r.income)],
+              ["distribution", "Distributed", r => cm(r.distribution)]];
+      first = ["Year", r => esc(r.year)]; rows = byYear; empty = "Nothing in this period.";
     } else if (h.kind === "fund") {
       $("#hist-fin-title").textContent = "Roll-forward by quarter";
       $("#hist-table-title").textContent = "Quarterly roll-forward";
-      C.columnChart($("#hist-fin"), { categories: h.roll_forward.map(r => r.period),
-        series: [{ name: "Funding", color: "#2d4a73", values: h.roll_forward.map(r => r.funding) },
-                 { name: "Distributions", color: "#157f4a", values: h.roll_forward.map(r => r.distributions) }] },
-        { fmt: fmtM, empty: "No roll-forward quarters on file — upload the fund's capital-account statements." });
+      C.columnChart($("#hist-fin"), { categories: roll.map(r => r.period),
+        series: [{ name: "Funding", color: "#2d4a73", values: roll.map(r => r.funding) },
+                 { name: "Distributions", color: "#157f4a", values: roll.map(r => r.distributions) }] },
+        { fmt: fmtM, empty: "No roll-forward quarters in this period — upload the fund's capital-account statements." });
       $("#hist-fin-note").textContent = "";
-      $("#hist-table").innerHTML = '<thead><tr><th class="lbl">Quarter</th><th>Beginning</th><th>Funding</th><th>Distributions</th><th>Ending balance</th></tr></thead><tbody>'
-        + (h.roll_forward.map(r => `<tr><td class="lbl">${esc(r.period)}</td><td>${cm(r.beginning)}</td><td>${cm(r.funding)}</td><td>${cm(r.distributions)}</td><td><b>${cm(r.ending)}</b></td></tr>`).join("")
-           || '<tr><td colspan="5" class="muted" style="text-align:left">No roll-forward quarters on file.</td></tr>') + "</tbody>";
+      cols = [["beginning", "Beginning", r => cm(r.beginning)], ["funding", "Funding", r => cm(r.funding)],
+              ["distributions", "Distributions", r => cm(r.distributions)], ["ending", "Ending balance", r => `<b>${cm(r.ending)}</b>`]];
+      first = ["Quarter", r => esc(r.period)]; rows = roll; empty = "No roll-forward quarters in this period.";
     } else {
       $("#hist-fin-title").textContent = "Revenue and operating expense by quarter";
       $("#hist-table-title").textContent = "Quarterly figures (the company's own statements)";
-      C.columnChart($("#hist-fin"), { categories: h.financials.map(r => qLabel(r.period)),
-        series: [{ name: "Revenue", color: "#0f8a7e", values: h.financials.map(r => r.revenue) },
-                 { name: "Operating expense", color: "#b7791f", values: h.financials.map(r => r.operating_expense) }] },
-        { fmt: kM, empty: "No approved quarterly statements for this company yet." });
-      const last = h.financials[h.financials.length - 1];
+      C.columnChart($("#hist-fin"), { categories: fin.map(r => qLabel(r.period)),
+        series: [{ name: "Revenue", color: "#0f8a7e", values: fin.map(r => r.revenue) },
+                 { name: "Operating expense", color: "#b7791f", values: fin.map(r => r.operating_expense) }] },
+        { fmt: kM, empty: "No approved quarterly statements for this company in this period." });
+      const last = fin[fin.length - 1];
       $("#hist-fin-note").textContent = last && last.ending_cash != null ? `Ending cash ${qLabel(last.period)}: ${kM(last.ending_cash)}` : "";
-      const k = v => v == null ? '<span class="muted">—</span>' : (v < 0 ? "(" + kM(-v) + ")" : kM(v));
-      $("#hist-table").innerHTML = '<thead><tr><th class="lbl">Quarter</th><th>Revenue</th><th>Operating expense</th><th>Operating cash flow</th><th>CapEx</th><th>Ending cash</th><th>Net monthly burn</th><th>Net runway</th></tr></thead><tbody>'
-        + (h.financials.map(r => `<tr><td class="lbl">${qLabel(r.period)}</td><td>${k(r.revenue)}</td><td>${k(r.operating_expense)}</td><td>${k(r.operating_cash_flow)}</td><td>${k(r.capex)}</td><td><b>${k(r.ending_cash)}</b></td><td>${k(r.net_monthly_burn)}</td><td>${r.net_runway == null ? "—" : r.net_runway + " mo"}</td></tr>`).join("")
-           || '<tr><td colspan="8" class="muted" style="text-align:left">No approved quarterly statements for this company yet — upload its P&amp;L, balance sheet and cash-flow statement.</td></tr>') + "</tbody>";
+      cols = [["revenue", "Revenue", r => k(r.revenue)], ["operating_expense", "Operating expense", r => k(r.operating_expense)],
+              ["operating_cash_flow", "Operating cash flow", r => k(r.operating_cash_flow)], ["capex", "CapEx", r => k(r.capex)],
+              ["ending_cash", "Ending cash", r => `<b>${k(r.ending_cash)}</b>`], ["net_monthly_burn", "Net monthly burn", r => k(r.net_monthly_burn)],
+              ["net_runway", "Net runway", r => r.net_runway == null ? "—" : r.net_runway + " mo"]];
+      first = ["Quarter", r => qLabel(r.period)]; rows = fin;
+      empty = h.financials.length ? "No quarterly statements in this period."
+        : "No approved quarterly statements for this company yet — upload its P&amp;L, balance sheet and cash-flow statement.";
     }
+    const shown = cols.filter(([key]) => !HIST_VIEW.hide.has(key));
+    $("#hist-cols-list").innerHTML = cols.map(([key, label]) =>
+      `<label><input type="checkbox" data-col="${key}"${HIST_VIEW.hide.has(key) ? "" : " checked"}> ${esc(label)}</label>`).join("");
+    $("#hist-table").innerHTML = `<thead><tr><th class="lbl">${first[0]}</th>` + shown.map(([, label]) => `<th>${esc(label)}</th>`).join("")
+      + "</tr></thead><tbody>" + (rows.map(r => `<tr><td class="lbl">${first[1](r)}</td>` + shown.map(([, , f]) => `<td>${f(r)}</td>`).join("") + "</tr>").join("")
+        || `<tr><td colspan="${shown.length + 1}" class="muted" style="text-align:left">${empty}</td></tr>`) + "</tbody>";
     $("#hist-inv").innerHTML = '<thead><tr><th class="lbl">Date</th><th class="lbl">Investment</th><th>Amount</th><th>Total invested</th><th class="lbl">Source</th></tr></thead><tbody>'
-      + (h.investments.map(i => `<tr><td class="lbl">${esc(i.date)}</td><td class="lbl">${esc(i.description || "—")}${i.estimated ? EST_MARK : ""}</td><td title="${i.amount_usd != null && h.currency !== "USD" ? "USD " + Math.round(i.amount_usd).toLocaleString("en-US") : ""}">${cm(i.amount)}</td><td>${cm(i.cumulative)}</td><td class="lbl small muted">${esc(i.document || "")}${i.also_in.length ? " · also listed in " + i.also_in.length + " other" : ""}</td></tr>`).join("")
-         || '<tr><td colspan="5" class="muted" style="text-align:left">No dated investments on file.</td></tr>') + "</tbody>";
+      + (inv.map(i => `<tr><td class="lbl">${esc(i.date)}</td><td class="lbl">${esc(i.description || "—")}${i.estimated ? EST_MARK : ""}</td><td>${cm(i.amount)}</td><td>${cm(i.cumulative)}</td><td class="lbl small muted">${esc(i.document || "")}${i.also_in.length ? " · also listed in " + i.also_in.length + " other" : ""}</td></tr>`).join("")
+         || `<tr><td colspan="5" class="muted" style="text-align:left">${h.investments.length ? "No investments in this period." : "No dated investments on file."}</td></tr>`) + "</tbody>";
+  }
+  function wireHistoryView() {
+    const redraw = () => drawHistory();
+    $("#hist-from").addEventListener("change", e => { HIST_VIEW.from = e.target.value; redraw(); });
+    $("#hist-to").addEventListener("change", e => { HIST_VIEW.to = e.target.value; redraw(); });
+    $("#hist-cols-list").addEventListener("change", e => {
+      const key = e.target.dataset && e.target.dataset.col;
+      if (!key) return;
+      if (e.target.checked) HIST_VIEW.hide.delete(key); else HIST_VIEW.hide.add(key);
+      saveHistHide(); redraw();
+    });
+    $("#hist-reset").addEventListener("click", () => {
+      HIST_VIEW.from = HIST_VIEW.to = ""; HIST_VIEW.hide.clear(); saveHistHide(); redraw();
+    });
+    $("#hist-print").addEventListener("click", () => {
+      // fit the card to one landscape page: measured at the page's printable width
+      const card = $("#hist-card");
+      card.style.width = "980px";
+      const tall = card.scrollHeight;
+      card.style.width = "";
+      card.style.setProperty("--print-zoom", String(Math.min(1, 680 / Math.max(tall, 1)).toFixed(3)));
+      document.body.classList.add("print-hist");
+      window.print();
+    });
+    window.addEventListener("afterprint", () => {
+      document.body.classList.remove("print-hist");
+      $("#hist-card").style.removeProperty("--print-zoom");
+    });
   }
 
   // ---------------- IRR (the workbook's IRR tab) ----------------
@@ -709,7 +788,7 @@
       const tr = document.createElement("tr");
       tr.className = "irr-row";
       tr.innerHTML = `<td class="lbl">${esc(e.name)}${e.name !== e.entity ? `<div class="small muted">${esc(e.entity)}</div>` : ""}</td>
-        <td class="lbl">${e.kind === "fund" ? "Fund" : "Direct"}${e.status === "exited" ? ' <span class="small muted">· exited</span>' : ""}${ccyTag(e.currency)}</td>
+        <td class="lbl">${e.kind === "fund" ? "Fund" : "Direct"}${e.status === "exited" ? ' <span class="small muted">· exited</span>' : ""}${ccyTag(e.native_currency)}</td>
         <td class="lbl">${esc(e.group)}</td>
         <td class="lbl covers"><b>${esc(e.first_date)} → ${esc(e.last_date)}</b>${(e.coverage || []).map(c =>
           `<span class="cov">${esc(c.kind)}${c.n > 1 ? ` ×${c.n}` : ""} ${c.from === c.to ? esc(c.from) : esc(c.from) + "–" + esc(c.to)} · ${esc(c.document)}${c.estimated ? " *" : ""}</span>`).join("")}</td>
@@ -767,6 +846,17 @@
     $("#ps-table").innerHTML = `<thead>${head(first, "")}</thead><tbody>${body(S.rows, first)}</tbody>` +
       `<tbody class="ps-mid"><tr class="ps-gap"><td colspan="${all.length + 1}"></td></tr>${head(all, "ps-subhead")}</tbody>` +
       `<tbody>${body(S.totals, all)}</tbody>`;
+    // the team's "IRR Summary" box: the IRR column of the group rows, on its own
+    const byLabel = l => S.totals.concat(S.rows).find(r => r.label === l);
+    const irrLine = (label, row, cls) => row ? `<tr class="${cls || ""}"><td class="lbl">${esc(label)}</td>` +
+      `<td class="num ${Number(row.irr_pct) < 0 ? "is-neg" : ""}">${row.irr_pct != null ? Number(row.irr_pct).toFixed(1) + "%" : "—"}` +
+      `${(row.estimated || []).includes("irr_pct") ? EST_MARK : ""}</td></tr>` : "";
+    const core = byLabel("Core Investments"), life = byLabel("Life Sciences Investments");
+    $("#ps-irr").innerHTML = (core || life) ? `<table class="tbl-report ps-irr-table"><thead><tr><th class="lbl">IRR Summary</th><th></th></tr></thead><tbody>` +
+      irrLine("IRR for Core Investments", core) + irrLine("IRR for Life Sciences Investments", life) +
+      irrLine("IRR for all investments", byLabel("Total Investments"), "muted") +
+      `</tbody></table><p class="small muted">Money-weighted (XIRR) over each investment's dated cash flows in USD, as of ${esc(S.as_of_label)} — ` +
+      `the IRR section lists every flow behind these figures.</p>` : "";
     $("#ps-notes").innerHTML = S.notes.length
       ? "Not in the totals or valued differently: " + S.notes.map(n => `<b>${esc(n.name)}</b> — ${esc(n.message)}`).join(" · ")
       : "";
@@ -810,14 +900,16 @@
       tb.innerHTML = '<tr><td colspan="5" class="muted" style="text-align:left">None yet.</td></tr>';
     row.invested.forEach(c => {
       const tr = document.createElement("tr");
-      tr.innerHTML = `<td class="lbl">${esc(c.date)}</td><td class="lbl">${esc(c.description || "-")}</td>
+      tr.innerHTML = `<td class="lbl">${esc(c.date)}${c.date_note ? ` <span class="small muted" title="${esc(c.date_note)}">(date estimated)</span>` : ""}</td><td class="lbl">${esc(c.description || "-")}</td>
         <td title="${c.amount_usd != null ? "USD " + Number(c.amount_usd).toLocaleString("en-US", { maximumFractionDigits: 0 }) : ""}">${mfmt(c.amount, 3, c.currency)}${c.original ? ` <span class="small muted">(${esc(c.original.currency)} ${Number(c.original.amount).toLocaleString("en-US", { maximumFractionDigits: 0 })})</span>` : ""}</td>
         <td class="lbl small muted">${esc(c.document || c.source)}${(c.also_in || []).length ? `<div title="${esc(c.also_in.join("\n"))}">also listed in ${c.also_in.length} other document${c.also_in.length === 1 ? "" : "s"} — shown once</div>` : ""}</td>
         <td>${c.id ? `<button class="btn sm danger pf-del" data-id="${c.id}" aria-label="Delete this row">Delete</button>` : ""}</td>`;
       tb.appendChild(tr);
     });
     $$(".pf-del", tb).forEach(b => b.addEventListener("click", async () => {
-      await fetch("/api/portfolio/calls/" + b.dataset.id, { method: "DELETE" });
+      b.disabled = true;
+      const res = await fetch("/api/portfolio/calls/" + b.dataset.id, { method: "DELETE" });
+      if (!res.ok) { b.disabled = false; toast("Not deleted: " + (await failText(res))); return; }
       await reopenPortfolio();
     }));
   }

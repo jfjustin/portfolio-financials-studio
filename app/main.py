@@ -538,6 +538,15 @@ def portfolio_entity_footprint(entity: str):
     return db.entity_footprint(entity)
 
 
+# declared before the {entity:path} route below, which would otherwise take
+# "calls/123" for the name of a fund or company
+@app.delete("/api/portfolio/calls/{call_id}")
+def delete_portfolio_call(call_id: int, request: Request):
+    if not db.delete_capital_call(call_id, user=auth.current_user(request) or "local"):
+        raise HTTPException(404, "call not found")
+    return {"ok": True}
+
+
 @app.delete("/api/portfolio/{entity:path}")
 def delete_portfolio_entity(entity: str, request: Request):
     """Delete a fund / company: details, parameters, dated investments, budgets,
@@ -547,13 +556,6 @@ def delete_portfolio_entity(entity: str, request: Request):
             or fp["details"]):
         raise HTTPException(404, f"nothing on file for '{entity}'")
     return {"deleted": db.delete_entity(entity, user=auth.current_user(request) or "local")}
-
-
-@app.delete("/api/portfolio/calls/{call_id}")
-def delete_portfolio_call(call_id: int, request: Request):
-    if not db.delete_capital_call(call_id, user=auth.current_user(request) or "local"):
-        raise HTTPException(404, "call not found")
-    return {"ok": True}
 
 
 @app.get("/api/exports/investment-portfolio.xlsx")

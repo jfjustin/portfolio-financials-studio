@@ -813,6 +813,14 @@ def add_capital_call(entity: str, call_date: str, amount: Decimal, description: 
     return cid
 
 
+def stamp_capital_call(call_id: int, source: str, doc_kind: str) -> None:
+    """Name the document a dated investment came from (rows saved before sources
+    were recorded have none)."""
+    with get_engine().begin() as conn:
+        conn.execute(capital_calls.update().where(capital_calls.c.id == call_id)
+                     .values(source=source, doc_kind=doc_kind))
+
+
 def delete_capital_call(call_id: int, user: str = "local") -> bool:
     with get_engine().begin() as conn:
         row = conn.execute(select(capital_calls).where(capital_calls.c.id == call_id)

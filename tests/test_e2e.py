@@ -103,6 +103,7 @@ def main() -> int:
     master_workbook()
     equity_investments_workbook()
     currencies_and_fx()
+    accounting_tabs_cash_flows()
     repeated_rows()
     xirr_roots()
     irr_section()
@@ -1158,9 +1159,14 @@ def portfolio_summary() -> None:
           and near({ln["entity"]: ln for ln in S["lines"]}["Fund 93"]["aum"], 1_200_000),
           "USD rates per quarter: the quarter's own rate converts it, unreadable rates are refused")
     S2 = client.get("/api/portfolio/summary?as_of=2026-Q2").json()
-    check(near({ln["entity"]: ln for ln in S2["lines"]}["Fund 93"]["aum"], 1_200_000)
-          and any(n["entity"] == "Fund 93" and "2026-Q1 USD rate" in n["message"] for n in S2["notes"]),
+    check(near({ln["entity"]: ln for ln in S2["lines"]}["Fund 93"]["aum"], 1_200_000),
+          "a 2026-Q1 statement converts at 2026-Q1's rate, whatever quarter the report is as of")
+    client.post(P + "Fund 93/details", json={"usd_rates": "2025 Q4: 1.05"})
+    S3 = client.get("/api/portfolio/summary?as_of=2026-Q1").json()
+    check(near({ln["entity"]: ln for ln in S3["lines"]}["Fund 93"]["aum"], 1_050_000)
+          and any(n["entity"] == "Fund 93" and "2025-Q4 USD rate" in n["message"] for n in S3["notes"]),
           "a quarter without its own rate uses the latest earlier one, and says so")
+    client.post(P + "Fund 93/details", json={"usd_rates": "2026-Q1=1.2, 2025 Q4: 1.05"})
 
     # cells resting on an estimate are marked, row by row
     S = client.get("/api/portfolio/summary").json()
@@ -1924,25 +1930,28 @@ def currencies_and_fx() -> None:
     rep = client.get("/api/portfolio?as_of=2026-Q2").json()
     f = {x["entity"]: x for x in rep["funds"]}
     fe, ft = f["Fund 95E"], f["Fund 95T"]
-    check(fe["currency"] == "EUR" and D(fe["commitment"]) == 2_000_000 and D(fe["drawn_to_date"]) == 1_500_000
-          and D(fe["future_draw"]) == 500_000
-          and abs(D(fe["investment_balance"]) - D("1916666.67")) < 1
-          and "converted from USD" in fe["sources"]["investment_balance"]
-          and ft["currency"] == "TWD" and D(ft["drawn_to_date"]) == 30_000_000,
-          "the Investment Portfolio shows each fund in its own currency: native figures from the tab, "
-          "the USD balance converted at the workbook quarter's rate")
+    check(fe["currency"] == "USD" and fe["native_currency"] == "EUR" and D(fe["commitment"]) == 2_200_000
+          and D(fe["drawn_to_date"]) == 1_700_000 and D(fe["future_draw"]) == 550_000
+          and D(fe["investment_balance"]) == 2_300_000
+          and ft["currency"] == "USD" and ft["native_currency"] == "TWD" and D(ft["drawn_to_date"]) == 1_000_000,
+          "the Investment Portfolio shows every fund in USD — the accounting summary's figures — "
+          "naming the currency it reports in (EUR, TWD)")
+    calls_usd = [c for c in fe["invested"] if c["source"] == "entered"]
+    check([round(D(c["amount"])) for c in calls_usd] == [1_000_000, 700_000]
+          and all(c["currency"] == "USD" and c["original"]["currency"] == "EUR" for c in calls_usd),
+          "its euro calls are listed in USD at their recorded rates, the euro amount kept alongside")
     R = client.get("/api/irr?as_of=2026-Q2").json()
     ent = {x["entity"]: x for x in R["entities"]}
     e95 = ent["Fund 95E"]
-    native_flows = [(dt.date.fromisoformat(x["date"]), x["amount"]) for x in e95["flows"]]
-    usd_flows = [(dt.date.fromisoformat(x["date"]), x["usd"]) for x in e95["usd_flows"]]
-    check(e95["currency"] == "EUR" and abs(e95["irr_pct"] - round(xirr(native_flows) * 100, 1)) < 0.11
+    usd_flows = [(dt.date.fromisoformat(x["date"]), x["amount"]) for x in e95["flows"]]
+    check(e95["currency"] == "USD" and e95["native_currency"] == "EUR"
+          and abs(e95["irr_pct"] - round(xirr(usd_flows) * 100, 1)) < 0.11
           and [round(x["usd"]) for x in e95["usd_flows"] if x["kind"] == "call"] == [-1_000_000, -700_000]
-          and e95["usd"]["invested"] == 1_700_000 and e95["invested"] == 1_500_000
+          and e95["usd"]["invested"] == 1_700_000 and e95["invested"] == 1_700_000
           and "Fund 95E" in R["groups"]["funds"]["members"] and "EUR" in R["groups"]["funds"]["currencies"],
-          "IRR: the euro fund's own figure in euros; in the USD groups each call at its recorded rate")
-    check(xirr(native_flows) != xirr(usd_flows),
-          "the euro return and the dollar return differ — the rate moved between the calls and today")
+          "IRR in USD: each euro call at its recorded rate, the fund's own return and its part of the groups alike")
+    check([x["amount"] for x in e95["flows"]] == [x["usd"] for x in e95["usd_flows"]],
+          "a fund's own IRR and the USD groups rest on the same flows")
     # the Investment Portfolio workbook (USD) never overrides the accounting workbook
     ip = openpyxl.Workbook()
     sh = ip.active
@@ -1960,7 +1969,7 @@ def currencies_and_fx() -> None:
     rep = client.get("/api/portfolio?as_of=2026-Q2").json()
     fe = {x["entity"]: x for x in rep["funds"]}["Fund 95E"]
     entered = [c for c in fe["invested"] if c["source"] == "entered"]
-    check(D(fe["drawn_to_date"]) == 1_500_000 and D(fe["commitment"]) == 2_000_000
+    check(D(fe["drawn_to_date"]) == 1_700_000 and D(fe["commitment"]) == 2_200_000
           and fe["investment_name"] == "Example Euro Fund" and len(entered) == 2
           and all(c["doc_kind"] == "equity" for c in entered),
           "the Investment Portfolio workbook adds its name but leaves the accounting workbook's figures, "
@@ -1978,6 +1987,194 @@ def currencies_and_fx() -> None:
     dash = wbx["Dashboard"]
     heads = [dash.cell(3, c).value for c in range(1, dash.max_column + 1)]
     check("IRR" in heads and "Currencies (→ USD)" in heads, "and so does the workbook's Dashboard sheet")
+
+
+def accounting_tabs_cash_flows() -> None:
+    """Every layout of the accounting workbook's backup tabs gives its dated cash
+    flows, reconciled with the summary's funding: an "Investment Value" table
+    (no Cash Outlay column) restated after anti-dilution, a note converting into
+    shares (only its interest reconciles it), a conversion whose note is not on
+    file and a repaid note, an undated purchase, a USD-first local-currency
+    table; a EUR fund's distributions table; closed positions by disposition."""
+    import datetime as dt
+    import io
+    from decimal import Decimal
+
+    import openpyxl
+    from fastapi.testclient import TestClient
+
+    from app.main import app
+
+    client = TestClient(app)
+    D = lambda x: Decimal(str(x))
+    dt_ = dt.datetime
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Investments Summary"
+    head = [None, "Investment", "Investment Balance", "Gross Investment / Funding", "Equity Income/(Loss)",
+            "Return of Capital/Other Cash Proceeds", "MTM & Conversion Gain/(Loss)", "Acquisition Impact",
+            "Cumulative Impairment", "Total Commitment", "Remaining Commitment", "Ownership %",
+            "Initial Investment Date", "Impairment Date", "Disposition Date"]
+    for r in ([None, "Equity Investments Summary Workbook"], [None, dt_(2026, 6, 28)], [], head,
+              [None, "Equity Investments"],
+              ["Company 71A (2017)", "Company 71A", 600_000, 2_000_000, 0, 0, 0, 0, -1_400_000, 0, 0, 0.01,
+               dt_(2017, 10, 5), dt_(2025, 6, 25)],
+              ["Company 71B (2019)", "Company 71B", 3_000_000, 2_120_000, 0, 0, 880_000, 0, 0, 0, 0, 0.02,
+               dt_(2019, 11, 27)],
+              ["Company 71C (Pre 2014)", "Company 71C", 0, 75_000, 0, 0, 0, 0, -75_000, 0, 0, None,
+               "Pre 2014", dt_(2023, 3, 3)],
+              ["Company 71E (2015)", "Company 71E", 2_500_000, 2_000_000, 0, 0, 500_000, 0, 0, 0, 0, 0.03,
+               dt_(2015, 1, 10)],
+              [None, "Held-to-Maturity (HTM) Debt Security"],
+              ["Company 71D (2024)", "Company 71D", 500_000, 500_000, 0, 0, 0, 0, 0, 0, 0, 0.04, dt_(2024, 11, 20)],
+              [None, "Funds"],
+              ["Fund 71F (2022)", "Fund 71F", 2_000_000, 1_700_000, 600_000, -300_000, 0, 0, 0, 2_200_000, 550_000,
+               0.02, dt_(2022, 3, 1)],
+              [], [None, "CLOSED INVESTMENTS"], head, [None, "Equity Investments"],
+              ["Closed 71X (2018)", "Closed 71X", 0, 2_000_000, 0, -2_800_000, 800_000, 0, 0, 0, 0, None, None,
+               None, dt_(2021, 9, 20)],
+              ["Closed 71Y (2021)", "Closed 71Y (Closed 71X Acq.)", 0, 0, 0, -1_000_000, 1_000_000, 0, 0, 0, 0,
+               None, None, None, dt_(2023, 12, 11)],
+              [None, "Note Receivable"],
+              [None, "Investment", "Investment Balance", "Gross Investment / Funding", "Accrued Interest",
+               "Return of Capital", "Note Conversion / Repayment", "Cumulative Impairment", "Other",
+               "Initial Investment Date", "Impairment Date", "Disposition Date"],
+              ["Closed 71Z (2016 Convertible Note)", "Closed 71Z", 0, 500_000, 50_000, 0, 0, -550_000, 0,
+               dt_(2016, 9, 28), dt_(2019, 6, 30)],
+              ["Company 71B (2019 Convertible Note)", "Company 71B", 0, 1_000_000, 120_000, 0, -1_120_000, 0, 0,
+               dt_(2019, 11, 27)]):
+        ws.append(r)
+
+    def tab(name: str, rows: list) -> None:
+        t = wb.create_sheet(name)
+        for r in rows:
+            t.append(r)
+    entity = [["Entity Type", "Corporation"], ["Method of Accounting", "Measurement Alternative"], []]
+    tab("Company 71A", [["Company 71A"], []] + entity + [
+        ["Investment", "Investment Value", "Investment Date", "# of Equity Shares", "Price Per Share", "Terms"],
+        ["Original investment"],
+        ["Company 71A, Series A Preferred Shares, 1st tranche", 1_000_000, dt_(2017, 10, 5), 100, 1, "- Conversion into common"],
+        ["Company 71A, Series A Preferred Shares, 2nd tranche", 1_000_000, dt_(2018, 8, 21), 100, 1, "- Conversion into common"],
+        ["Anti-dilution clause triggered"],
+        ["Company 71A, Series A Preferred Shares, 1st tranche", 999_998, dt_(2017, 10, 5), 300, 0.33],
+        ["Company 71A, Series A Preferred Shares, 2nd tranche", 999_998, dt_(2018, 8, 21), 300, 0.33],
+        ["Rounding", 4], ["Partial Impairment", -1_400_000, dt_(2025, 6, 25)], [None, 600_000]])
+    tab("Company 71B", [["Company 71B"], [], ["Method of Accounting", "Note Receivable"],
+        ["Initial Investment Date", dt_(2019, 11, 27)], [],
+        ["Funding", "Amount", "Investment Date"], ["Initial note investment", 1_000_000, dt_(2019, 11, 27)],
+        ["Total Funding", 1_000_000], [], ["Accrued Interest", "Amount"],
+        [dt_(2019, 12, 31), 50_000], [dt_(2020, 9, 30), 70_000], ["Total Accrued Interest", 120_000], [],
+        ["Investment Balance", 1_120_000, "Balance at conversion"], []] + entity + [
+        ["Investment", "Investment Value", "Cash Outlay", "Gain on Conversion", "MTM of Shares", "Investment Date", "Terms"],
+        ["Company 71B Series Pre-A Preferred Shares", 1_300_000, 1_120_000, 180_000, 0, dt_(2020, 11, 19),
+         "- Note conversion to Series Pre-A"],
+        ["Company 71B Series A Preferred Shares", 1_000_000, 1_000_000, 0, 0, dt_(2021, 9, 28), "- Convertible"],
+        ["Company 71B Series A Preferred Shares", 700_000, None, 0, 700_000, dt_(2024, 6, 27), "- Jun'24: mark-up"],
+        [None, 3_000_000, 2_120_000, 180_000, 700_000]])
+    tab("Company 71C", [["Company 71C"], []] + entity + [
+        ["Investment", "Amount", "Investment Date", "# of Equity Shares", "Price Per Share", "Terms"],
+        ["Company 71C Series B Preferred Shares", 75_000, None, 100, 750],
+        ["Impairment", -75_000, dt_(2023, 3, 3)], [None, 0]])
+    tab("Company 71E", [["Company 71E"], []] + entity + [
+        ["Investment", "Total Investment", "Cash Outlay", "Gain/(Loss) on Conversion", "Investment Date", "Terms"],
+        ["Company 71E - Series A Preferred Shares", 1_000_000, 1_000_000, 0, dt_(2015, 1, 10), "- Conversion into common"],
+        ["Company 71E - Series B Preferred Shares", 750_000, 700_000, 50_000, dt_(2016, 4, 27), "- $700K promissory notes"],
+        ["Company 71E - Series C Preferred Shares", 330_000, 300_000, 30_000, dt_(2019, 8, 13),
+         "- Promissory note conversion to Series C"], [None, 2_080_000, 2_000_000, 80_000]])
+    tab("Company 71E (Note)", [["Company 71E"], [], ["Method of Accounting", "Note Receivable"], [],
+        ["Funding", "Amount", "Investment Date"], ["Initial Investment", 300_000, dt_(2019, 4, 24)],
+        ["Total Funding", 300_000], [], ["Accrued Interest", "Amount"], [dt_(2019, 6, 30), 10_000],
+        ["Total Accrued Interest", 10_000], [], ["Conversion to Series C", -310_000], [],
+        ["Method of Accounting", "Note Receivable"], [],
+        ["Funding", "Amount", "Investment Date"], ["Initial Investment", 200_000, dt_(2022, 1, 10)],
+        ["Total Funding", 200_000], [], ["Accrued Interest", "Amount"], [dt_(2022, 3, 14), 2_000],
+        ["Total Accrued Interest", 2_000], [], ["Repayment of Note, 3/14/2022", -202_000]])
+    tab("Company 71D", [["Company 71D"], []] + entity + [
+        ["Investment", "Investment Value (USD)", "FX Rate", "Investment Value (KRW)", "Investment Date", "Terms"],
+        ["Company 71D Series Pre-A Preferred Shares", 500_000, 1400, 700_000_000, dt_(2024, 11, 20)],
+        [None, 500_000, None, 700_000_000]])
+    tab("Fund 71F", [["Fund 71F"], [], ["Entity Type", "Limited Partnership"], ["Method of Accounting", "Equity Method"], [],
+        [None, "EUR", "FX Rate", "USD"], ["Total Commitment", 2_000_000, 1.1, 2_200_000],
+        ["Remaining Commitment", 500_000, 1.1, 550_000], [],
+        ["Funding", "EUR", "FX Rate", "USD", "Investment Date"],
+        ["Initial Investment", 1_000_000, 1.0, 1_000_000, dt_(2022, 3, 1)],
+        ["Capital Call", 500_000, 1.4, 700_000, dt_(2024, 3, 1)], [], ["Total Funding", 1_500_000, None, 1_700_000], [],
+        ["Distributions", "EUR", "FX Rate", "USD"],
+        [dt_(2023, 6, 30), -100_000, 1.1, -110_000, "Return of capital"],
+        [dt_(2025, 6, 30), -160_000, 1.1875, -190_000, "Return of capital"],
+        ["Total Distributions", -260_000, None, -300_000]])
+    tab("Closed 71X", [["Closed 71X"], []] + entity + [
+        ["Investment", "Investment Value", "Cash Outlay", "Investment Date", "Terms"],
+        ["Closed 71X Series B Preferred Shares", 2_000_000, 2_000_000, dt_(2018, 6, 26)], [None, 2_000_000, 2_000_000]])
+    tab("Closed 71Z - Note", [["Closed 71Z"], [], ["Method of Accounting", "Note Receivable"], [],
+        ["Funding", "Amount", "Investment Date"], ["Initial Investment", 500_000, dt_(2016, 9, 28)],
+        ["Total Funding", 500_000], [], ["Accrued Interest", "Amount"], [dt_(2017, 12, 31), 50_000],
+        ["Total Accrued Interest", 50_000]])
+    buf = io.BytesIO()
+    wb.save(buf)
+    res = client.post("/api/upload", files={"files": ("Equity Investments Summary - Jun26 (cash flow test).xlsx",
+                                                      buf.getvalue())}).json()["results"][0]
+    calls = lambda e: sorted((c["call_date"], D(c.get("amount_usd") or c["amount"])) for c in db.get_capital_calls(e))
+    check(res["status"] == "ok"
+          and calls("Company 71A") == [("2017-10-05", 1_000_000), ("2018-08-21", 1_000_000)],
+          "an 'Investment Value' table (no Cash Outlay): the two purchases, not their anti-dilution "
+          "restatement, the rounding or the impairment")
+    check(calls("Company 71B") == [("2019-11-27", 1_000_000), ("2021-09-28", 1_000_000)],
+          "a note converting into shares: the note's cash once, not the conversion again — the summary's "
+          "funding (2.12M) is the cash plus the note's interest")
+    check(calls("Company 71E") == [("2015-01-10", 1_000_000), ("2016-04-27", 700_000), ("2019-04-24", 300_000)],
+          "across a shares tab and a note tab: a conversion whose note is on file is left out, one whose "
+          "note is not stays at the conversion, a repaid note is no investment")
+    check(calls("Company 71D") == [("2024-11-20", 500_000)],
+          "a 'Value (USD) | FX Rate | Value (KRW)' table: the USD amount")
+    check(calls("Company 71C") == [("", 75_000)] and calls("Closed 71Z") == [("2016-09-28", 500_000)],
+          "an undated purchase is kept; a closed note of its own (never converted) comes in with its funding")
+    # a row saved before sources were recorded: a re-read names its file, and adds no twin
+    with db.get_engine().begin() as conn:
+        conn.execute(db.capital_calls.update().where(db.capital_calls.c.entity_name == "Company 71D")
+                     .values(source=None, doc_kind=None))
+    again = client.post(f"/api/submissions/{res['submission_id']}/reread").json()
+    d71 = db.get_capital_calls("Company 71D")
+    check(again["status"] == "ok" and len(d71) == 1 and d71[0]["doc_kind"] == "equity"
+          and d71[0]["source"].startswith("Equity Investments Summary"),
+          "re-reading the workbook names the file of a row saved before sources were recorded, without a twin")
+    client.post("/api/portfolio/Company 71C/details", json={"last_investment_date": "Jan 2015"})
+    client.post("/api/portfolio/Closed 71X/details", json={"theme": "Life Science"})
+    rep = client.get("/api/portfolio?as_of=2026-Q2").json()
+    co = {c["entity"]: c for c in rep["companies"]}
+    g = co["Company 71C"]["invested"]
+    check(len(g) == 1 and g[0]["date"] == "2015-01-01" and "no date in the accounting tab" in g[0]["date_note"],
+          "the undated purchase is dated from the investment date on file, and says so")
+    det = lambda e: co[e]["details"]
+    check(det("Closed 71X")["holding_status"] == "Exit" and det("Closed 71X")["exit_date"] == "2021-09-20"
+          and det("Closed 71Z")["holding_status"] == "Impaired" and det("Company 71A")["impairment_date"] == "2025-06-25"
+          and co["Closed 71Y"]["investment_name"] == "Closed 71Y (Closed 71X Acq.)"
+          and co["Closed 71Y"]["theme"] == "Life Science",
+          "closed positions: disposed of → Exit on the disposition date; written off with none → Impaired; "
+          "a company's acquisition proceeds on their own line take its theme")
+    R = client.get("/api/irr?as_of=2026-Q2").json()
+    ents = {e["entity"]: e for e in R["entities"]}
+    y = ents.get("Closed 71Y")
+    check(y is not None and y["irr_pct"] is None and "Closed 71Y" in R["groups"]["life_sciences"]["members"],
+          "proceeds with no investment of their own: no IRR of their own, but counted in their group")
+    dist = [(f["date"], round(f["amount"])) for f in ents["Fund 71F"]["flows"] if f["kind"] == "distribution"]
+    check(dist == [("2023-06-30", 110_000), ("2025-06-30", 190_000)] and not ents["Fund 71F"]["estimated"],
+          "a fund's distributions are dated as the accounting workbook dates them (in USD), not lumped at the quarter end")
+    wbx = openpyxl.load_workbook(io.BytesIO(client.get("/api/exports/investment-portfolio.xlsx?as_of=2026-Q2").content))
+    dash = wbx["Dashboard"]
+    col_a = [dash.cell(r, 1).value for r in range(1, dash.max_row + 1)]
+    check("IRR Summary" in col_a and "IRR for Core Investments" in col_a and "IRR for Life Sciences Investments" in col_a,
+          "the workbook's Dashboard sheet ends with the IRR Summary (Core, Life Sciences)")
+    va = client.get("/api/history/Company 71A?as_of=2026-Q2").json()
+    check([(p[0], round(p[1])) for p in va["value"] if "value change" in p[2]]
+          == [("2017-10-05", 1_000_000), ("2018-08-21", 2_000_000), ("2025-06-25", 600_000)],
+          "its value over time: the two purchases, then the write-down — the restated rows add nothing")
+    h = client.get("/api/history/Company 71B?as_of=2026-Q2").json()
+    facts = {x["label"]: x["value"] for x in h["facts"]}
+    check(facts.get("First investment") == "2019-11-27" and facts.get("Investments made") == 2
+          and round(facts.get("Total invested", 0)) == 2_120_000
+          and facts.get("Accounting method") == "Measurement Alternative",
+          "the company one-pager's facts: first investment, investments made, total invested, current accounting method")
 
 
 def repeated_rows() -> None:
@@ -2032,10 +2229,12 @@ def history_section() -> None:
           and "value changes" in h["value_basis"],
           "a company's carrying value over time: the accounting workbook's purchases and mark-ups added up")
     f = client.get("/api/history/Fund 95E?as_of=2026-Q2").json()
-    check(f["currency"] == "EUR" and [round(i["cumulative"]) for i in f["investments"]] == [1_000_000, 1_500_000]
+    check(f["currency"] == "USD" and f["native_currency"] == "EUR"
+          and [round(i["cumulative"]) for i in f["investments"]] == [1_000_000, 1_700_000]
           and [round(i["amount_usd"]) for i in f["investments"]] == [1_000_000, 700_000]
-          and any("income" in p[2] for p in f["value"]) and f["value"][-1][2] == "value now",
-          "a euro fund's history in euros: calls with their USD, income from the workbook, today's balance")
+          and any("income" in p[2] for p in f["value"]) and f["value"][-1][2] == "value now"
+          and any(x["label"] == "Drawn to date" and round(x["value"]) == 1_700_000 for x in f["facts"]),
+          "a euro fund's history in USD: calls at their recorded rates, income from the workbook, today's balance")
     a = client.get("/api/history/Company 90A?as_of=2026-Q2").json()
     check([r["period"] for r in a["financials"]][-4:] == ["2025-Q2", "2025-Q3", "2025-Q4", "2026-Q1"]
           and round(a["financials"][-1]["revenue"]) == 75_000,
@@ -2048,6 +2247,7 @@ def deletes_and_odd_names() -> None:
     an entity whose name holds a slash is still reachable."""
     from fastapi.testclient import TestClient
 
+    from app import portfolio
     from app.main import app
 
     client = TestClient(app, raise_server_exceptions=False)
@@ -2058,6 +2258,25 @@ def deletes_and_odd_names() -> None:
     check(r.status_code == 200 and fp["details"] and gone.status_code == 200
           and odd not in db.all_details(),
           "an entity named with a slash can be edited, measured and deleted")
+    # a cash flow entered by hand on a company's "Invested" list can be deleted on
+    # its own (the {entity:path} delete route must not swallow /calls/<id>)
+    client.post("/api/portfolio/Company 91D/details", json={"kind": "direct_investment"})
+    ids = client.post("/api/portfolio/Company 91D/calls", json={
+        "lines": "10/17/2025\tSAFE\t1.000\n12/1/2025\tConvertible Note\t1.155", "scale": 1000000}).json()["ids"]
+    gone = client.delete(f"/api/portfolio/calls/{ids[1]}")
+    left = [c["id"] for c in db.get_capital_calls("Company 91D")]
+    check(gone.status_code == 200 and left == [ids[0]]
+          and client.delete(f"/api/portfolio/calls/{ids[1]}").status_code == 404
+          and any(a["action"] == "capital_call_delete" and a["field"] == "Company 91D"
+                  for a in db.get_audit(limit=10)),
+          "one hand-entered investment row is deleted (once, audited); the other stays")
+    with db.get_engine().begin() as conn:      # a row saved before sources were recorded
+        conn.execute(db.capital_calls.update().where(db.capital_calls.c.id == ids[0])
+                     .values(source=None, doc_kind=None))
+    row = next(c for c in portfolio.report()["companies"] if c["entity"] == "Company 91D")
+    check([c["document"] for c in row["invested"]] == ["source not recorded"],
+          "a row with no recorded source is not labelled 'entered by hand'")
+    client.delete("/api/portfolio/Company 91D")
     bad = client.post("/api/portfolio/Company 9/details", content=b"not json",
                       headers={"Content-Type": "application/json"})
     check(bad.status_code == 500 and "detail" in bad.json(),

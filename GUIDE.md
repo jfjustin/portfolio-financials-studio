@@ -384,31 +384,58 @@ company's details, commitments, dated investments and budgets — nothing shows 
 something is uploaded or entered again. Taught statement wording and the audit trail stay; a
 backup snapshot is saved first.
 
+**The accounting workbook is the source of truth**
+The accounting team's **Equity Investments Summary** workbook is the main source for every figure
+it holds; other files only fill what it doesn't (a theme, an estimated FMV, a fund's region). An
+Investment Portfolio workbook never overwrites a figure, a rate or a dated investment it set.
+- **Dated cash flows** come from each company's and fund's backup tab, whatever its layout: a
+  *Cash Outlay* column; else the *Investment Value* / *Amount* column (an anti-dilution restatement
+  of the same purchase, a write-down or a rounding line is not new money); else the USD column of a
+  *Value (USD) | FX Rate | Value (KRW)* table. A note that converts into shares is counted once, as
+  the note's own funding — the conversion row is left out when that note is on file, and kept
+  (dated at the conversion) when it is not; a note repaid in cash is no investment. A purchase row
+  with no date is dated from the investment date on file, and says so.
+- Each company's dated cash flows must add up to the summary's *Gross Investment / Funding* —
+  within 5%, or exactly once the interest its notes accrued is added (the summary counts a
+  converted note at its balance, interest included). A tab that doesn't is named under the upload
+  and left out.
+- **Closed investments**: one sold or otherwise disposed of is an *Exit*, dated by its
+  *Disposition Date*; one written off with no disposition stays *Impaired*. A closed note that never
+  converted comes in as its own investment. A line of another company's acquisition proceeds —
+  "Company Y (Company X Acq.)" — keeps its full name, takes that company's theme, and counts in its
+  groups' IRR (it has none of its own, having no investment).
+- **Fund distributions** are dated as the accounting tab dates them (in USD as the accounting team
+  converted them); statements add only the quarters after the workbook's.
+
 **Currencies and exchange rates**
-- Each fund or company has its own currency: its statements' (a euro PCAP makes the fund EUR),
-  else the accounting workbook tab's (*EUR | FX Rate | USD* columns), else USD. The Investment
-  Portfolio, the IRR rows and the history show it in that currency (€, NT$, ₩ …, tagged with the
-  code); the Portfolio Summary, the IRR groups and the dashboard are in USD.
-- Rates come from the **Equity Investments Summary** — the primary source: each transaction's own
-  rate (USD ÷ native, whichever way the workbook quotes it — EUR as USD per euro, TWD as TWD per
-  dollar) and each quarter-end's rate from the *Equity Income/(Loss)* rows. They are stored as the
-  entity's *USD rate by quarter* and used everywhere else, including for the Investment Portfolio
-  workbook's figures, which are in USD.
-- The summaries in both workbooks are in USD: a non-USD entity's figures from them are converted at
-  the rate for the workbook's quarter (the source note says so); its own-currency figures from the
-  tab (commitment, remaining commitment, total funding) are used as they are.
-- The accounting workbook wins: an Investment Portfolio workbook never overwrites a figure, a rate
-  or a dated investment that the accounting workbook set.
+- **Every figure is in USD**, the accounting workbook's currency — the Investment Portfolio, the
+  IRR section, the Portfolio Summary and the history alike. A fund or company whose statements or
+  tab are in another currency is tagged with it (*EUR→USD*), and the Portfolio Summary's last
+  column names the currencies each row converts.
+- The accounting summary's figures are in USD and are used as they are. A figure on file in
+  another currency — a euro statement's balance, a tab-only figure — is converted at the entity's
+  rate for that figure's own quarter (a Q1 statement at Q1's rate, whatever quarter the report is
+  as of); each cash flow at the rate recorded for it, else its quarter's. When a quarter has no rate
+  of its own, the latest earlier one is used and the summary says so; with no rate at all, the
+  figure is left out and named.
+- Rates come from the **Equity Investments Summary**: each transaction's own rate (USD ÷ native,
+  whichever way the workbook quotes it — EUR as USD per euro, TWD as TWD per dollar) and each
+  quarter-end's rate from the *Equity Income/(Loss)* rows, stored as the entity's *USD rate by
+  quarter*.
 - **One investment, one row:** a round listed by both workbooks (a month-end date and a rounded
   amount in one, the exact day in the other) is shown once — the accounting workbook's row, noting
-  the other listing. Two equal calls in one document stay two.
+  the other listing. Two equal calls in one document stay two. A row typed in by hand has a
+  **Delete** button.
 
-**Company history** (its own section)
-Pick a fund or company: what was invested and what the holding has been worth over time (the
-accounting workbook's dated purchases, mark-ups and sales; or money put in plus income less
-distributions; and the roll-forward's balances), its own quarterly figures (revenue, operating
-expense, cash flow, CapEx, ending cash, burn and runway) or a fund's roll-forward, and every
-dated investment with the running total — in its own currency.
+**Company history** (its own section) — the one-page summary
+Pick a fund or company: its investment facts (theme, status, round, first and latest investment,
+investments made, total invested, ownership, book and fair value, gain, multiple, impairment and
+exit — a fund's commitment, drawn, distributed, NAV, TVPI, DPI), what was invested and what the
+holding has been worth over time, its own quarterly figures (revenue, operating expense, cash
+flow, CapEx, ending cash, burn and runway — in the currency the company reports in) or a fund's
+roll-forward, and every dated investment with the running total. **Period** narrows the charts and
+tables to a run of quarters; **Columns** picks which figures the table shows (remembered in this
+browser); **Print one-page summary** fits it all on one landscape page (or Save as PDF).
 
 **Portfolio dashboard** (Overview) and **investment analysis** (Charts)
 KPI cards (TVPI, DPI, IRR, total gain with realized / unrealized, paid-in, total value), capital

@@ -159,6 +159,8 @@ _SUMMARY_COLS = {
     "cumulative impairment": "impairment", "total commitment": "commitment",
     "remaining commitment": "future_draw", "ownership": "ownership_pct",
     "initial investment date": "initial_investment_date",
+    "impairment date": "impairment_date", "disposition date": "disposition_date",
+    "note conversion repayment": "converted",
 }
 _SECTION_FUNDS = re.compile(r"^funds?$", re.I)
 _SECTION_CLOSED = re.compile(r"^closed investments$", re.I)
@@ -242,8 +244,8 @@ def _summary_table(ws) -> Optional[dict[str, Any]]:
         name = _text(r[name_col]) if name_col < len(r) else ""
         if not name or re.match(r"total\b|check\b", name, re.I):
             continue
-        if _SECTION_SKIP.match(section) or (closed and notes):
-            continue          # "Other", and closed notes: converted notes of companies listed above
+        if _SECTION_SKIP.match(section):
+            continue          # "Other"
         classified = classify_document(name)
         entity = classified["entity_name"] or re.sub(r"\s*\(.*\)\s*$", "", name).strip()
         if entity.lower() in seen:
@@ -255,6 +257,8 @@ def _summary_table(ws) -> Optional[dict[str, Any]]:
             if v in (None, ""):
                 continue
             got[field] = v
+        if closed and notes and abs(_num(got.get("converted")) or 0) >= 1:
+            continue          # a closed note converted into (or repaid by) a position listed above
         values: dict[str, str] = {}
         if is_fund:
             pairs = (("balance", "investment_balance"), ("funding", "drawn_to_date"),
@@ -286,11 +290,24 @@ def _summary_table(ws) -> Optional[dict[str, Any]]:
             if not is_fund:
                 values["last_investment_date"] = iso
         if not is_fund:
-            values["holding_status"] = ("Exit" if closed else "Impaired" if impairment else "Current")
+            gone = got.get("disposition_date")
+            gone = parse_date(_text(gone)) if gone not in (None, "") else None
+            # a closed position sold or otherwise disposed of is an exit; one written
+            # off with no disposition stays an impaired investment
+            values["holding_status"] = (("Exit" if gone or not impairment else "Impaired") if closed
+                                        else "Impaired" if impairment else "Current")
+            if closed and gone:
+                values["exit_date"] = gone
+            hit = got.get("impairment_date")
+            hit = parse_date(_text(hit)) if hit not in (None, "") and impairment else None
+            if hit:
+                values["impairment_date"] = hit
             if closed:
                 values.setdefault("operating_status", "Inactive")
         if not values:
             continue
+        if name != entity and not re.fullmatch(r"\(\s*(?:pre\s*)?\d{4}\s*\)", name[len(entity):].strip(), re.I):
+            values["display_name"] = name     # e.g. "Company Y (Company X Acq.)": the note says what it is
         commitment = values.pop("commitment", None)
         rec = {"entity": entity, "kind": "fund" if is_fund else "direct_investment",
                "values": values, "commitment": commitment, "calls": [], "sheet": ws.title,
@@ -376,6 +393,7 @@ def _accounting_tabs(ws) -> list[dict[str, Any]]:
         table: Optional[dict[str, Any]] = None
         ccy: Optional[str] = None               # the entity's currency, once a tab table names it
         hdr: Optional[dict[str, Any]] = None    # the current EUR | FX Rate | USD header
+        section: list[dict[str, Any]] = []      # the calls of the latest Funding table (a note)
 
         def rate_from(row: list[Any], h: dict[str, Any]) -> Optional[Decimal]:
             a_, u_ = _num(row[h["native"]]) if h["native"] < len(row) else None, \
@@ -390,8 +408,11 @@ def _accounting_tabs(ws) -> list[dict[str, Any]]:
                 table = None
                 if h["label"] == "funding" and h["date"] is not None:
                     table = {"amount": h["native"], "date": h["date"], "usd": h["usd"]}
+                    section = []
                 elif h["label"].startswith("equity income"):
                     table = {"income": True, "amount": h["native"], "usd": h["usd"]}
+                elif "distribution" in h["label"]:
+                    table = {"distributions": True, "amount": h["native"], "usd": h["usd"]}
                 continue
             if isinstance(a, str) and a.strip():
                 k = _key(a)
@@ -420,7 +441,10 @@ def _accounting_tabs(ws) -> list[dict[str, Any]]:
                         v = _text(v)
                         if _text(v).lower() in ("n/a", "na"):
                             continue
-                    values.setdefault(field, v)
+                    if field in ("accounting_method", "entity_type", "gl_account", "company_code"):
+                        values[field] = v      # a note's section, then the shares it became: the last is current
+                    else:
+                        values.setdefault(field, v)
                     continue
                 if k.startswith("equity income") and not h:
                     table = {"income": True, "amount": 1, "usd": None}
@@ -432,18 +456,45 @@ def _accounting_tabs(ws) -> list[dict[str, Any]]:
                 if k == "funding" and any(_key(c) == "investment date" for c in r if isinstance(c, str)):
                     table = {"amount": 1, "date": next(j for j, c in enumerate(r)
                                                        if isinstance(c, str) and _key(c) == "investment date")}
+                    section = []
+                    continue
+                if k.startswith("repayment") and section and len(r) > 1 and (_num(r[1]) or 0) < 0:
+                    # the note above was repaid in cash: a loan out and back, not an investment
+                    for c in section:
+                        c["repaid"] = True
+                    m_ = re.search(r"\d{1,2}/\d{1,2}/\d{2,4}", a)
+                    when_ = from_text_date(m_.group(0)) if m_ else None
+                    if when_:
+                        events.append({"date": when_, "kind": "distribution", "amount": _amt(abs(_num(r[1])))})
+                    table = None
                     continue
                 if k == "investment" and any(_key(c) == "investment date" for c in r if isinstance(c, str)):
                     heads = {_key(c): j for j, c in enumerate(r) if isinstance(c, str)}
                     outlay = next((j for h_, j in heads.items() if h_.startswith("cash outlay")), None)
+                    basis = "cash"
+                    if outlay is None:
+                        # no Cash Outlay column: a purchase row's own value is the money put
+                        # in — the USD column where a local-currency one sits beside it
+                        outlay = next((j for h_, j in heads.items() if h_.endswith(" usd")), None)
+                        if outlay is None:
+                            outlay = next((j for h_, j in heads.items() if h_ in (
+                                "investment value", "amount", "total investment", "cost")), None)
+                        basis = "value"
                     if outlay is not None:
-                        table = {"amount": outlay, "date": heads["investment date"], "securities": True}
+                        table = {"amount": outlay, "date": heads["investment date"], "securities": True,
+                                 "basis": basis, "terms": heads.get("terms"), "bought": [],
+                                 "conversion": [j for h_, j in heads.items()
+                                                if re.search(r"(gain|loss) on conversion", h_)]}
                     continue
                 if re.match(r"total\b", k):
                     if table and table.get("usd") is not None and k == "total funding":
                         num = _num(r[1]) if len(r) > 1 else None
                         if num is not None:
                             native["drawn_to_date"] = _amt(num)
+                    if k.startswith("total accrued interest") and section and len(r) > 1:
+                        num = _num(r[1])
+                        if num:
+                            section[-1]["interest"] = _amt(num)   # the note's balance at conversion adds it
                     table = None
                     continue
             # a dated row of an equity-income or distributions table
@@ -451,8 +502,11 @@ def _accounting_tabs(ws) -> list[dict[str, Any]]:
                 d = a.date().isoformat() if hasattr(a, "date") else (from_text_date(a) if isinstance(a, str) else None)
                 amount = _num(r[table["amount"]]) if table["amount"] < len(r) else None
                 if d and amount is not None:
-                    events.append({"date": d, "kind": "income" if table.get("income") else "distribution",
-                                   "amount": _amt(amount)})
+                    ev = {"date": d, "kind": "income" if table.get("income") else "distribution",
+                          "amount": _amt(amount)}
+                    if table.get("usd") is not None and table["usd"] < len(r) and _num(r[table["usd"]]) is not None:
+                        ev["amount_usd"] = _amt(_num(r[table["usd"]]))   # as the accounting team converted it
+                    events.append(ev)
                     if table.get("usd") is not None and hdr:
                         q = rate_from(r, hdr)
                         if q:
@@ -461,35 +515,59 @@ def _accounting_tabs(ws) -> list[dict[str, Any]]:
             if table and isinstance(a, str) and a.strip():
                 amount = _num(r[table["amount"]] if table["amount"] < len(r) else None)
                 d = _text(r[table["date"]]) if table["date"] < len(r) else ""
-                if table.get("securities") and d:
+                # the same purchase listed again (e.g. restated after anti-dilution): no new
+                # money and no new value
+                restated = bool(table.get("basis") == "value" and amount and amount > 0 and any(
+                    bd == d and abs(ba - amount) <= ba * Decimal("0.01") for bd, ba in table["bought"]))
+                if table.get("securities") and d and not restated:
                     change = _num(r[1]) if len(r) > 1 else None
                     if change is not None:
                         events.append({"date": d, "kind": "value", "amount": _amt(change)})
-                if amount is None or amount <= 0 or not d:
+                if amount is None or amount <= 0 or not (d or table.get("securities")) or restated:
                     continue
-                # a sale, acquisition, mark-to-market or repayment line is not money put in
-                if table.get("securities") and (
-                        re.search(r"\bsale\b|sold|proceeds|acquisition|mtm|mark|repay|conver|"
-                                  r"distribut|write", a, re.I)
-                        or (_num(r[1]) is not None and _num(r[1]) < 0)):
-                    continue
+                converts = False
+                if table.get("securities"):
+                    terms = (_text(r[table["terms"]])
+                             if table.get("terms") is not None and table["terms"] < len(r) else "")
+                    # not money put in: a sale, acquisition, mark-to-market, repayment,
+                    # write-down or rounding line
+                    if (re.search(r"\bsale\b|sold|proceeds|acquisition|mtm|mark|repay|conver|"
+                                  r"distribut|write|impair|rounding|anti.?dilution", a, re.I)
+                            or (_num(r[1]) is not None and _num(r[1]) < 0)):
+                        continue
+                    table["bought"].append((d, amount))
+                    # a note converting into shares: its cash went in as the note — left
+                    # out once that note's funding is on file (see _settle_calls)
+                    converts = bool(re.search(r"note conversion|conversion of (?:the )?note|converted from",
+                                              terms, re.I)
+                                    or any((_num(r[j]) or 0) != 0 for j in table.get("conversion", [])
+                                           if j < len(r)))
                 amount = Decimal(_amt(amount))
                 desc = re.sub(rf"^{re.escape(entity)}\s*", "", a.strip(), flags=re.I) or a.strip()
                 desc = re.sub(rf"^{re.escape(title)}\s*", "", desc, flags=re.I) or desc
+                desc = desc.lstrip(" ,;:-–") or desc
                 call = {"date": d, "description": desc, "amount": str(amount),
                         "total_raise": None, "pre_money": None, "currency": ccy if table.get("usd") is not None else None,
                         "amount_usd": None}
+                if not d:
+                    call["undated"] = True        # a purchase row with no date: dated from the summary
+                if converts:
+                    call["conversion"] = True
+                elif not table.get("securities"):
+                    call["note"] = True           # a Funding table's row: the money itself
+                    section.append(call)
                 if table.get("usd") is not None:
                     usd = _num(r[table["usd"]]) if table["usd"] < len(r) else None
                     if usd is not None:
                         call["amount_usd"] = _amt(abs(usd))
                         q = (abs(usd) / amount) if amount else None
-                        if q:
+                        if q and d:
                             rates.setdefault(_quarter(d), str(q.quantize(Decimal("0.000001"))))
                 calls.append(call)
-                events.append({"date": d, "kind": "call", "amount": str(amount)})
-                if table.get("securities"):
-                    securities.append((d, desc))
+                if d:
+                    events.append({"date": d, "kind": "call", "amount": str(amount)})
+                    if table.get("securities"):
+                        securities.append((d, desc))
         if own:
             dated = [(t, v) for t, v in own if re.search(r"\d", t)]
             values["ownership_pct"] = (max(dated, key=lambda tv: _text(tv[0]))[1] if dated
@@ -511,6 +589,27 @@ def _accounting_tabs(ws) -> list[dict[str, Any]]:
                     "commitment": commitment, "calls": calls, "events": events, "sheet": ws.title,
                     "doc": "equity"})
     return out
+
+
+def _settle_calls(calls: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], Decimal]:
+    """An entity's tab calls as money put in, and the interest its notes accrued.
+    A note repaid in cash is no investment. A conversion row whose note is funded
+    on file (at its principal, or principal plus interest) is that note's money
+    again and is left out; one whose note is not on file stays, dated at the
+    conversion — the nearest date on file for that money."""
+    def money(c: dict[str, Any]) -> Decimal:
+        return Decimal(c.get("amount_usd") or c["amount"])
+    notes = [c for c in calls if c.get("note") and not c.get("repaid")]
+    out = []
+    for c in calls:
+        if c.get("repaid"):
+            continue
+        if c.get("conversion") and any(
+                abs(money(n) + Decimal(n.get("interest") or 0) * k - money(c)) <= money(c) * Decimal("0.01")
+                for n in notes for k in (0, 1)):
+            continue
+        out.append(c)
+    return out, sum((Decimal(n.get("interest") or 0) for n in notes), Decimal(0))
 
 
 def _quarter(d: str) -> str:
@@ -567,6 +666,7 @@ def read_master(path: Path) -> Optional[dict[str, Any]]:
     by_entity = {r["entity"].lower(): r for r in records}
     has_summary = any(r["sheet"] != "summary" and not r.get("calls") and r["kind"]
                       for r in records) and bool(period)
+    pending: dict[str, dict[str, Any]] = {}     # entity -> the calls of all its tabs
     for t in tab_records:                 # the summary row is the position; the tab adds detail
         rec = by_entity.get(t["entity"].lower())
         if rec is None:
@@ -575,30 +675,47 @@ def read_master(path: Path) -> Optional[dict[str, Any]]:
                 # position the summary leaves out) is detail without a position: skipped
                 skipped.append(f"{t['sheet']} ({t['entity']}: not in the Investments Summary)")
                 continue
+            t["calls"] = _settle_calls(t["calls"])[0]
+            t["commitment_ccy"] = t.get("currency") if t.get("commitment") else None
             records.append(t)
             by_entity[t["entity"].lower()] = t
             continue
         for k, v in t["values"].items():
             rec["values"].setdefault(k, v)
-        for k in ("native", "currency", "rates", "events"):
+        for k in ("native", "currency", "rates"):
             if t.get(k):
                 rec[k] = t[k]
-        if t.get("currency") and t.get("commitment"):
-            rec["commitment"] = t["commitment"]            # the tab's own-currency commitment
-        else:
-            rec["commitment"] = rec["commitment"] or t["commitment"]
+        if t.get("events"):
+            rec["events"] = (rec.get("events") or []) + t["events"]   # e.g. a note tab and a shares tab
+        if not rec["commitment"] and t.get("commitment"):
+            rec["commitment"] = t["commitment"]            # the summary gives none: the tab's
+            rec["commitment_ccy"] = t.get("currency")
         if not rec["calls"] and t["calls"]:
-            # the tab's dated calls must add up to what the summary says was put
-            # in (in USD, the summary's currency); a tab listing the whole fund's
-            # calls, or in other units, is named and left out
-            paid = rec["values"].get("drawn_to_date") if rec["kind"] == "fund" else rec["values"].get("total_invested")
-            total = sum(Decimal(c["amount_usd"]) if c.get("amount_usd") else Decimal(c["amount"])
-                        for c in t["calls"])
-            if paid and Decimal(paid) > 0 and abs(total - Decimal(paid)) > max(Decimal(1), Decimal(paid) * Decimal("0.05")):
-                skipped.append(f"{t['sheet']} ({t['entity']}: its {len(t['calls'])} dated calls add up to "
-                               f"{total:,.0f}, but the summary's funding is {Decimal(paid):,.0f} — calls not imported)")
-            else:
-                rec["calls"] = t["calls"]
+            p = pending.setdefault(t["entity"].lower(), {"calls": [], "sheets": []})
+            p["calls"] += t["calls"]
+            p["sheets"].append(t["sheet"])
+    for key, p in pending.items():
+        # the tabs' dated calls must add up to what the summary says was put in (in
+        # USD, the summary's currency) — with or without the interest its notes
+        # accrued, which a converted note's cost includes; a tab listing the whole
+        # fund's calls, or in other units, is named and left out
+        rec = by_entity[key]
+        calls, interest = _settle_calls(p["calls"])
+        paid = rec["values"].get("drawn_to_date") if rec["kind"] == "fund" else rec["values"].get("total_invested")
+        total = sum((Decimal(c["amount_usd"]) if c.get("amount_usd") else Decimal(c["amount"]) for c in calls),
+                    Decimal(0))
+        if paid and Decimal(paid) > 0:
+            due = Decimal(paid)
+            if (abs(total - due) > max(Decimal(1), due * Decimal("0.05"))
+                    and abs(total + interest - due) > max(Decimal(1), due * Decimal("0.005"))):
+                skipped.append(f"{', '.join(p['sheets'])} ({rec['entity']}: its {len(calls)} dated calls add up to "
+                               f"{total:,.0f}, but the summary's funding is {due:,.0f} — calls not imported)")
+                continue
+        when = rec["values"].get("initial_investment_date")
+        for c in calls:
+            if c.get("undated") and when:
+                c["date"] = when                  # the tab's purchase row has no date of its own
+        rec["calls"] = calls
     if summary_rows:
         reading = read_holdings(summary_rows)
         for h in reading["records"]:
@@ -651,9 +768,11 @@ def apply_master(reading: dict[str, Any], user: str = "local", source: str = "")
         field_ccy = dict(prior.get("field_ccy") or {})
         ccy = rec.get("currency") or prior.get("currency")
         body = dict(rec["values"])
-        for k, v in (rec.get("native") or {}).items():
-            if k != "commitment":
-                body[k] = v                                   # the tab's own-currency figure wins
+        # the summary's figures are in USD, the reporting currency; a figure only
+        # the entity's tab gives is kept in the tab's currency (the report converts it)
+        natives = {k: v for k, v in (rec.get("native") or {}).items()
+                   if k != "commitment" and body.get(k) in (None, "")}
+        body.update(natives)
         # an Investment Portfolio workbook leaves alone what the accounting workbook set
         for k in list(body):
             if _DOC_RANK.get(field_src.get(k), 0) > _DOC_RANK[doc]:
@@ -668,7 +787,7 @@ def apply_master(reading: dict[str, Any], user: str = "local", source: str = "")
                 continue
             field_src[k] = doc
             if k in _money_fields():
-                field_ccy[k] = (ccy if k in (rec.get("native") or {}) and ccy else "USD")
+                field_ccy[k] = (ccy if k in natives and ccy else "USD")
         # the workbook's quarter, and which fields it set: a statement for a
         # later quarter supersedes those fields (see portfolio.workbook_dated)
         stamped: dict[str, Any] = {**values, "kind": rec["kind"], "field_src": field_src,
@@ -695,7 +814,7 @@ def apply_master(reading: dict[str, Any], user: str = "local", source: str = "")
                                    user=user)
             fs = dict(det.get("field_src") or {})
             fc = dict(det.get("field_ccy") or {})
-            fs["commitment"], fc["commitment"] = doc, (ccy if (rec.get("currency") and doc == "equity") else "USD")
+            fs["commitment"], fc["commitment"] = doc, (rec.get("commitment_ccy") or "USD")
             db.set_details(entity, {"field_src": fs, "field_ccy": fc}, user=user)
             det = db.get_details(entity)
         # dated investments: one investment is one row, whichever workbook lists it
@@ -710,17 +829,24 @@ def apply_master(reading: dict[str, Any], user: str = "local", source: str = "")
             return amount * r if r else None
 
         for c in rec.get("calls", []):
-            d = parse_date(c["date"])
-            if d is None:
+            d = parse_date(c["date"]) if c.get("date") else None
+            if d is None and not c.get("undated"):
                 continue
+            d = d or ""                       # undated: the report dates it from the details on file
             amount = Decimal(c["amount"])
             cur = c.get("currency") or ("USD" if doc == "portfolio" else None)
-            new_usd = usd_of(amount, cur, c.get("amount_usd"), d)
+            new_usd = usd_of(amount, cur, c.get("amount_usd"), d) if d else (
+                amount if (cur or det.get("currency") or "USD") == "USD" else None)
             src_name = source or "master workbook"
-            if any(x["call_date"] == d and Decimal(x["amount"]) == amount and (x.get("source") or "") in (src_name, "")
-                   for x in on_file):
-                continue                                      # this workbook's row, already on file (a re-read)
-            twin = next((x for x in on_file if (x.get("source") or "") != src_name and same_investment(
+            same = next((x for x in on_file if x["call_date"] == d and Decimal(x["amount"]) == amount
+                         and (x.get("source") or "") in (src_name, "")), None)
+            if same is not None:                              # this workbook's row, already on file (a re-read)
+                if not same.get("source") and same.get("id"):
+                    db.stamp_capital_call(same["id"], src_name, doc)    # saved before sources were recorded
+                    same["source"], same["doc_kind"] = src_name, doc
+                continue
+            twin = None if not d else next((x for x in on_file if x["call_date"] and (x.get("source") or "") != src_name
+                                            and same_investment(
                 x["call_date"], usd_of(Decimal(x["amount"]), x.get("currency"), x.get("amount_usd"), x["call_date"]),
                 d, new_usd)), None)
             if twin is not None:

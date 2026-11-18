@@ -93,6 +93,7 @@
           rests on an estimate. Impairment, book value and portfolio group come from each company's details.</p>
         <!-- one table in two blocks, so the columns they share line up -->
         <div class="scroll"><table class="tbl-report tbl-ps" id="ps-table"></table></div>
+        <div id="ps-irr" class="ps-irr"></div>
         <div id="ps-notes" class="small muted ps-notes"></div>
       </section>
     </div>
@@ -138,13 +139,25 @@
       <section class="report-card" id="hist-card">
         <div class="report-head">
           <h3 class="report-title" id="hist-title">Company history</h3>
-          <div class="dif-controls">
+          <div class="dif-controls no-print">
             <label class="small muted">Fund or company <select id="hist-entity" aria-label="Fund or company"></select></label>
+            <button class="btn sm" id="hist-print" title="One page: the investment facts, charts and tables below, as filtered">Print one-page summary</button>
           </div>
         </div>
         <p class="report-sub" id="hist-sub">One fund or company over time: its own quarterly figures, every
-          investment made, and what the holding has been worth — in its own currency.</p>
+          investment made, and what the holding has been worth.</p>
         <div class="perf-strip" id="hist-tiles"></div>
+        <h4 class="pf-sub">Investment facts</h4>
+        <div class="hist-facts" id="hist-facts"></div>
+        <div class="hist-filters no-print" id="hist-filters">
+          <span class="period-group" title="Which quarters the charts and tables below show">
+            <span class="pg-name">Period</span><span class="pg-what">charts and tables below</span>
+            <select id="hist-from" aria-label="Period start"></select> to
+            <select id="hist-to" aria-label="Period end"></select></span>
+          <details class="col-pick" id="hist-cols"><summary class="btn sm">Columns</summary>
+            <div class="col-pick-list" id="hist-cols-list"></div></details>
+          <button class="btn sm" id="hist-reset">Show everything</button>
+        </div>
         <section class="grid cols-2">
           <div class="card"><h2>Invested and value over time</h2><div id="hist-value"></div>
             <div class="legend" id="hist-value-note"></div></div>
