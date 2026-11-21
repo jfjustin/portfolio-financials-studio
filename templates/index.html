@@ -141,6 +141,7 @@
           <h3 class="report-title" id="hist-title">Company history</h3>
           <div class="dif-controls no-print">
             <label class="small muted">Fund or company <select id="hist-entity" aria-label="Fund or company"></select></label>
+            <span class="amt-toggle" role="group" aria-label="Show amounts in" title="Every figure in US dollars, or each fund's and company's own currency"><button type="button" data-amt="usd">US dollars</button><button type="button" data-amt="orig">Original currency</button></span>
             <button class="btn sm" id="hist-print" title="One page: the investment facts, charts and tables below, as filtered">Print one-page summary</button>
           </div>
         </div>
@@ -186,19 +187,22 @@
               <span class="pg-name">First invested</span><span class="pg-what">which entities are included</span>
               <input id="pf-vfrom" type="number" min="1990" max="2100" placeholder="from" aria-label="First invested from"> –
               <input id="pf-vto" type="number" min="1990" max="2100" placeholder="to" aria-label="First invested to"></span>
+            <span class="amt-toggle" role="group" aria-label="Show amounts in" title="Every figure in US dollars, or each fund's and company's own currency"><button type="button" data-amt="usd">US dollars</button><button type="button" data-amt="orig">Original currency</button></span>
             <a class="btn sm primary" id="pf-export" href="/api/exports/investment-portfolio.xlsx">Download xlsx</a>
           </div>
         </div>
-        <p class="report-sub">In $M, approved values only. Investment Balance is the roll-forward's ending
+        <p class="report-sub">In millions, every figure in US dollars — the small box names each fund's
+          and company's own currency, and <i>Original currency</i> shows its own figures (totals stay in
+          US dollars). Approved values only. Investment Balance is the roll-forward's ending
           balance; Drawn, Distribution and Future Draw come from the statements (else the quarters on
           file); Latest Stats from the fund's schedule of investments. Click a name to enter its details —
           type, vintage, fund size, region / sector, accounting data and dated calls.</p>
         <h4 class="pf-sub">Fund investments</h4>
-        <div class="scroll"><table class="tbl-report tbl-pf">
-          <thead><tr><th class="lbl">Fund</th><th class="lbl">Type</th><th class="lbl">Region / Sector</th>
-            <th>Vintage</th><th>Fund Size</th><th>Commitment</th><th>Drawn to Date</th>
-            <th>Future Draw</th><th>Distribution</th><th>Drawn / Commit</th><th>Investment Balance</th>
-            <th>Latest Stats</th><th class="pf-win">Drawn in window</th><th class="pf-win">Distributed in window</th></tr></thead>
+        <div class="scroll"><table class="tbl-report tbl-pf" id="pf-funds-table">
+          <thead><tr><th class="lbl" data-cf="text">Fund</th><th class="lbl" data-cf="text">Type</th><th class="lbl" data-cf="text">Region / Sector</th>
+            <th data-cf="num">Vintage</th><th data-cf="money">Fund Size</th><th data-cf="money">Commitment</th><th data-cf="money">Drawn to Date</th>
+            <th data-cf="money">Future Draw</th><th data-cf="money">Distribution</th><th data-cf="num">Drawn / Commit</th><th data-cf="money">Investment Balance</th>
+            <th data-cf="none">Latest Stats</th><th class="pf-win" data-cf="none">Drawn in window</th><th class="pf-win" data-cf="none">Distributed in window</th></tr></thead>
           <tbody id="pf-funds"></tbody>
         </table></div>
         <h4 class="pf-sub">Direct investments</h4>
@@ -209,10 +213,10 @@
           <label class="btn sm primary">Import holdings sheet<input type="file" id="pf-holdings" accept=".csv,.xlsx,.xlsm" hidden></label>
           <div id="pf-holdings-result" class="muted" role="status"></div>
         </div>
-        <div class="scroll"><table class="tbl-report tbl-pf">
-          <thead><tr><th class="lbl">Company</th><th class="lbl">Theme</th><th class="lbl">Round</th>
-            <th>Most Recent Investment</th><th>Total Invested</th><th>Projected</th>
-            <th>Total Value</th><th class="lbl">Status</th><th class="pf-win">Invested in window</th></tr></thead>
+        <div class="scroll"><table class="tbl-report tbl-pf" id="pf-companies-table">
+          <thead><tr><th class="lbl" data-cf="text">Company</th><th class="lbl" data-cf="text">Theme</th><th class="lbl" data-cf="text">Round</th>
+            <th data-cf="date">Most Recent Investment</th><th data-cf="money">Total Invested</th><th data-cf="money">Projected</th>
+            <th data-cf="money">Total Value</th><th class="lbl" data-cf="text">Status</th><th class="pf-win" data-cf="none">Invested in window</th></tr></thead>
           <tbody id="pf-companies"></tbody>
         </table></div>
         <div class="perf-strip">

@@ -112,6 +112,12 @@ async def _unexpected(request: Request, exc: Exception):
 def _startup() -> None:
     auth.check_configuration()
     db.init_db()
+    # a workbook an older reader read is read again, so a fix reaches the data on file
+    from .pipeline import refresh_master_workbooks
+    try:
+        refresh_master_workbooks()
+    except Exception:                               # noqa: BLE001 — never block startup
+        logging.getLogger("pfs").exception("re-reading the stored workbooks failed")
 
 
 # --------------------------------------------------------------------------
@@ -504,11 +510,15 @@ async def set_portfolio_details(entity: str, request: Request):
 @app.post("/api/portfolio/{entity:path}/calls")
 async def add_portfolio_calls(entity: str, request: Request):
     """Add dated capital calls / investments: one {date, description, amount}, or
-    pasted lines "date <tab> description <tab> amount" (scale 1000000 for $M)."""
+    pasted lines "date <tab> description <tab> amount" (scale 1000000 for $M), in
+    `currency` — US dollars unless the form says otherwise."""
     from .models import parse_number
     body = await request.json()
     user = auth.current_user(request) or "local"
     scale = Decimal(str(body.get("scale") or 1))
+    ccy = str(body.get("currency") or "USD").strip().upper()
+    if not re.fullmatch(r"[A-Z]{3}", ccy):
+        raise HTTPException(400, "currency must be a three-letter code, e.g. USD or EUR")
     lines = ([str(body["lines"])] if body.get("lines") else [])
     rows = []
     if lines:
@@ -527,7 +537,7 @@ async def add_portfolio_calls(entity: str, request: Request):
         if date_iso is None or amount is None:
             raise HTTPException(400, "date and amount are required")
         rows.append((date_iso, str(body.get("description") or ""), amount))
-    ids = [db.add_capital_call(entity, d, abs(a) * scale, desc, user=user, source="entered by hand")
+    ids = [db.add_capital_call(entity, d, abs(a) * scale, desc, user=user, source="entered by hand", currency=ccy)
            for d, desc, a in rows]
     return {"added": len(ids), "ids": ids}
 

@@ -199,11 +199,18 @@ def native_details(det: dict, ccy: str, as_of: str) -> tuple[dict, list[str], di
     """The entity's details with every money figure in the reporting currency
     `ccy`: a figure on file in another currency is converted at the entity's
     USD rate for the workbook's quarter — a local-currency figure into USD, or a
-    USD one into the entity's own currency. Returns (details, notes, {field: how})."""
+    USD one into the entity's own currency — where the accounting tab gives the
+    figure in that currency, its own figure. Returns (details, notes, {field: how})."""
     fc = det.get("field_ccy") or {}
+    own = (det.get("currency") or "USD").upper()
+    exact = det.get("native_values") or {}
     out, notes, how = dict(det), [], {}
     for field, src in fc.items():
         if field == "commitment" or src in (None, "", "native", ccy) or out.get(field) in (None, ""):
+            continue
+        if src == "USD" and ccy == own and exact.get(field) not in (None, ""):
+            out[field] = exact[field]
+            how[field] = f"the accounting workbook's own {ccy} figure"
             continue
         v = _d(out.get(field))
         when = det.get("workbook_as_of") or as_of
@@ -359,6 +366,17 @@ def first_invested_year(row: dict) -> Optional[int]:
     return int(row["vintage"]) if row.get("vintage") else None
 
 
+def _window(invested: list[dict], quarters: list[dict], lo: str, hi: str) -> dict[str, Any]:
+    """Investments made, and a fund's funding and distributions, within a window."""
+    inside = [c for c in invested if lo <= c["date"] <= hi]
+    return {"invested": sum((c["amount"] for c in inside), Decimal(0)), "n_calls": len(inside),
+            "drawn": sum((Decimal(str(q["funding"] or 0)) for q in quarters), Decimal(0)) if quarters else None,
+            "distributed": sum((abs(Decimal(str(q.get("return_of_capital") or 0)))
+                                + abs(Decimal(str(q.get("dividends") or 0))) for q in quarters),
+                               Decimal(0)) if quarters else None,
+            "quarters": [q["period_label"] for q in quarters]}
+
+
 def with_window(rep: dict, start: Optional[str], end: Optional[str]) -> dict:
     """The report with each entity's activity within a window of quarters:
     dated investments made, and (funds) the roll-forward's funding and
@@ -373,18 +391,18 @@ def with_window(rep: dict, start: Optional[str], end: Optional[str]) -> dict:
         if re.fullmatch(r"20\d{2}-Q[1-4]", q["period_label"] or "") and _order(start) <= _order(q["period_label"]) <= _order(end):
             quarters_by.setdefault(q["entity_name"], []).append(q)
     out = dict(rep)
+    stmt = rep.get("statement_currency") or {}
     for key in ("funds", "companies"):
         out[key] = []
         for row in rep[key]:
             r = dict(row)
-            inside = [c for c in row["invested"] if lo <= c["date"] <= hi]
-            qs = quarters_by.get(row["entity"], [])
-            r["window"] = {
-                "invested": sum((c["amount"] for c in inside), Decimal(0)), "n_calls": len(inside),
-                "drawn": sum((Decimal(str(q["funding"] or 0)) for q in qs), Decimal(0)) if qs else None,
-                "distributed": sum((abs(Decimal(str(q.get("return_of_capital") or 0)))
-                                    + abs(Decimal(str(q.get("dividends") or 0))) for q in qs), Decimal(0)) if qs else None,
-                "quarters": [q["period_label"] for q in qs]}
+            qs, ccy = quarters_by.get(row["entity"], []), stmt.get(row["entity"], "USD")
+            # a statement in another currency: its quarters in USD, like every figure
+            r["window"] = _window(row["invested"], roll_forward_usd(qs, row.get("details") or {}, ccy), lo, hi)
+            if row.get("native"):
+                own = row["native"]["currency"]
+                r["native"] = {**row["native"], "window": _window(row["native"]["invested"],
+                                                                  qs if ccy == own else [], lo, hi)}
             out[key].append(r)
     out["window"] = {"start": start, "end": end}
     return out
@@ -478,6 +496,7 @@ def report(as_of: Optional[str] = None) -> dict[str, Any]:
             currency_by[f["entity_name"]] = f["currency"]
     no_rate: dict[str, set[str]] = {}
     fx_notes: dict[str, set[str]] = {}
+    facts_raw = dict(facts)            # each in its own currency: the original figures
     for key, f in list(facts.items()):
         cur = (f.get("currency") or "USD").upper()
         if cur == "USD" or key[1] in ("ownership_pct", "portfolio_investments"):
@@ -493,13 +512,18 @@ def report(as_of: Optional[str] = None) -> dict[str, Any]:
                 fx_notes.setdefault(key[0], set()).add(how)
     conversions: dict[str, tuple[list[str], dict[str, str]]] = {}
 
-    def native(name: str, ccy: str = "USD") -> tuple[dict, dict]:
+    def native(name: str, ccy: str = "USD") -> tuple[dict, dict, dict]:
         det = details.get(name, {})
         out, notes, how = native_details(det, ccy, as_of)
-        conversions[name] = (notes, how)
+        if ccy == "USD":
+            conversions[name] = (notes, how)
         prof = dict(profiles.get(name, {}))
         src = (det.get("field_ccy") or {}).get("commitment")
-        if src not in (None, "", ccy) and _d(prof.get("commitment")):
+        exact = (det.get("native_values") or {}).get("commitment")
+        if src == "USD" and exact and ccy == (det.get("currency") or "USD").upper():
+            prof["commitment"] = exact                     # the accounting tab's own figure
+            how["commitment"] = f"the accounting workbook's own {ccy} figure"
+        elif src not in (None, "", ccy) and _d(prof.get("commitment")):
             r = usd_rate_at(det, det.get("workbook_as_of") or as_of)
             if r and src == "USD":
                 prof["commitment"] = str((_d(prof["commitment"]) / r).quantize(Decimal("0.01")))
@@ -507,12 +531,40 @@ def report(as_of: Optional[str] = None) -> dict[str, Any]:
             elif r and ccy == "USD":
                 prof["commitment"] = str((_d(prof["commitment"]) * r).quantize(Decimal("0.01")))
                 how["commitment"] = f"converted from {src} at {r} USD/{src}"
-        return out, prof
+        return out, prof, how
+
+    def own_view(name: str, own: str, build) -> dict:
+        """The row in the entity's own currency, for "view the original figures":
+        its statements', accounting tab's and calls' own figures; a figure known
+        only in US dollars is converted at its quarter's rate and named in
+        `converted`."""
+        det_o, prof_o, how = native(name, own)
+        det = details.get(name, {})
+        facts_o = {}
+        for key, f in facts_raw.items():
+            if key[0] != name:
+                continue
+            cur = (f.get("currency") or own).upper()
+            if cur == own or key[1] in ("ownership_pct", "portfolio_investments"):
+                facts_o[key] = f
+            elif cur == "USD" and usd_rate_at(det, f["period"]):
+                r = usd_rate_at(det, f["period"])
+                facts_o[key] = {**f, "value": f["value"] / r, "currency": own}
+                how[key[1]] = f"converted from USD at {r} USD/{own}"
+        row = build(det_o, prof_o, facts_o)
+        keep = ("fund_size", "commitment", "drawn_to_date", "future_draw", "distribution_to_date",
+                "investment_balance", "returned_capital", "stats", "total_invested",
+                "projected_investment", "total_value", "exit", "invested", "invested_later",
+                "invested_superseded")
+        # its details (the dated events stay on the row's own details, in the tab's currency)
+        return {"currency": own, **{k: row[k] for k in keep if k in row},
+                "details": {k: v for k, v in det_o.items() if k != "history"},
+                "converted": sorted(k for k, t in how.items() if t.startswith("converted"))}
 
     funds = []
     for name in sorted((k for k, v in kinds.items() if v == "fund"), key=_natural):
         own = currency_by.get(name) or details.get(name, {}).get("currency") or "USD"
-        det_n, prof_n = native(name)
+        det_n, prof_n, _how = native(name)
         own_q = quarters_by.get(name, [])
         qs_usd = roll_forward_usd(own_q, details.get(name, {}), currency_by.get(name, "USD"))
         if len(qs_usd) < len(own_q):
@@ -528,14 +580,25 @@ def report(as_of: Optional[str] = None) -> dict[str, Any]:
                      "unread": {sub["id"] for sub in unread.get(name, [])},
                      "rf_trusted": rf_trusted, "names": names, "currency": "USD"})
         row["currency"], row["native_currency"] = "USD", own
+        if own != "USD":
+            stmt = currency_by.get(name, own)
+            row["native"] = own_view(name, own, lambda d, p, f: _fund(
+                name, own_q if stmt == own else [], d, p, f,
+                [c for c in calls if c["entity_name"] == name], until, waiting.get(name, []),
+                {"files": files_by.get(name, []), "own_statement": name in own_statement,
+                 "unread": {sub["id"] for sub in unread.get(name, [])},
+                 "rf_trusted": rf_trusted, "names": names, "currency": own}))
         funds.append(row)
     companies = []
     for name in sorted((k for k, v in kinds.items() if v == "direct_investment"), key=_natural):
-        det_n, _p = native(name)
-        row = _company(name, det_n, facts, [c for c in calls if c["entity_name"] == name], until,
-                       files_by.get(name, []), "USD")
+        det_n, _p, _how = native(name)
+        own_calls = [c for c in calls if c["entity_name"] == name]
+        row = _company(name, det_n, facts, own_calls, until, files_by.get(name, []), "USD")
         row["currency"] = "USD"
-        row["native_currency"] = details.get(name, {}).get("currency") or "USD"
+        row["native_currency"] = own = details.get(name, {}).get("currency") or "USD"
+        if own != "USD":
+            row["native"] = own_view(name, own, lambda d, p, f: _company(
+                name, d, f, own_calls, until, files_by.get(name, []), own))
         companies.append(row)
     for row in funds + companies:
         row["fx_notes"] = sorted(fx_notes.get(row["entity"], set()))
@@ -738,7 +801,7 @@ def _fund(name: str, quarters: list[dict], det: dict, prof: dict, facts: dict,
     if stats_src:
         src["stats"] = stats_src
 
-    invested = _invested(calls, quarters, until, det, ctx.get("currency") or "USD")
+    invested, not_counted = _invested(calls, quarters, until, det, ctx.get("currency") or "USD")
     # the first call the team entered — a quarter inferred from the roll-forward
     # on file is not the fund's first investment
     entered = [r for r in invested if r["source"] == "entered"]
@@ -768,6 +831,7 @@ def _fund(name: str, quarters: list[dict], det: dict, prof: dict, facts: dict,
         "returned_capital_estimated": returned_estimated,
         "drawn_commit": float(drawn / commitment) if drawn is not None and commitment else None,
         "stats": stats, "invested": invested,
+        "invested_later": not_counted["later"], "invested_superseded": not_counted["superseded"],
         "accounting": {
             "entity_type": det.get("entity_type") or "Limited Partnership",
             "accounting_method": det.get("accounting_method") or "Equity Method",
@@ -874,17 +938,29 @@ _DOC_ORDER = {"equity": 0, "portfolio": 1, None: 1, "hand": 2}
 
 
 def _invested(calls: list[dict], quarters: list[dict], until: int, det: Optional[dict] = None,
-              ccy: str = "USD") -> list[dict]:
+              ccy: str = "USD") -> tuple[list[dict], dict[str, list[dict]]]:
     """Dated calls for the entity, in its own currency and in USD; each quarter
     without one shows that quarter's funding from the roll-forward. An
     investment listed by both workbooks (a month-end date and a rounded amount
-    in one) is one row: the accounting workbook's, naming the other."""
+    in one) is one row: the accounting workbook's, naming the other.
+
+    The accounting workbook is the record up to its quarter: when it lists the
+    entity's investments, any other row dated by then (an Investment Portfolio
+    workbook's, one saved before sources were recorded, one typed in by hand)
+    isn't counted, and the roll-forward fills only the quarters after it — what is
+    added on top counts from then on. Returns (the rows counted, {"later": rows
+    dated after the report's quarter, "superseded": rows not counted, each saying
+    why}) — the rows not counted are listed so a wrong one can be seen and
+    deleted."""
     det = det or {}
-    rows = []
+    rows, later = [], []
     for c in calls:
         d, dated_from = _iso(c["call_date"]), None
-        if d is None and not c["call_date"]:
+        if d is None and c["call_date"]:
+            continue                                  # a date that can't be read
+        if d is None:
             # a purchase the accounting tab lists without a date: the investment date on file
+            dated_from = "no date in the accounting tab, and no investment date on file"
             for key in ("initial_investment_date", "last_investment_date"):
                 d = _iso(det.get(key)) or _iso(parse_date(str(det.get(key) or "")) or "")
                 if d is not None:
@@ -892,15 +968,14 @@ def _invested(calls: list[dict], quarters: list[dict], until: int, det: Optional
                         (det.get("field_src") or {}).get(key), "the details on file")
                     dated_from = f"no date in the accounting tab; dated from the investment date in {src}"
                     break
-        if d is None or _order(quarter_label(d)) > until:
-            continue
+        when = d.isoformat() if d else det.get("workbook_as_of")      # undated: the latest rate
         amt, cur = Decimal(c["amount"]), (c.get("currency") or ccy)
         usd = _d(c.get("amount_usd"))
         if usd is None:
             # its USD value: the amount itself, else at the entity's rate for its date
-            rr = Decimal(1) if cur == "USD" else usd_rate_at(det, d.isoformat())
+            rr = Decimal(1) if cur == "USD" else usd_rate_at(det, when)
             usd = amt * rr if rr else None
-        r = usd_rate_at(det, d.isoformat()) if ccy != "USD" else Decimal(1)
+        r = usd_rate_at(det, when) if ccy != "USD" else Decimal(1)
         if cur == ccy:
             native = amt
         elif ccy == "USD":
@@ -909,17 +984,18 @@ def _invested(calls: list[dict], quarters: list[dict], until: int, det: Optional
             native = (amt / r) if r else None
         else:
             native = (usd / r) if usd is not None and r else None
-        rows.append({"date": d.isoformat(), "description": c["description"] or "",
-                     "amount": native if native is not None else amt, "amount_usd": usd,
-                     "currency": ccy if native is not None else cur,
-                     "original": {"amount": amt, "currency": cur} if cur != ccy else None,
-                     "total_raise": _d(c.get("total_raise")), "pre_money": _d(c.get("pre_money")),
-                     "date_note": dated_from,
-                     "source": "entered", "id": c["id"], "doc_kind": c.get("doc_kind"),
-                     # rows saved before the source file was recorded name neither
-                     "document": c.get("source") or ("entered by hand" if c.get("doc_kind") == "hand"
-                                                     else "source not recorded"),
-                     "doc": c.get("source")})
+        row = {"date": d.isoformat() if d else "", "description": c["description"] or "",
+               "amount": native if native is not None else amt, "amount_usd": usd,
+               "currency": ccy if native is not None else cur,
+               "original": {"amount": amt, "currency": cur} if cur != ccy else None,
+               "total_raise": _d(c.get("total_raise")), "pre_money": _d(c.get("pre_money")),
+               "date_note": dated_from,
+               "source": "entered", "id": c["id"], "doc_kind": c.get("doc_kind"),
+               # rows saved before the source file was recorded name neither
+               "document": c.get("source") or ("entered by hand" if c.get("doc_kind") == "hand"
+                                               else "source not recorded"),
+               "doc": c.get("source")}
+        (later if d is not None and _order(quarter_label(d)) > until else rows).append(row)
     rows.sort(key=lambda x: (_DOC_ORDER.get(x["doc_kind"], 1), x["amount_usd"] is None, x["id"]))
     kept: list[dict] = []
     for x in rows:
@@ -940,11 +1016,22 @@ def _invested(calls: list[dict], quarters: list[dict], until: int, det: Optional
             continue
         kept.append(x)
     rows = kept
-    covered = {quarter_label(_iso(x["date"])) for x in rows}
+    # the accounting workbook's quarter: up to its end, the workbook's rows are the record
+    cut = None
+    if re.fullmatch(r"20\d{2}-Q[1-4]", det.get("equity_as_of") or "") \
+            and any(x["doc_kind"] == "equity" for x in rows):
+        cut = quarter_bounds(det["equity_as_of"])[1]
+    superseded = [x for x in rows if cut is not None and x["date"] and x["doc_kind"] != "equity"
+                  and _iso(x["date"]) <= cut]
+    for x in superseded:
+        rows.remove(x)
+        x["not_counted"] = f"the accounting workbook is the record up to {cut.isoformat()}"
+    covered = {quarter_label(_iso(x["date"])) for x in rows if x["date"]}
     for q in quarters:
         funding = Decimal(str(q["funding"] or 0))
         label = q["period_label"]
-        if funding > 0 and re.fullmatch(r"20\d{2}-Q[1-4]", label or "") and label not in covered:
+        if funding > 0 and re.fullmatch(r"20\d{2}-Q[1-4]", label or "") and label not in covered \
+                and (cut is None or quarter_bounds(label)[1] > cut):
             end = quarter_bounds(label)[1]
             r = usd_rate_at(det, label) if ccy != "USD" else Decimal(1)
             rows.append({"date": end.isoformat(),
@@ -953,13 +1040,16 @@ def _invested(calls: list[dict], quarters: list[dict], until: int, det: Optional
                          "original": None, "total_raise": None, "pre_money": None,
                          "source": "roll-forward", "id": None, "doc_kind": None,
                          "document": f"roll-forward {label}"})
-    return sorted(rows, key=lambda x: x["date"])
+    # an undated purchase last; the rows not counted, in date order
+    return (sorted(rows, key=lambda x: (x["date"] == "", x["date"])),
+            {"later": sorted(later, key=lambda x: x["date"]),
+             "superseded": sorted(superseded, key=lambda x: x["date"])})
 
 
 def _company(name: str, det: dict, facts: dict, calls: list[dict], until: int,
              files: Optional[list[dict]] = None, ccy: str = "USD") -> dict[str, Any]:
     src: dict[str, str] = {}
-    invested = _invested(calls, [], until, det, ccy)
+    invested, not_counted = _invested(calls, [], until, det, ccy)
     superseded: list[str] = []
     total = _d(det.get("total_invested"))
     cost_fact = facts.get((name, "cost_basis"))
@@ -985,7 +1075,7 @@ def _company(name: str, det: dict, facts: dict, calls: list[dict], until: int,
         value = abs(value_fact["value"])
         src["total_value"] = _src(value_fact)
     exited = bool(det.get("exit_date")) or det.get("holding_status") == "Exit"
-    last = det.get("last_investment_date") or (invested[-1]["date"] if invested else None)
+    last = det.get("last_investment_date") or next((r["date"] for r in reversed(invested) if r["date"]), None)
     return {
         "entity": name, "kind": "direct_investment",
         "investment_name": det.get("display_name") or name,
@@ -1000,6 +1090,7 @@ def _company(name: str, det: dict, facts: dict, calls: list[dict], until: int,
         "exit": {"date": det.get("exit_date"), "value": _d(det.get("exit_value")),
                  "proceeds": _d(det.get("exit_proceeds")), "escrow": _d(det.get("exit_escrow"))},
         "invested": invested, "details": det, "sources": src, "superseded": superseded,
+        "invested_later": not_counted["later"], "invested_superseded": not_counted["superseded"],
         "files": files or [],
         "removable": not files and total is None and value is None,
         "issues": ([] if total is not None else [

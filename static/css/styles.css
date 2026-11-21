@@ -478,3 +478,47 @@ th.pf-win, td.pf-win { display: none; }
 .kpi .kv { font-family: var(--font-serif); font-size: 24px; font-weight: 600; color: var(--brand); margin-top: 4px; }
 .kpi .kv.gain { color: var(--ok); } .kpi .kv.loss { color: var(--err); }
 .kpi .kn { font-size: 11px; color: var(--muted); margin-top: 3px; }
+
+/* Invested rows the report doesn't count: listed, muted, deletable */
+.pf-uncounted td { opacity: .62; }
+.pf-uncounted-head { padding-top: 12px !important; }
+
+/* the tiny box naming a fund's or company's own currency */
+.ccy-box { display: inline-block; margin-left: 6px; padding: 0 4px; border: 1px solid var(--line); border-radius: 4px;
+  font: 600 10px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; letter-spacing: .03em;
+  color: var(--muted); background: var(--panel); vertical-align: 1px; white-space: nowrap; }
+.ccy-box.fx { color: #8a4b00; background: #fff4e0; border-color: #f2c48d; }
+@media (prefers-color-scheme: dark) { .ccy-box.fx { color: #f2c48d; background: #3a2a12; border-color: #6b4a1c; } }
+.report-title .ccy-box { font-size: 11px; vertical-align: 3px; }
+/* US dollars | Original currency */
+.amt-toggle { display: inline-flex; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; background: var(--panel); }
+.amt-toggle button { font: inherit; font-size: 12px; padding: 4px 10px; border: 0; background: transparent; color: var(--muted); cursor: pointer; }
+.amt-toggle button + button { border-left: 1px solid var(--line); }
+.amt-toggle button.on { background: var(--accent); color: #fff; }
+.approx { color: var(--warn); font-weight: 700; margin-right: 2px; }
+@media print { .amt-toggle { display: none !important; } }
+
+/* column filters, as in a spreadsheet */
+.cf-btn { margin-left: 4px; padding: 0 4px; border: 1px solid transparent; border-radius: 4px; background: transparent;
+  color: var(--muted); font-size: 10px; line-height: 1.5; cursor: pointer; vertical-align: 1px; }
+.cf-btn:hover, .cf-btn:focus-visible { border-color: var(--line); color: var(--ink); }
+/* the ▾ sits in the header's corner: no extra line under a short label */
+.tbl-report th.cf-th { position: relative; padding-right: 17px; }
+.tbl-report th.cf-th .cf-btn { position: absolute; right: 1px; bottom: 7px; margin: 0; }
+.cf-btn.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+.cf-off { display: none !important; }
+.tbl-report tr[hidden] { display: none; }
+.cf-bar { display: flex; align-items: center; gap: 10px; margin: 2px 0 6px; }
+.cf-bar .cf-status:empty { display: none; }
+.cf-pop { position: absolute; z-index: 60; width: 250px; padding: 10px; font-size: 13px; color: var(--ink);
+  background: var(--panel); border: 1px solid var(--line); border-radius: 10px; box-shadow: var(--shadow-lg); }
+.cf-pop .cf-row { display: flex; flex-wrap: wrap; gap: 6px; margin: 6px 0; }
+.cf-pop .cf-row:first-child { margin-top: 0; }
+.cf-pop .cf-end { justify-content: flex-end; margin-bottom: 0; }
+.cf-pop input[type=search], .cf-pop .cf-range input { width: 100%; box-sizing: border-box; font: inherit; padding: 4px 6px;
+  border: 1px solid var(--line); border-radius: 6px; background: var(--panel); color: var(--ink); }
+.cf-pop .cf-list { max-height: 220px; overflow: auto; margin-top: 6px; padding: 4px 6px; border: 1px solid var(--line); border-radius: 6px; }
+.cf-pop .cf-list label { display: flex; align-items: center; gap: 6px; padding: 2px 0; white-space: nowrap; }
+.cf-pop .cf-range { display: grid; gap: 6px; }
+.cf-pop .cf-range label { display: grid; gap: 2px; font-size: 12px; color: var(--muted); }
+@media print { .cf-btn, .cf-bar, .cf-pop { display: none !important; } }

@@ -66,7 +66,12 @@ def _flows(row: dict, quarters: list[dict], as_of_end: date, factor: Decimal) ->
     # ---- money out
     entered = [c for c in row.get("invested", []) if c["source"] == "entered"]
     rolled = [c for c in row.get("invested", []) if c["source"] != "entered"]
+    undated = [c for c in entered if not c["date"]]          # no date on file: not placed in time
+    entered = [c for c in entered if c["date"]]
     if entered or rolled:
+        if undated:
+            notes.append(f"{len(undated)} investment{'s' if len(undated) > 1 else ''} with no date on file "
+                         "left out — enter its date in the details")
         for c in entered:
             add(_iso(c["date"]), -abs(Decimal(str(c["amount"]))), "call",
                 f"{c.get('description') or 'investment'} · {c.get('document') or 'entered by hand'}",
@@ -316,7 +321,14 @@ def report(as_of: Optional[str] = None, start: Optional[str] = None, end: Option
         paid = row.get("drawn_to_date") if row["kind"] == "fund" else row.get("total_invested")
         called = sum(-f["amount"] for f in flows if f["kind"] == "call")
         paid_usd = float(Decimal(str(paid)) * factor) if paid is not None else None
-        if paid_usd and called and max(1.0, 0.01 * paid_usd) < abs(called - paid_usd) <= 0.05 * paid_usd:
+        # a converted note's cost includes the interest it accrued (the accounting
+        # workbook reconciles its calls the same way): the dated cash flows stand
+        interest = float(_d((row.get("details") or {}).get("note_interest")) or 0) * float(factor)
+        if paid_usd and called and interest and abs(called + interest - paid_usd) <= max(1.0, 0.005 * paid_usd):
+            notes.append(f"the dated cash flows add up to {called:,.0f} and the cost on file is "
+                         f"{paid_usd:,.0f}: the difference is the {interest:,.0f} of interest its notes "
+                         "accrued, not cash")
+        elif paid_usd and called and max(1.0, 0.01 * paid_usd) < abs(called - paid_usd) <= 0.05 * paid_usd:
             notes.append(f"the dated cash flows add up to {called:,.0f} and the cost on file is "
                          f"{paid_usd:,.0f}: the difference is not cash (e.g. a note's accrued interest)")
         elif paid_usd and called and abs(called - paid_usd) > max(1.0, 0.05 * paid_usd):

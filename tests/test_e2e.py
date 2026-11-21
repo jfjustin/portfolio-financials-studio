@@ -104,6 +104,7 @@ def main() -> int:
     equity_investments_workbook()
     currencies_and_fx()
     accounting_tabs_cash_flows()
+    accounting_workbook_is_the_record()
     repeated_rows()
     xirr_roots()
     irr_section()
@@ -1940,6 +1941,45 @@ def currencies_and_fx() -> None:
     check([round(D(c["amount"])) for c in calls_usd] == [1_000_000, 700_000]
           and all(c["currency"] == "USD" and c["original"]["currency"] == "EUR" for c in calls_usd),
           "its euro calls are listed in USD at their recorded rates, the euro amount kept alongside")
+    nat = fe.get("native") or {}
+    check(nat.get("currency") == "EUR" and D(nat["commitment"]) == 2_000_000 and D(nat["drawn_to_date"]) == 1_500_000
+          and D(nat["future_draw"]) == 500_000 and [round(D(c["amount"])) for c in nat["invested"]] == [1_000_000, 500_000]
+          and "investment_balance" in nat["converted"] and "commitment" not in nat["converted"]
+          and (ft.get("native") or {}).get("currency") == "TWD" and D(ft["native"]["drawn_to_date"]) == 30_000_000,
+          "each fund's original figures ride along: the accounting tab's own EUR / TWD figures, exactly; a "
+          "figure it gives only in USD is converted, and says so")
+    h95 = client.get("/api/history/Fund 95E?as_of=2026-Q2").json()
+    money = lambda facts: {x["label"]: round(float(x["value"])) for x in facts if x["kind"] == "money"}
+    check(h95["currency"] == "USD" and money(h95["facts"])["Commitment"] == 2_200_000
+          and h95["native"]["currency"] == "EUR" and money(h95["native"]["facts"])["Commitment"] == 2_000_000
+          and money(h95["native"]["facts"])["Drawn to date"] == 1_500_000,
+          "the company history has the same two views: US dollars, and the fund's own euros")
+    # a window of quarters: a euro statement's funding and distributions in USD, like every figure
+    from app import portfolio as pf
+    real = pf.db.get_investments
+    pf.db.get_investments = lambda: {"quarters": [{"entity_name": "Fund 95E", "period_label": "2026-Q1",
+                                                   "period_order": 202601, "funding": 100_000.0,
+                                                   "return_of_capital": -20_000.0, "dividends": 0.0}]}
+    try:
+        w = pf.with_window({"funds": [fe], "companies": [], "statement_currency": {"Fund 95E": "EUR"}},
+                           "2026-Q1", "2026-Q1")["funds"][0]
+    finally:
+        pf.db.get_investments = real
+    check(round(w["window"]["drawn"]) == 120_000 and round(w["window"]["distributed"]) == 24_000
+          and round(w["native"]["window"]["drawn"]) == 100_000,
+          "a window's funding and distributions from a euro statement are in USD at the quarter's rate, "
+          "the euros alongside")
+    usd_id = client.post("/api/portfolio/Fund 95E/calls", json={"date": "2026-08-01", "description": "Typed in dollars",
+                                                                "amount": "1200000"}).json()["ids"][0]
+    eur_id = client.post("/api/portfolio/Fund 95E/calls", json={"date": "2026-08-02", "description": "Typed in euros",
+                                                                "amount": "1000000", "currency": "EUR"}).json()["ids"][0]
+    typed = {c["id"]: c for c in db.get_capital_calls("Fund 95E")}
+    bad = client.post("/api/portfolio/Fund 95E/calls", json={"date": "2026-08-03", "amount": "1", "currency": "dollars"})
+    check(typed[usd_id]["currency"] == "USD" and typed[eur_id]["currency"] == "EUR" and bad.status_code == 400,
+          "a row typed in by hand keeps the currency it was typed in: US dollars unless the form says "
+          "otherwise (a euro fund's $1.2M is not taken for €1.2M)")
+    for i in (usd_id, eur_id):
+        client.delete(f"/api/portfolio/calls/{i}")
     R = client.get("/api/irr?as_of=2026-Q2").json()
     ent = {x["entity"]: x for x in R["entities"]}
     e95 = ent["Fund 95E"]
@@ -2175,6 +2215,174 @@ def accounting_tabs_cash_flows() -> None:
           and round(facts.get("Total invested", 0)) == 2_120_000
           and facts.get("Accounting method") == "Measurement Alternative",
           "the company one-pager's facts: first investment, investments made, total invested, current accounting method")
+
+
+def accounting_workbook_is_the_record() -> None:
+    """The accounting workbook is the record of an investment up to its quarter.
+    Reading it fills a company an older reader left without cash flows; a row an
+    older reader saved that it doesn't list (a note's conversion into shares) and
+    another document's row dated by then aren't counted, but are listed; reading it
+    again removes its own rows it no longer lists; what is added on top — another
+    document's row, one typed in by hand — counts only from its quarter on; a
+    purchase with no date anywhere is
+    listed, not dropped; a row dated after the report's quarter can be seen and
+    deleted; a workbook an older reader read is read again at startup."""
+    import datetime as dt
+    import io
+    from decimal import Decimal
+
+    import openpyxl
+    from fastapi.testclient import TestClient
+
+    from app.extractors.master import READER_VERSION
+    from app.main import app
+    from app.pipeline import refresh_master_workbooks
+
+    client = TestClient(app)
+    D = lambda x: Decimal(str(x))
+    dt_ = dt.datetime
+    name = "Equity Investments Summary - Jun26 (record test).xlsx"
+    # what a database an older reader filled holds: the note's conversion saved as
+    # a purchase, before sources were recorded
+    old = db.add_capital_call("Company 72A", "2020-11-19", D(1_120_000), "Company 72A Series Pre-A Preferred Shares")
+    # and a euro company's purchase saved without its currency (shown as if dollars)
+    eur = db.add_capital_call("Company 72D", "2023-12-14", D(1_000_000), "Initial Investment")
+    with db.get_engine().begin() as conn:
+        conn.execute(db.capital_calls.update().where(db.capital_calls.c.id.in_([old, eur]))
+                     .values(source=None, doc_kind=None))
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Investments Summary"
+    head = [None, "Investment", "Investment Balance", "Gross Investment / Funding", "Equity Income/(Loss)",
+            "Return of Capital/Other Cash Proceeds", "MTM & Conversion Gain/(Loss)", "Acquisition Impact",
+            "Cumulative Impairment", "Total Commitment", "Remaining Commitment", "Ownership %",
+            "Initial Investment Date", "Impairment Date", "Disposition Date"]
+    for r in ([None, "Equity Investments Summary Workbook"], [None, dt_(2026, 6, 28)], [], head,
+              [None, "Equity Investments"],
+              ["Company 72A (2019)", "Company 72A", 2_300_000, 2_120_000, 0, 0, 180_000, 0, 0, 0, 0, 0.02,
+               dt_(2019, 11, 27)],
+              ["Company 72B (2017)", "Company 72B", 1_500_000, 1_500_000, 0, 0, 0, 0, 0, 0, 0, 0.01,
+               dt_(2017, 10, 26)],
+              ["Company 72C (Pre 2014)", "Company 72C", 74_088.04, 74_088.04, 0, 0, 0, 0, 0, 0, 0, None,
+               "Pre 2014"],
+              ["Company 72D (2023)", "Company 72D", 1_068_489.36, 1_083_930, -15_440.64, 0, 0, 0, 0, 0, 0, 0.09,
+               dt_(2023, 12, 14)],
+              [], [None, "CLOSED INVESTMENTS"], head, [None, "Note Receivable"],
+              [None, "Investment", "Investment Balance", "Gross Investment / Funding", "Accrued Interest",
+               "Return of Capital", "Note Conversion / Repayment", "Cumulative Impairment", "Other",
+               "Initial Investment Date", "Impairment Date", "Disposition Date"],
+              ["Company 72A (2019 Convertible Note)", "Company 72A", 0, 1_000_000, 120_000, 0, -1_120_000, 0, 0,
+               dt_(2019, 11, 27)]):
+        ws.append(r)
+
+    def tab(name: str, rows: list) -> None:
+        t = wb.create_sheet(name)
+        for r in rows:
+            t.append(r)
+    entity = [["Entity Type", "Corporation"], ["Method of Accounting", "Measurement Alternative"], []]
+    tab("Company 72A", [["Company 72A"], [], ["Method of Accounting", "Note Receivable"],
+        ["Initial Investment Date", dt_(2019, 11, 27)], [],
+        ["Funding", "Amount", "Investment Date"], ["Initial note investment", 1_000_000, dt_(2019, 11, 27)],
+        ["Total Funding", 1_000_000], [], ["Accrued Interest", "Amount"],
+        [dt_(2019, 12, 31), 50_000], [dt_(2020, 9, 30), 70_000], ["Total Accrued Interest", 120_000], [],
+        ["Investment Balance", 1_120_000, "Balance at conversion"], []] + entity + [
+        ["Investment", "Investment Value", "Cash Outlay", "Gain on Conversion", "MTM of Shares", "Investment Date", "Terms"],
+        ["Company 72A Series Pre-A Preferred Shares", 1_300_000, 1_120_000, 180_000, 0, dt_(2020, 11, 19),
+         "- Note conversion to Series Pre-A"],
+        ["Company 72A Series A Preferred Shares", 1_000_000, 1_000_000, 0, 0, dt_(2021, 9, 28), "- Convertible"],
+        [None, 2_300_000, 2_120_000, 180_000, 0]])
+    tab("Company 72B", [["Company 72B"], []] + entity + [
+        ["Investment", "Investment Value", "Cash Outlay", "Investment Date", "Terms"],
+        ["Company 72B Series A-1 Preferred Shares", 1_500_000, 1_500_000, dt_(2017, 10, 26)],
+        [None, 1_500_000, 1_500_000]])
+    tab("Company 72C", [["Company 72C"], []] + entity + [
+        ["Investment", "Amount", "Investment Date", "# of Equity Shares", "Price Per Share", "Terms"],
+        ["Company 72C Series B Preferred Shares", 74_088.04, None, 100, 740.88], [None, 74_088.04]])
+    tab("Company 72D", [["Company 72D"], [], ["Entity Type", "Limited Liability Company"],
+        ["Method of Accounting", "Equity Method"], ["Initial Investment Date", dt_(2023, 12, 14)], [],
+        ["Funding", "EUR", "FX Rate", "USD", "Investment Date"],
+        ["Initial Investment", 1_000_000, 1.08393, 1_083_930, dt_(2023, 12, 14)], [],
+        ["Total Funding", 1_000_000, None, 1_083_930], [],
+        ["Equity Income/(Loss)", "EUR", "FX Rate", "USD"], [dt_(2023, 12, 31), -14_491.59, 1.0655, -15_440.64],
+        ["Total Equity Income/(Loss)", -14_491.59, None, -15_440.64], [],
+        ["Investment Balance", 985_508.41, None, 1_068_489.36]])
+    buf = io.BytesIO()
+    wb.save(buf)
+    res = client.post("/api/upload", files={"files": (name, buf.getvalue())}).json()["results"][0]
+    # added on top: an Investment Portfolio workbook's rounds within the accounting
+    # workbook's quarter and after it, a row typed in by hand, a mistyped year
+    port = "Investment Portfolio Sep'26 (record test).xlsx"
+    db.add_capital_call("Company 72B", "2018-03-31", D(300_000), "Bridge", source=port, doc_kind="portfolio")
+    db.add_capital_call("Company 72B", "2026-08-14", D(250_000), "Series A-2", source=port, doc_kind="portfolio")
+    db.add_capital_call("Company 72B", "2019-05-05", D(50_000), "Typed in by hand")
+    db.add_capital_call("Company 72B", "2026-09-10", D(40_000), "Typed in by hand, after the quarter")
+    client.post("/api/portfolio/Company 72A/calls", json={"date": "2050-12-31", "description": "Series Z",
+                                                          "amount": "1000000"})
+    rep = lambda q: {c["entity"]: c for c in client.get(f"/api/portfolio?as_of={q}").json()["companies"]}
+    rows = lambda c, key="invested": [(x["date"], round(x["amount"])) for x in c.get(key) or []]
+    q2 = rep("2026-Q2")
+    check(res["status"] == "ok"
+          and rows(q2["Company 72A"]) == [("2019-11-27", 1_000_000), ("2021-09-28", 1_000_000)]
+          and rows(q2["Company 72A"], "invested_superseded") == [("2020-11-19", 1_120_000)],
+          "an older reader's row for a note's conversion isn't counted (the accounting workbook counts the "
+          "note's own funding) — it's listed, so it can be deleted")
+    check(rows(q2["Company 72B"]) == [("2017-10-26", 1_500_000)]
+          and rows(q2["Company 72B"], "invested_superseded") == [("2018-03-31", 300_000), ("2019-05-05", 50_000)]
+          and rows(q2["Company 72B"], "invested_later") == [("2026-08-14", 250_000), ("2026-09-10", 40_000)]
+          and rows(rep("2026-Q3")["Company 72B"]) == [("2017-10-26", 1_500_000), ("2026-08-14", 250_000),
+                                                       ("2026-09-10", 40_000)],
+          "what is added on top — another document's row, one typed in by hand — counts only after the "
+          "accounting workbook's quarter; before it, it's listed as not counted")
+    d72 = q2["Company 72D"]["invested"]
+    check([(x["date"], round(x["amount"]), x["currency"], (x["original"] or {}).get("currency")) for x in d72]
+          == [("2023-12-14", 1_083_930, "USD", "EUR")]
+          and [(c["currency"], D(c["amount_usd"])) for c in db.get_capital_calls("Company 72D")] == [("EUR", 1_083_930)],
+          "a euro purchase an older reader saved without its currency is corrected by the workbook: "
+          "€1,000,000 shown as $1,083,930, not as $1,000,000")
+    n72 = q2["Company 72D"].get("native") or {}
+    check(n72.get("currency") == "EUR" and round(n72["total_invested"]) == 1_000_000
+          and [round(x["amount"]) for x in n72["invested"]] == [1_000_000]
+          and round(float(n72["details"]["book_value"])) == 985_508,
+          "and its original figures: €1,000,000 invested and its balance, as the accounting tab gives them")
+    g = q2["Company 72C"]["invested"]
+    h72c = client.get("/api/history/Company 72C?as_of=2026-Q2").json()
+    check(len(g) == 1 and g[0]["date"] == "" and round(g[0]["amount"]) == 74_088
+          and "no investment date on file" in (g[0]["date_note"] or "")
+          and [i["date"] for i in h72c["investments"]] == [""]
+          and not any(x["label"] == "First investment" for x in h72c["facts"]),
+          "a purchase with no date anywhere is listed (no date), not dropped — in the company history too")
+    typo = q2["Company 72A"].get("invested_later") or []
+    gone = client.delete(f"/api/portfolio/calls/{typo[0]['id']}") if typo else None
+    check([(x["date"], round(x["amount"])) for x in typo] == [("2050-12-31", 1_000_000)]
+          and gone is not None and gone.status_code == 200 and not rep("2026-Q2")["Company 72A"]["invested_later"],
+          "a row dated after the report's quarter (a mistyped year) is listed, and can be deleted")
+    R = client.get("/api/irr?as_of=2026-Q2").json()
+    ents = {e["entity"]: e for e in R["entities"]}
+    h72a = client.get("/api/history/Company 72A?as_of=2026-Q2").json()
+    check([f["date"] for f in ents["Company 72A"]["flows"] if f["kind"] == "call"] == ["2019-11-27", "2021-09-28"]
+          and [i["date"] for i in h72a["investments"]] == ["2019-11-27", "2021-09-28"],
+          "the IRR and the company history count the same rows: the conversion isn't counted twice")
+    stale = db.add_capital_call("Company 72B", "2016-01-01", D(123_456), "An earlier reading's row",
+                                source=name, doc_kind="equity")
+    again = client.post(f"/api/submissions/{res['submission_id']}/reread").json()
+    left = {c["id"] for c in db.get_capital_calls("Company 72B")}
+    removed = [a for a in db.get_audit(limit=50) if a["action"] == "capital_call_delete" and a["field"] == "Company 72B"]
+    check(again["status"] == "ok" and stale not in left and len(left) == 5
+          and any("no longer listed" in (a.get("note") or "") for a in removed),
+          "reading the workbook again removes its own row it no longer lists (audited); other documents' rows "
+          "and a row typed in by hand stay")
+    sid = res["submission_id"]
+    with db.get_engine().begin() as conn:
+        conn.execute(db.submissions.update().where(db.submissions.c.id == sid)
+                     .values(reader_version=None, status="reviewed"))
+        conn.execute(db.capital_calls.delete().where(db.capital_calls.c.entity_name == "Company 72C"))
+    out = refresh_master_workbooks()
+    sub = db.get_submission(sid)
+    check([o["submission_id"] for o in out] == [sid] and out[0]["status"] == "ok"
+          and sub["reader_version"] == READER_VERSION and sub["status"] == "reviewed"
+          and [(c["call_date"], D(c["amount"])) for c in db.get_capital_calls("Company 72C")] == [("", D("74088.04"))]
+          and refresh_master_workbooks() == [],
+          "a workbook an older reader read is read again at startup (once), and stays reviewed")
 
 
 def repeated_rows() -> None:

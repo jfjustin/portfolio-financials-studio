@@ -67,6 +67,7 @@
     $("#irr-asof").addEventListener("change", e => loadIrr(e.target.value));
     $("#hist-entity").addEventListener("change", e => loadHistory(e.target.value));
     wireHistoryView();
+    wireAmountToggles();
     const irrOpts = () => { IRR_OPTS = { start: $("#irr-from").value, end: $("#irr-to").value, vfrom: $("#irr-vfrom").value, vto: $("#irr-vto").value };
       if (!IRR_OPTS.start !== !IRR_OPTS.end) return; loadIrr($("#irr-asof").value); };
     ["#irr-from", "#irr-to", "#irr-vfrom", "#irr-vto"].forEach(id => $(id).addEventListener("change", irrOpts));
@@ -445,6 +446,43 @@
     return n < 0 ? `(${s})` : s;
   };
   const ccyTag = ccy => (ccy && ccy !== "USD") ? ` <span class="ccy-tag" title="Its statements are in ${ccy}: every figure shown is in USD, converted at the accounting workbook's rates">${esc(ccy)}→USD</span>` : "";
+  // amounts: every figure in US dollars, or each fund's and company's own currency
+  // (the "Original currency" switch, remembered in this browser)
+  const AMT = { orig: false };
+  try { AMT.orig = localStorage.getItem("pfs.amounts") === "orig"; } catch (e) { /* no storage: US dollars */ }
+  // the figures a row shows: its own-currency ones under "Original currency", when it has any
+  const shownRow = r => (AMT.orig && r && r.native) ? r.native : r;
+  // the tiny box naming a fund's or company's own currency
+  const ccyBox = (own, shown) => {
+    const c = (own || "USD").toUpperCase(), s = (shown || "USD").toUpperCase();
+    const t = c === "USD" ? "Its own currency is US dollars"
+      : s === c ? `Its own currency is ${c}: figures shown in ${c}, as its documents give them (≈ marks one converted from US dollars)`
+      : `Its own currency is ${c}: figures shown in US dollars, converted at the accounting workbook's rates — choose Original currency to see them in ${c}`;
+    return ` <span class="ccy-box${c !== "USD" ? " fx" : ""}" title="${esc(t)}">${esc(c)}</span>`;
+  };
+  const plainM = (v, d, ccy) => { const n = Number(v) / 1e6;
+    return (n < 0 ? "-" : "") + sign(ccy) + Math.abs(n).toLocaleString("en-US", { minimumFractionDigits: d == null ? 1 : d, maximumFractionDigits: d == null ? 1 : d }) + "M"; };
+  // under US dollars a hover gives the original figure; under Original currency ≈ marks a converted one
+  const origNote = (r, k, d) => (AMT.orig || !r.native || r.native[k] == null) ? ""
+    : "\nOriginal: " + plainM(r.native[k], d, r.native.currency);
+  const APPROX = '<span class="approx" title="Converted from US dollars at the quarter\'s rate — the documents on file give no original figure">≈</span>';
+  const approx = (r, k) => (AMT.orig && r.native && (r.native.converted || []).includes(k)) ? APPROX : "";
+  function wireAmountToggles() {
+    const sync = () => $$(".amt-toggle button").forEach(b => {
+      const on = (b.dataset.amt === "orig") === AMT.orig;
+      b.classList.toggle("on", on); b.setAttribute("aria-pressed", String(on)); });
+    $$(".amt-toggle").forEach(g => g.addEventListener("click", e => {
+      const b = e.target.closest("button[data-amt]");
+      if (!b) return;
+      AMT.orig = b.dataset.amt === "orig";
+      try { localStorage.setItem("pfs.amounts", AMT.orig ? "orig" : "usd"); } catch (err) { /* no storage */ }
+      sync();
+      if (PF) renderPortfolio();
+      if (PF_ENTITY && $("#pf-modal").classList.contains("show")) { entityTitle(PF_ENTITY); renderCalls(PF_ENTITY); }
+      drawHistory();
+    }));
+    sync();
+  }
   const cmoney = (v, ccy) => v == null ? '<span class="muted">—</span>'
     : (Number(v) < 0 ? "-" : "") + sign(ccy) + Math.abs(Number(v) / 1e6).toLocaleString("en-US", { minimumFractionDigits: 1, maximumFractionDigits: 1 }) + "M";
   const srcTitle = (r, k) => esc((r.sources || {})[k] || "");
@@ -470,47 +508,224 @@
     $("#pf-asof").innerHTML = PF.quarters.slice().reverse().map(q =>
       `<option value="${q}" ${q === PF.as_of ? "selected" : ""}>${q}</option>`).join("");
     $("#pf-export").href = "/api/exports/investment-portfolio.xlsx?as_of=" + PF.as_of;
+    renderPortfolio();
+    if (PF.summary) renderSummary(PF.summary); else loadSummary(PF.as_of);
+    renderAttention("#pf-attention", PF.funds.concat(PF.companies).flatMap(r =>
+      (r.issues || []).map(i => Object.assign({ who: r.investment_name, entity: r.entity }, i))),
+      i => openPortfolioEntity(i.entity));
+  }
+
+  // ---------------- column filters, as in a spreadsheet — all in the browser ----------------
+  // A ▾ on each header: sort, tick the values to keep (text), or give a range
+  // (numbers and dates; amounts in millions, as shown). "Columns" shows or hides
+  // columns (remembered in this browser). Nothing is sent to the server.
+  const CF = {};
+  const cfStore = (id, v) => {
+    try {
+      if (v === undefined) return JSON.parse(localStorage.getItem("pfs.cf." + id) || "[]");
+      localStorage.setItem("pfs.cf." + id, JSON.stringify(v));
+    } catch (e) { /* no storage: every column shows */ }
+    return [];
+  };
+  const cfState = id => CF[id] || (CF[id] = { filters: {}, sort: null, hidden: new Set(cfStore(id)) });
+  const cfVal = td => {
+    if (!td) return "";
+    if (td.dataset.v !== undefined) return td.dataset.v;
+    const t = td.textContent.trim();
+    return t === "—" ? "" : t;
+  };
+  const cfRows = table => [...table.tBodies[0].rows].filter(tr => ![...tr.cells].some(td => td.colSpan > 1));
+  const cfLabel = th => [...th.childNodes].filter(n => !(n.classList && n.classList.contains("cf-btn")))
+    .map(n => n.textContent).join("").trim();
+  function cfType(table, i) {
+    const th = table.tHead.rows[0].cells[i];
+    if (th.dataset.cf) return th.dataset.cf;
+    const v = cfRows(table).map(tr => cfVal(tr.cells[i])).find(x => x !== "");
+    return v === undefined ? "text" : /^\d{4}-\d{2}-\d{2}$/.test(v) ? "date" : !isNaN(Number(v)) ? "num" : "text";
+  }
+  function cfClose() {
+    const p = $(".cf-pop");
+    if (p) p.remove();
+    document.removeEventListener("mousedown", cfOutside, true);
+  }
+  function cfOutside(e) { if (!e.target.closest(".cf-pop") && !e.target.closest(".cf-btn")) cfClose(); }
+  function cfOpen(table, i, btn) {
+    cfClose();
+    const st = cfState(table.id), type = cfType(table, i), f = st.filters[i] || {};
+    const pop = document.createElement("div");
+    pop.className = "cf-pop";
+    pop.setAttribute("role", "dialog");
+    pop.setAttribute("aria-label", "Filter or sort " + cfLabel(table.tHead.rows[0].cells[i]));
+    const sorts = type === "text" ? ["A → Z", "Z → A"] : type === "date" ? ["Oldest first", "Newest first"] : ["Smallest first", "Largest first"];
+    let body;
+    if (type === "text") {
+      const vals = [...new Set(cfRows(table).map(tr => cfVal(tr.cells[i])))]
+        .sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
+      body = `<input type="search" class="cf-search" placeholder="Search values" aria-label="Search values">
+        <div class="cf-list">${vals.map(v => `<label><input type="checkbox" value="${esc(v)}"${!f.values || f.values.includes(v) ? " checked" : ""}> ${v ? esc(v) : '<span class="muted">(blank)</span>'}</label>`).join("")}</div>
+        <div class="cf-row"><button type="button" class="btn sm" data-act="all">All</button><button type="button" class="btn sm" data-act="none">None</button></div>`;
+    } else {
+      const box = (cls, val, lab) => `<label>${lab}<input type="${type === "date" ? "date" : "number"}" step="any" class="${cls}" value="${esc(val == null ? "" : String(val))}"></label>`;
+      body = `<div class="cf-range">${box("cf-min", f.min, "From")}${box("cf-max", f.max, "To")}</div>`
+        + (type === "money" ? '<div class="small muted">In millions, as shown.</div>' : "");
+    }
+    pop.innerHTML = `<div class="cf-row">${sorts.map((t, d) => `<button type="button" class="btn sm" data-sort="${d ? "desc" : "asc"}">${t}</button>`).join("")}</div>${body}
+      <div class="cf-row cf-end"><button type="button" class="btn sm" data-act="clear">Clear</button><button type="button" class="btn sm primary" data-act="apply">Apply</button></div>`;
+    document.body.appendChild(pop);
+    const r = btn.getBoundingClientRect();
+    pop.style.top = (window.scrollY + r.bottom + 4) + "px";
+    pop.style.left = Math.max(8, Math.min(window.scrollX + r.right - pop.offsetWidth,
+      window.scrollX + document.documentElement.clientWidth - pop.offsetWidth - 8)) + "px";
+    const search = $(".cf-search", pop);
+    if (search) search.addEventListener("input", () => $$(".cf-list label", pop).forEach(l => {
+      l.hidden = !l.textContent.toLowerCase().includes(search.value.toLowerCase()); }));
+    pop.addEventListener("click", e => {
+      const b = e.target.closest("button");
+      if (!b) return;
+      if (b.dataset.sort) { st.sort = { i, dir: b.dataset.sort, type }; cfApply(table); cfClose(); return; }
+      const act = b.dataset.act;
+      if (act === "all" || act === "none") {
+        $$(".cf-list input", pop).forEach(c => { if (!c.closest("label").hidden) c.checked = act === "all"; });
+        return;
+      }
+      if (act === "clear") delete st.filters[i];
+      if (act === "apply" && type === "text") {
+        const boxes = $$(".cf-list input", pop), keep = boxes.filter(c => c.checked).map(c => c.value);
+        if (keep.length === boxes.length) delete st.filters[i]; else st.filters[i] = { type, values: keep };
+      } else if (act === "apply") {
+        const min = $(".cf-min", pop).value, max = $(".cf-max", pop).value;
+        if (min === "" && max === "") delete st.filters[i]; else st.filters[i] = { type, min, max };
+      }
+      cfApply(table); cfClose(); btn.focus();
+    });
+    pop.addEventListener("keydown", e => {
+      if (e.key === "Escape") { cfClose(); btn.focus(); }
+      if (e.key === "Enter" && e.target.matches("input:not([type=checkbox])")) $('[data-act="apply"]', pop).click();
+    });
+    document.addEventListener("mousedown", cfOutside, true);
+    (search || $("input, button", pop)).focus();
+  }
+  function cfKeep(f, v) {
+    if (f.type === "text") return f.values.includes(v);
+    if (v === "") return false;
+    if (f.type === "date") return (!f.min || v >= f.min) && (!f.max || v <= f.max);
+    const n = Number(v) / (f.type === "money" ? 1e6 : 1);
+    return (f.min === "" || n >= Number(f.min)) && (f.max === "" || n <= Number(f.max));
+  }
+  function cfApply(table) {
+    if (!table || !table.tHead || !table.tBodies[0]) return;
+    const st = cfState(table.id), rows = cfRows(table);
+    if (st.sort) {
+      const { i, dir, type } = st.sort, k = dir === "desc" ? -1 : 1;
+      rows.slice().sort((a, b) => {
+        const x = cfVal(a.cells[i]), y = cfVal(b.cells[i]);
+        if (x === "" || y === "") return x === y ? 0 : x === "" ? 1 : -1;          // blanks last
+        return k * (type === "text" || type === "date" ? x.localeCompare(y, undefined, { numeric: true }) : Number(x) - Number(y));
+      }).forEach(tr => table.tBodies[0].appendChild(tr));
+    }
+    let shown = 0;
+    rows.forEach(tr => {
+      const ok = Object.entries(st.filters).every(([i, f]) => cfKeep(f, cfVal(tr.cells[i])));
+      tr.hidden = !ok;
+      if (ok) shown++;
+    });
+    [...table.rows].forEach(tr => {
+      if (![...tr.cells].some(td => td.colSpan > 1)) [...tr.cells].forEach((td, i) => td.classList.toggle("cf-off", st.hidden.has(i)));
+    });
+    [...table.tHead.rows[0].cells].forEach((th, i) => {
+      const b = $(".cf-btn", th);
+      if (b) b.classList.toggle("on", !!st.filters[i] || !!(st.sort && st.sort.i === i));
+    });
+    const status = document.querySelector(`.cf-status[data-for="${table.id}"]`), n = Object.keys(st.filters).length;
+    if (status) status.innerHTML = n || st.sort
+      ? `Showing ${shown} of ${rows.length}${n ? ` · ${n} filter${n === 1 ? "" : "s"}` : ""}${st.sort ? " · sorted" : ""} · <a href="#" data-cf-clear>Clear</a>` : "";
+  }
+  // turn a table's headers into filters; with `columns`, a Columns picker too
+  function cfEnable(table, columns) {
+    if (!table || !table.tHead) return;
+    const wrap = table.closest(".scroll") || table;
+    let bar = wrap.previousElementSibling;
+    if (!bar || !bar.classList.contains("cf-bar")) {
+      bar = document.createElement("div");
+      bar.className = "cf-bar no-print";
+      bar.innerHTML = (columns ? '<details class="col-pick"><summary class="btn sm">Columns</summary><div class="col-pick-list"></div></details>' : "")
+        + `<span class="cf-status small muted" data-for="${table.id}" role="status"></span>`;
+      wrap.parentNode.insertBefore(bar, wrap);
+      bar.addEventListener("click", e => {
+        if (!e.target.closest("[data-cf-clear]")) return;
+        e.preventDefault();
+        const st = cfState(table.id);
+        st.filters = {}; st.sort = null;
+        cfApply(table);
+      });
+      bar.addEventListener("change", e => {
+        const c = e.target.closest("input[data-col]");
+        if (!c) return;
+        const st = cfState(table.id), i = Number(c.dataset.col);
+        if (c.checked) st.hidden.delete(i); else st.hidden.add(i);
+        cfStore(table.id, [...st.hidden]);
+        cfApply(table);
+      });
+    }
+    const st = cfState(table.id);
+    [...table.tHead.rows[0].cells].forEach((th, i) => {
+      if (th.dataset.cf === "none" || $(".cf-btn", th)) return;
+      const b = document.createElement("button");
+      b.type = "button"; b.className = "cf-btn"; b.textContent = "▾";
+      th.classList.add("cf-th");
+      b.title = "Sort or filter";
+      b.setAttribute("aria-label", "Sort or filter " + cfLabel(th));
+      b.addEventListener("click", e => { e.stopPropagation(); cfOpen(table, i, b); });
+      th.appendChild(b);
+    });
+    const list = $(".col-pick-list", bar);
+    if (list) list.innerHTML = [...table.tHead.rows[0].cells].map((th, i) => i === 0 || th.classList.contains("pf-win") ? ""
+      : `<label><input type="checkbox" data-col="${i}"${st.hidden.has(i) ? "" : " checked"}> ${esc(cfLabel(th))}</label>`).join("");
+    cfApply(table);
+  }
+
+  // the two tables: every figure in US dollars, or each row's own currency under
+  // "Original currency" (the small box names it); totals stay in US dollars
+  function renderPortfolio() {
     const fb = $("#pf-funds"); fb.innerHTML = "";
     if (!PF.funds.length)
-      fb.innerHTML = '<tr><td colspan="12" class="muted" style="text-align:left">No fund data yet — upload capital-account statements or JV workbooks.</td></tr>';
+      fb.innerHTML = '<tr><td colspan="14" class="muted" style="text-align:left">No fund data yet — upload capital-account statements or JV workbooks.</td></tr>';
+    const money = (r, v, k, d, bold, mark = true) => `<td data-v="${v[k] == null ? "" : v[k]}" title="${srcTitle(r, k)}${esc(origNote(r, k, d))}">${approx(r, k)}${bold ? "<b>" : ""}${mfmt(v[k], d, v.currency)}${bold ? "</b>" : ""}${mark ? estMark(r, k) : ""}</td>`;
     PF.funds.forEach(f => {
-      const st = f.stats || {};
+      const v = shownRow(f), st = v.stats || {}, w = v.window;
       const parts = [st.as_of ? esc(st.as_of) : "", st.count != null ? st.count + " inv." : "",
-        st.cost != null || st.value != null ? `${mfmt(st.cost)} → ${mfmt(st.value)}` : "",
+        st.cost != null || st.value != null ? `${mfmt(st.cost, null, v.currency)} → ${mfmt(st.value, null, v.currency)}` : "",
         st.gain_pct != null ? `<span class="${st.gain_pct < 0 ? "is-neg" : "is-pos"}">${st.gain_pct >= 0 ? "+" : ""}${st.gain_pct.toFixed(1)}%</span>` : ""
       ].filter(Boolean);
       const stats = parts.length ? parts.join(" · ") : '<span class="muted">—</span>';
+      const dc = v === f ? f.drawn_commit : (v.commitment && v.drawn_to_date != null ? v.drawn_to_date / v.commitment : null);
       const tr = document.createElement("tr");
-      tr.innerHTML = `<td class="lbl"><a href="#" class="pf-open" data-entity="${esc(f.entity)}">${esc(f.investment_name)}</a>${ccyTag(f.native_currency)}` +
+      tr.innerHTML = `<td class="lbl" data-v="${esc(f.investment_name)}"><a href="#" class="pf-open" data-entity="${esc(f.entity)}">${esc(f.investment_name)}</a>${ccyBox(f.native_currency, v.currency)}` +
           (f.investment_name !== f.entity ? `<div class="small muted">${esc(f.entity)}</div>` : "") + `</td>
         <td class="lbl">${esc(f.investment_type)}</td><td class="lbl">${esc(f.region_sector) || '<span class="muted">—</span>'}</td>
-        <td title="${srcTitle(f, "vintage")}">${f.vintage || '<span class="muted">—</span>'}</td>
-        <td title="${srcTitle(f, "fund_size")}">${mfmt(f.fund_size, 3, f.currency)}</td>
-        <td title="${srcTitle(f, "commitment")}">${mfmt(f.commitment, 3, f.currency)}${estMark(f, "commitment")}</td>
-        <td title="${srcTitle(f, "drawn_to_date")}">${mfmt(f.drawn_to_date, 3, f.currency)}${estMark(f, "drawn_to_date")}</td>
-        <td title="${srcTitle(f, "future_draw")}">${mfmt(f.future_draw, 3, f.currency)}${estMark(f, "future_draw")}</td>
-        <td title="${srcTitle(f, "distribution_to_date")}">${mfmt(f.distribution_to_date, 3, f.currency)}${estMark(f, "distribution_to_date")}</td>
-        <td>${f.drawn_commit != null ? Math.round(f.drawn_commit * 100) + "%" : '<span class="muted">—</span>'}</td>
-        <td title="${srcTitle(f, "investment_balance")}"><b>${mfmt(f.investment_balance, 3, f.currency)}</b>${estMark(f, "investment_balance")}</td>
+        <td data-v="${f.vintage || ""}" title="${srcTitle(f, "vintage")}">${f.vintage || '<span class="muted">—</span>'}</td>
+        ${money(f, v, "fund_size", 3, false, false)}${money(f, v, "commitment", 3)}${money(f, v, "drawn_to_date", 3)}
+        ${money(f, v, "future_draw", 3)}${money(f, v, "distribution_to_date", 3)}
+        <td data-v="${dc != null ? dc * 100 : ""}">${dc != null ? Math.round(dc * 100) + "%" : '<span class="muted">—</span>'}</td>
+        ${money(f, v, "investment_balance", 3, true)}
         <td class="small" title="${srcTitle(f, "stats")}">${stats}</td>
-        <td class="pf-win">${f.window ? (f.window.drawn != null ? mfmt(f.window.drawn, 3, f.currency) : mfmt(f.window.invested, 3, f.currency) + (f.window.n_calls ? ` <span class="small muted">(${f.window.n_calls} call${f.window.n_calls === 1 ? "" : "s"})</span>` : "")) : ""}</td>
-        <td class="pf-win">${f.window && f.window.distributed != null ? mfmt(f.window.distributed, 3, f.currency) : '<span class="muted">—</span>'}</td>`;
+        <td class="pf-win">${w ? (w.drawn != null ? mfmt(w.drawn, 3, v.currency) : mfmt(w.invested, 3, v.currency) + (w.n_calls ? ` <span class="small muted">(${w.n_calls} call${w.n_calls === 1 ? "" : "s"})</span>` : "")) : ""}</td>
+        <td class="pf-win">${w && w.distributed != null ? mfmt(w.distributed, 3, v.currency) : '<span class="muted">—</span>'}</td>`;
       fb.appendChild(tr);
     });
     const cb = $("#pf-companies"); cb.innerHTML = "";
     if (!PF.companies.length)
-      cb.innerHTML = '<tr><td colspan="8" class="muted" style="text-align:left">No direct investments yet.</td></tr>';
+      cb.innerHTML = '<tr><td colspan="9" class="muted" style="text-align:left">No direct investments yet.</td></tr>';
     PF.companies.forEach(c => {
+      const v = shownRow(c), w = v.window;
       const tr = document.createElement("tr");
-      tr.innerHTML = `<td class="lbl"><a href="#" class="pf-open" data-entity="${esc(c.entity)}">${esc(c.investment_name)}</a>${ccyTag(c.native_currency)}</td>
+      tr.innerHTML = `<td class="lbl" data-v="${esc(c.investment_name)}"><a href="#" class="pf-open" data-entity="${esc(c.entity)}">${esc(c.investment_name)}</a>${ccyBox(c.native_currency, v.currency)}</td>
         <td class="lbl">${esc(c.theme) || '<span class="muted">—</span>'}</td>
         <td class="lbl">${esc(c.current_round) || '<span class="muted">—</span>'}</td>
-        <td>${esc(c.last_investment_date || "") || '<span class="muted">—</span>'}</td>
-        <td title="${srcTitle(c, "total_invested")}">${mfmt(c.total_invested, null, c.currency)}</td>
-        <td>${mfmt(c.projected_investment, null, c.currency)}</td>
-        <td title="${srcTitle(c, "total_value")}">${mfmt(c.total_value, null, c.currency)}</td>
-        <td class="lbl">${esc(c.operating_status)}${c.exited ? ' <span class="small muted">· exited</span>' : ""}</td>
-        <td class="pf-win">${c.window ? mfmt(c.window.invested, null, c.currency) + (c.window.n_calls ? ` <span class="small muted">(${c.window.n_calls})</span>` : "") : ""}</td>`;
+        <td data-v="${esc(c.last_investment_date || "")}">${esc(c.last_investment_date || "") || '<span class="muted">—</span>'}</td>
+        ${money(c, v, "total_invested", null, false, false)}${money(c, v, "projected_investment", null, false, false)}${money(c, v, "total_value", null, false, false)}
+        <td class="lbl" data-v="${esc((c.operating_status || "") + (c.exited ? " · exited" : ""))}">${esc(c.operating_status)}${c.exited ? ' <span class="small muted">· exited</span>' : ""}</td>
+        <td class="pf-win">${w ? mfmt(w.invested, null, v.currency) + (w.n_calls ? ` <span class="small muted">(${w.n_calls})</span>` : "") : ""}</td>`;
       cb.appendChild(tr);
     });
     const t = PF.totals, tot = v => v == null ? "—" : (Number(v) < 0 ? "-" : "") + "$" + Math.abs(Number(v) / 1e6).toFixed(1) + "M";
@@ -518,11 +733,10 @@
     $("#pf-outflow").textContent = tot(t.cash_outflow);
     $("#pf-committed").textContent = tot(t.committed);
     $("#pf-net").textContent = tot(t.net_cash_flow);
+    $("#pf-card .perf-strip").title = AMT.orig ? "Totals stay in US dollars: amounts in different currencies can't be added" : "";
     $$(".pf-open").forEach(a => a.addEventListener("click", e => { e.preventDefault(); openPortfolioEntity(a.dataset.entity); }));
-    if (PF.summary) renderSummary(PF.summary); else loadSummary(PF.as_of);
-    renderAttention("#pf-attention", PF.funds.concat(PF.companies).flatMap(r =>
-      (r.issues || []).map(i => Object.assign({ who: r.investment_name, entity: r.entity }, i))),
-      i => openPortfolioEntity(i.entity));
+    cfEnable($("#pf-funds-table"), true);
+    cfEnable($("#pf-companies-table"), true);
   }
 
   // ---------------- Portfolio dashboard (Overview) and investment analysis (Charts) ----------------
@@ -609,6 +823,7 @@
     const res = await fetch("/api/history/" + encodeURIComponent(entity));
     if (!res.ok) { toast("History not shown: " + (await failText(res))); return; }
     HIST = await res.json();
+    delete CF["hist-table"]; delete CF["hist-inv"];      // another fund or company: its own filters
     drawHistory();
   }
   // the one-page summary's view: a period, and which table columns show (remembered per browser)
@@ -626,15 +841,19 @@
   function drawHistory() {
     const pane = $('.pane[data-pane="history"]');
     if (!HIST || !pane || pane.hidden) return;
-    const h = HIST, C = window.Charts, cm = v => cmoney(v, h.currency);
-    $("#hist-title").textContent = h.name + (h.name !== h.entity ? ` (${h.entity})` : "");
-    $("#hist-sub").innerHTML = `${h.kind === "fund" ? "Fund" : "Direct investment"}${h.theme ? " · " + esc(h.theme) : ""}${h.status ? " · " + esc(h.status) : ""} · figures in ${esc(h.currency)}${h.native_currency && h.native_currency !== h.currency ? " (converted from " + esc(h.native_currency) + ")" : ""}`
+    // under "Original currency", its own figures (a fund or company with another currency)
+    const h = (AMT.orig && HIST.native) ? { ...HIST, ...HIST.native } : HIST, C = window.Charts, cm = v => cmoney(v, h.currency);
+    const own = (h.native_currency || "USD").toUpperCase();
+    $("#hist-title").innerHTML = esc(h.name + (h.name !== h.entity ? ` (${h.entity})` : "")) + ccyBox(own, h.currency);
+    $("#hist-sub").innerHTML = `${h.kind === "fund" ? "Fund" : "Direct investment"}${h.theme ? " · " + esc(h.theme) : ""}${h.status ? " · " + esc(h.status) : ""} · ` + (own === "USD" ? "figures in US dollars"
+        : h.currency === own ? `figures in ${esc(own)}, its own currency${(h.converted || []).length ? " (≈ marks one converted from US dollars)" : ""}`
+        : `figures in US dollars, converted from ${esc(own)} — choose Original currency for the ${esc(own)} figures`)
       + ` · as of ${esc(h.as_of_label)}`;
     const mult = h.paid_in ? (h.value_now || 0) / h.paid_in : null;
     $("#hist-tiles").innerHTML = [["Invested", cm(h.paid_in)], ["Value now", cm(h.value_now)],
-      ["Multiple", mult == null ? "—" : mult.toFixed(2) + "x"], ["IRR", h.irr_pct == null ? "—" : h.irr_pct.toFixed(1) + "%" + (h.irr_estimated ? "*" : "")]]
+      ["Multiple", mult == null ? "—" : mult.toFixed(2) + "x"], [h.currency === "USD" ? "IRR" : "IRR (in US dollars)", h.irr_pct == null ? "—" : h.irr_pct.toFixed(1) + "%" + (h.irr_estimated ? "*" : "")]]
       .map(([l, v]) => `<div class="perf-tile"><div class="pv">${v}</div><div class="pl">${esc(l)}</div></div>`).join("");
-    const fact = f => f.kind === "money" ? cm(f.value) : f.kind === "pct" ? Number(f.value).toFixed(2) + "%"
+    const fact = f => f.kind === "money" ? (AMT.orig && f.approx ? APPROX : "") + cm(f.value) : f.kind === "pct" ? Number(f.value).toFixed(2) + "%"
       : f.kind === "multiple" ? Number(f.value).toFixed(2) + "x" : esc(String(f.value));
     $("#hist-facts").innerHTML = (h.facts || []).map(f =>
       `<div class="hf"><span class="hf-l">${esc(f.label)}</span><span class="hf-v">${fact(f)}</span></div>`).join("")
@@ -655,12 +874,12 @@
     const roll = h.roll_forward.filter(r => inHistView(r.period));
     const byYear = years.filter(r => (!HIST_VIEW.from || `${r.year}-Q4` >= HIST_VIEW.from)
       && (!HIST_VIEW.to || `${r.year}-Q1` <= HIST_VIEW.to));
-    const inv = h.investments.filter(i => inHistView(quarterOf(i.date)));
+    const inv = h.investments.filter(i => !i.date || inHistView(quarterOf(i.date)));   // an undated purchase has no quarter
     const val = h.value.filter(p => inHistView(quarterOf(p[0])));
 
     const fmtM = v => (v < 0 ? "-" : "") + sign(h.currency) + Math.abs(v / 1e6).toFixed(1) + "M";
     C.timeChart($("#hist-value"), { series: [
-      { name: "Total invested", color: "#2d4a73", step: true, points: inv.map(i => [i.date, i.cumulative, i.description]) },
+      { name: "Total invested", color: "#2d4a73", step: true, points: inv.filter(i => i.date).map(i => [i.date, i.cumulative, i.description]) },
       { name: "Value", color: "#0f8a7e", step: true, points: val.map(p => [p[0], p[1], p[2]]) }] },
       { fmt: fmtM, empty: "No dated investments or values in this period." });
     $("#hist-value-note").textContent = h.value_basis ? "Value from " + h.value_basis + (h.value_now != null ? "; the last point is today's value." : ".") : "";
@@ -694,7 +913,8 @@
       first = ["Quarter", r => esc(r.period)]; rows = roll; empty = "No roll-forward quarters in this period.";
     } else {
       $("#hist-fin-title").textContent = "Revenue and operating expense by quarter";
-      $("#hist-table-title").textContent = "Quarterly figures (the company's own statements)";
+      $("#hist-table-title").textContent = "Quarterly figures (the company's own statements, in "
+        + (h.currency === "USD" ? "US dollars" : h.currency) + ")";
       C.columnChart($("#hist-fin"), { categories: fin.map(r => qLabel(r.period)),
         series: [{ name: "Revenue", color: "#0f8a7e", values: fin.map(r => r.revenue) },
                  { name: "Operating expense", color: "#b7791f", values: fin.map(r => r.operating_expense) }] },
@@ -705,19 +925,25 @@
               ["operating_cash_flow", "Operating cash flow", r => k(r.operating_cash_flow)], ["capex", "CapEx", r => k(r.capex)],
               ["ending_cash", "Ending cash", r => `<b>${k(r.ending_cash)}</b>`], ["net_monthly_burn", "Net monthly burn", r => k(r.net_monthly_burn)],
               ["net_runway", "Net runway", r => r.net_runway == null ? "—" : r.net_runway + " mo"]];
-      first = ["Quarter", r => qLabel(r.period)]; rows = fin;
+      first = ["Quarter", r => qLabel(r.period) + (r.currency && r.currency !== h.currency
+        ? ` <span class="small muted" title="No ${esc(h.currency)} rate for this quarter">(${esc(r.currency)})</span>` : "")]; rows = fin;
       empty = h.financials.length ? "No quarterly statements in this period."
         : "No approved quarterly statements for this company yet — upload its P&amp;L, balance sheet and cash-flow statement.";
     }
     const shown = cols.filter(([key]) => !HIST_VIEW.hide.has(key));
     $("#hist-cols-list").innerHTML = cols.map(([key, label]) =>
       `<label><input type="checkbox" data-col="${key}"${HIST_VIEW.hide.has(key) ? "" : " checked"}> ${esc(label)}</label>`).join("");
-    $("#hist-table").innerHTML = `<thead><tr><th class="lbl">${first[0]}</th>` + shown.map(([, label]) => `<th>${esc(label)}</th>`).join("")
-      + "</tr></thead><tbody>" + (rows.map(r => `<tr><td class="lbl">${first[1](r)}</td>` + shown.map(([, , f]) => `<td>${f(r)}</td>`).join("") + "</tr>").join("")
+    $("#hist-table").innerHTML = `<thead><tr><th class="lbl" data-cf="text">${first[0]}</th>`
+      + shown.map(([key, label]) => `<th data-cf="${key === "net_runway" ? "num" : "money"}">${esc(label)}</th>`).join("")
+      + "</tr></thead><tbody>" + (rows.map(r => `<tr><td class="lbl" data-v="${esc(String(r.period || r.year || ""))}">${first[1](r)}</td>`
+        + shown.map(([key, , f]) => `<td data-v="${r[key] == null ? "" : r[key]}">${f(r)}</td>`).join("") + "</tr>").join("")
         || `<tr><td colspan="${shown.length + 1}" class="muted" style="text-align:left">${empty}</td></tr>`) + "</tbody>";
-    $("#hist-inv").innerHTML = '<thead><tr><th class="lbl">Date</th><th class="lbl">Investment</th><th>Amount</th><th>Total invested</th><th class="lbl">Source</th></tr></thead><tbody>'
-      + (inv.map(i => `<tr><td class="lbl">${esc(i.date)}</td><td class="lbl">${esc(i.description || "—")}${i.estimated ? EST_MARK : ""}</td><td>${cm(i.amount)}</td><td>${cm(i.cumulative)}</td><td class="lbl small muted">${esc(i.document || "")}${i.also_in.length ? " · also listed in " + i.also_in.length + " other" : ""}</td></tr>`).join("")
+    $("#hist-inv").innerHTML = '<thead><tr><th class="lbl" data-cf="date">Date</th><th class="lbl" data-cf="text">Investment</th><th data-cf="money">Amount</th>'
+      + '<th data-cf="money">Total invested</th><th class="lbl" data-cf="text">Source</th></tr></thead><tbody>'
+      + (inv.map(i => `<tr><td class="lbl" data-v="${esc(i.date || "")}">${i.date ? esc(i.date) : `<span class="muted" title="${esc(i.date_note || "")}">no date</span>`}</td><td class="lbl" data-v="${esc(i.description || "")}">${esc(i.description || "—")}${i.estimated ? EST_MARK : ""}</td><td data-v="${i.amount == null ? "" : i.amount}">${cm(i.amount)}</td><td data-v="${i.cumulative == null ? "" : i.cumulative}">${cm(i.cumulative)}</td><td class="lbl small muted" data-v="${esc(i.document || "")}">${esc(i.document || "")}${i.also_in.length ? " · also listed in " + i.also_in.length + " other" : ""}</td></tr>`).join("")
          || `<tr><td colspan="5" class="muted" style="text-align:left">${h.investments.length ? "No investments in this period." : "No dated investments on file."}</td></tr>`) + "</tbody>";
+    cfEnable($("#hist-table"));
+    cfEnable($("#hist-inv"));
   }
   function wireHistoryView() {
     const redraw = () => drawHistory();
@@ -730,7 +956,9 @@
       saveHistHide(); redraw();
     });
     $("#hist-reset").addEventListener("click", () => {
-      HIST_VIEW.from = HIST_VIEW.to = ""; HIST_VIEW.hide.clear(); saveHistHide(); redraw();
+      HIST_VIEW.from = HIST_VIEW.to = ""; HIST_VIEW.hide.clear(); saveHistHide();
+      delete CF["hist-table"]; delete CF["hist-inv"];
+      redraw();
     });
     $("#hist-print").addEventListener("click", () => {
       // fit the card to one landscape page: measured at the page's printable width
@@ -867,9 +1095,7 @@
     if (!row) return;
     PF_ENTITY = row;
     const fields = row.kind === "fund" ? PF.fund_fields : PF.company_fields;
-    $("#pf-m-title").textContent = row.investment_name;
-    $("#pf-m-kind").textContent = (row.kind === "fund" ? "Fund · " : "Direct investment · ") + entity
-      + " · figures in " + (row.currency || "USD");
+    entityTitle(row);
     const det = row.details || {};
     const val = f => {
       const v = det[f.key];
@@ -894,18 +1120,44 @@
     $("#pf-modal-bg").classList.add("show");
   }
 
+  function entityTitle(row) {
+    const v = shownRow(row);
+    $("#pf-m-title").innerHTML = esc(row.investment_name) + ccyBox(row.native_currency, v.currency);
+    $("#pf-m-kind").textContent = (row.kind === "fund" ? "Fund · " : "Direct investment · ") + row.entity
+      + " · figures in " + (v.currency || "USD");
+    // rows typed in below are in the currency shown
+    const cur = (v.currency || "USD").toUpperCase(), scale = $("#pf-m-scale");
+    scale.dataset.ccy = cur;
+    scale.options[0].textContent = sign(cur).trim() + "M";
+    scale.options[1].textContent = cur;
+  }
+
   function renderCalls(row) {
     const tb = $("#pf-m-calls"); tb.innerHTML = "";
+    const fmtN = n => Number(n).toLocaleString("en-US", { maximumFractionDigits: 0 });
+    row = shownRow(row);
     if (!row.invested.length)
       tb.innerHTML = '<tr><td colspan="5" class="muted" style="text-align:left">None yet.</td></tr>';
-    row.invested.forEach(c => {
+    const callRow = (c, why) => {
       const tr = document.createElement("tr");
-      tr.innerHTML = `<td class="lbl">${esc(c.date)}${c.date_note ? ` <span class="small muted" title="${esc(c.date_note)}">(date estimated)</span>` : ""}</td><td class="lbl">${esc(c.description || "-")}</td>
-        <td title="${c.amount_usd != null ? "USD " + Number(c.amount_usd).toLocaleString("en-US", { maximumFractionDigits: 0 }) : ""}">${mfmt(c.amount, 3, c.currency)}${c.original ? ` <span class="small muted">(${esc(c.original.currency)} ${Number(c.original.amount).toLocaleString("en-US", { maximumFractionDigits: 0 })})</span>` : ""}</td>
-        <td class="lbl small muted">${esc(c.document || c.source)}${(c.also_in || []).length ? `<div title="${esc(c.also_in.join("\n"))}">also listed in ${c.also_in.length} other document${c.also_in.length === 1 ? "" : "s"} — shown once</div>` : ""}</td>
+      if (why) tr.className = "pf-uncounted";
+      tr.innerHTML = `<td class="lbl">${c.date ? esc(c.date) : `<span title="${esc(c.date_note || "")}">no date</span>`}${c.date && c.date_note ? ` <span class="small muted" title="${esc(c.date_note)}">(date estimated)</span>` : ""}</td><td class="lbl">${esc(c.description || "-")}</td>
+        <td title="${c.amount_usd != null ? "USD " + Number(c.amount_usd).toLocaleString("en-US", { maximumFractionDigits: 0 }) : ""}">${mfmt(c.amount, 3, c.currency)}${c.original ? ` <span class="small muted">(${esc(c.original.currency)} ${fmtN(c.original.amount)})</span>`
+          : c.currency !== "USD" && c.amount_usd != null ? ` <span class="small muted">(USD ${fmtN(c.amount_usd)})</span>` : ""}</td>
+        <td class="lbl small muted">${esc(c.document || c.source)}${(c.also_in || []).length ? `<div title="${esc(c.also_in.join("\n"))}">also listed in ${c.also_in.length} other document${c.also_in.length === 1 ? "" : "s"} — shown once</div>` : ""}${why ? `<div>${esc(why)}</div>` : ""}</td>
         <td>${c.id ? `<button class="btn sm danger pf-del" data-id="${c.id}" aria-label="Delete this row">Delete</button>` : ""}</td>`;
       tb.appendChild(tr);
-    });
+    };
+    row.invested.forEach(c => callRow(c));
+    // rows the report doesn't count, listed so a wrong one can be seen and deleted
+    const later = row.invested_later || [], skipped = row.invested_superseded || [];
+    if (later.length || skipped.length) {
+      const head = document.createElement("tr");
+      head.innerHTML = `<td colspan="5" class="lbl small muted pf-uncounted-head">Not counted (${later.length + skipped.length})</td>`;
+      tb.appendChild(head);
+      skipped.forEach(c => callRow(c, c.not_counted));
+      later.forEach(c => callRow(c, "dated after this report's quarter"));
+    }
     $$(".pf-del", tb).forEach(b => b.addEventListener("click", async () => {
       b.disabled = true;
       const res = await fetch("/api/portfolio/calls/" + b.dataset.id, { method: "DELETE" });
@@ -1013,7 +1265,7 @@
       if (!lines.trim()) return;
       const res = await fetch(`/api/portfolio/${encodeURIComponent(PF_ENTITY.entity)}/calls`, {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ lines, scale: Number($("#pf-m-scale").value) }) });
+        body: JSON.stringify({ lines, scale: Number($("#pf-m-scale").value), currency: $("#pf-m-scale").dataset.ccy || "USD" }) });
       if (!res.ok) { toast("Not added: " + (await failText(res))); return; }
       $("#pf-m-lines").value = "";
       toast(`Added ${(await res.json()).added} row(s)`);

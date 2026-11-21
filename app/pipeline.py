@@ -8,6 +8,7 @@ and rows in the SQLite DB.
 """
 from __future__ import annotations
 
+import logging
 import tempfile
 from pathlib import Path
 from typing import Any, Optional
@@ -85,10 +86,11 @@ def process_path(path: Path, *, save_copy: bool = True,
 
 def _after_save(result, sub_id: int, user: str = "local") -> None:
     if result.master:
-        from .extractors.master import apply_master
+        from .extractors.master import READER_VERSION, apply_master
         applied = apply_master(result.master, user=user, source=result.filename)
         result.warnings.extend(applied["errors"])
         result.master["applied"] = applied
+        db.set_reader_version(sub_id, READER_VERSION)
         return
     if result.detected_report_type != carry_forward.RF:
         return
@@ -100,7 +102,7 @@ def _after_save(result, sub_id: int, user: str = "local") -> None:
     carry_forward.rederive_following(result.entity_name, result.period)
 
 
-def reprocess_submission(sub_id: int, user: str = "local") -> dict[str, Any]:
+def reprocess_submission(sub_id: int, user: str = "local", reason: str = "") -> dict[str, Any]:
     """Re-read a stored file with everything the app knows now (taught terms,
     the fund's memory and parameters, the current model). Reviewed values stay."""
     sub = db.get_submission(sub_id)
@@ -113,7 +115,7 @@ def reprocess_submission(sub_id: int, user: str = "local") -> dict[str, Any]:
     carry_forward.apply_to_result(result)
     checks = validate_facts(result.detected_report_type, result.facts)
     checks += scale_checks(result.detected_report_type, result.entity_name, result.facts)
-    counts = db.replace_extraction(sub_id, result, user=user)
+    counts = db.replace_extraction(sub_id, result, user=user, reason=reason)
     _after_save(result, sub_id, user=user)
     lake.record_extraction(sub_id, result, path,
                            revision=db.get_submission(sub_id).get("revision") or 1)
@@ -122,6 +124,25 @@ def reprocess_submission(sub_id: int, user: str = "local") -> dict[str, Any]:
             "entity_name": result.entity_name, "period": result.period,
             "extractor": result.extractor, **counts,
             "checks": [c.to_dict() for c in checks], "warnings": result.warnings}
+
+
+def refresh_master_workbooks(user: str = "system") -> list[dict[str, Any]]:
+    """Read again every stored workbook that another version of the reader read,
+    so a fix to the reader reaches the figures and dated investments already on
+    file without anyone pressing Re-read (called at startup). One that fails —
+    its stored copy missing, say — is logged and tried again next time."""
+    from .extractors.master import READER_VERSION
+    done = []
+    for sub in db.workbooks_read_before(READER_VERSION):
+        try:
+            r = reprocess_submission(sub["id"], user=user,
+                                     reason=f"the workbook reader was updated ({READER_VERSION})")
+            done.append({"submission_id": sub["id"], "status": r["status"]})
+        except Exception as e:                      # noqa: BLE001 — one file never stops the rest
+            logging.getLogger("pfs").warning("re-reading %s for the reader update failed: %s",
+                                             sub["filename"], e)
+            done.append({"submission_id": sub["id"], "status": "error", "error": str(e)})
+    return done
 
 
 def process_upload(filename: str, raw_bytes: bytes,

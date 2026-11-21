@@ -576,9 +576,14 @@ def _accounting_tabs(ws) -> list[dict[str, Any]]:
             values["security"] = max(securities)[1]
         is_fund = classified["entity_kind"] == "fund" or (
             classified["entity_kind"] == "unknown" and ("commitment" in values or "commitment" in native))
+        if ccy and ccy != "USD" and "distribution_to_date" not in native:
+            paid_out = [abs(Decimal(str(e["amount"]))) for e in events if e["kind"] == "distribution"]
+            if paid_out:                                # the distributions table, in its own currency
+                native["distribution_to_date"] = _amt(sum(paid_out, Decimal(0)))
         if not is_fund:
             values.pop("investment_balance", None)      # a company's balance is its book value
-            native.pop("investment_balance", None)
+            if native.get("investment_balance") is not None:
+                native["book_value"] = native.pop("investment_balance")   # in its own currency
             if "drawn_to_date" in native:               # a company's funding is its cost
                 native["total_invested"] = native.pop("drawn_to_date")
         commitment = native.pop("commitment", None) if ccy else values.pop("commitment", None)
@@ -685,6 +690,8 @@ def read_master(path: Path) -> Optional[dict[str, Any]]:
         for k in ("native", "currency", "rates"):
             if t.get(k):
                 rec[k] = t[k]
+        if t.get("commitment") and t.get("currency") not in (None, "USD"):
+            rec.setdefault("native", {})["commitment"] = t["commitment"]   # its own-currency figure
         if t.get("events"):
             rec["events"] = (rec.get("events") or []) + t["events"]   # e.g. a note tab and a shares tab
         if not rec["commitment"] and t.get("commitment"):
@@ -716,6 +723,7 @@ def read_master(path: Path) -> Optional[dict[str, Any]]:
             if c.get("undated") and when:
                 c["date"] = when                  # the tab's purchase row has no date of its own
         rec["calls"] = calls
+        rec["note_interest"] = str(interest) if interest else None   # in the funding, not cash
     if summary_rows:
         reading = read_holdings(summary_rows)
         for h in reading["records"]:
@@ -735,6 +743,10 @@ def read_master(path: Path) -> Optional[dict[str, Any]]:
 
 _MONEY_FIELDS = None
 _DOC_RANK = {"portfolio": 1, "equity": 2}      # the accounting workbook is the primary source
+# Bump whenever reading or applying a workbook changes what is stored: a workbook
+# on file that an older version read is read again at startup
+# (pipeline.refresh_master_workbooks), so a fix reaches the data already uploaded.
+READER_VERSION = "2026-11-20"
 
 
 def _money_fields() -> set[str]:
@@ -753,13 +765,17 @@ def apply_master(reading: dict[str, Any], user: str = "local", source: str = "")
     USD, a non-USD entity's tab in its own currency; reports convert with the
     entity's USD rates. The accounting workbook (Equity Investments Summary) is
     the primary source: an Investment Portfolio workbook never overwrites a
-    figure, a rate or a dated investment that the accounting workbook set."""
+    figure, a rate or a dated investment that the accounting workbook set.
+    Its dated investments are the record up to its quarter (`equity_as_of`):
+    reading it again removes the rows an accounting workbook saved that it no
+    longer lists, and the report leaves out any other row dated by then
+    (portfolio._invested). Rows typed in by hand are never removed."""
     from .. import terms
-    from ..portfolio import coerce_details, parse_date, same_investment, usd_rate_at
+    from ..portfolio import _order, coerce_details, parse_date, same_investment, usd_rate_at
     existing = {e.lower(): e for e in db.all_details()}
     for f in db.get_facts():
         existing.setdefault(str(f["entity_name"]).lower(), f["entity_name"])
-    done, errors, n_calls, n_replaced = [], [], 0, 0
+    done, errors, n_calls, n_replaced, n_removed = [], [], 0, 0, 0
     for rec in reading["records"]:
         entity = existing.get(rec["entity"].lower(), rec["entity"])
         doc = rec.get("doc") or "portfolio"
@@ -770,8 +786,8 @@ def apply_master(reading: dict[str, Any], user: str = "local", source: str = "")
         body = dict(rec["values"])
         # the summary's figures are in USD, the reporting currency; a figure only
         # the entity's tab gives is kept in the tab's currency (the report converts it)
-        natives = {k: v for k, v in (rec.get("native") or {}).items()
-                   if k != "commitment" and body.get(k) in (None, "")}
+        natives = {k: v for k, v in (rec.get("native") or {}).items()     # display-only originals left out
+                   if k not in ("commitment", "distribution_to_date", "book_value") and body.get(k) in (None, "")}
         body.update(natives)
         # an Investment Portfolio workbook leaves alone what the accounting workbook set
         for k in list(body):
@@ -801,10 +817,22 @@ def apply_master(reading: dict[str, Any], user: str = "local", source: str = "")
             stamped["usd_rates_src"] = doc
         if rec.get("events") and doc == "equity":
             stamped["history"] = rec["events"]
+        if doc == "equity":
+            stamped["note_interest"] = rec.get("note_interest")   # what the funding adds to the cash
+            # the tab's own-currency figures (Total Funding in EUR, ...): the originals
+            stamped["native_values"] = {k: str(v) for k, v in (rec.get("native") or {}).items()
+                                        if v not in (None, "")}
         if reading.get("period"):
             stamped["workbook_as_of"] = reading["period"]
             stamped["workbook_fields"] = sorted(set(prior.get("workbook_fields") or [])
                                                 | {k for k, v in values.items() if v is not None})
+        # the accounting workbook's quarter: its dated investments are the record up
+        # to then (an older accounting workbook read later doesn't move it back)
+        newest = True
+        if doc == "equity" and reading.get("period"):
+            newest = _order(reading["period"]) >= _order(prior.get("equity_as_of") or "")
+            if newest:
+                stamped["equity_as_of"] = reading["period"]
         db.set_details(entity, stamped, user=user)
         det = db.get_details(entity)
         if rec.get("commitment") and not (doc == "portfolio" and field_src.get("commitment") == "equity"):
@@ -819,6 +847,7 @@ def apply_master(reading: dict[str, Any], user: str = "local", source: str = "")
             det = db.get_details(entity)
         # dated investments: one investment is one row, whichever workbook lists it
         on_file = db.get_capital_calls(entity)
+        listed: set[int] = set()                  # the rows this reading lists
 
         def usd_of(amount: Decimal, cur: Optional[str], amount_usd: Optional[str], d: str) -> Optional[Decimal]:
             if amount_usd:
@@ -841,9 +870,21 @@ def apply_master(reading: dict[str, Any], user: str = "local", source: str = "")
             same = next((x for x in on_file if x["call_date"] == d and Decimal(x["amount"]) == amount
                          and (x.get("source") or "") in (src_name, "")), None)
             if same is not None:                              # this workbook's row, already on file (a re-read)
-                if not same.get("source") and same.get("id"):
-                    db.stamp_capital_call(same["id"], src_name, doc)    # saved before sources were recorded
-                    same["source"], same["doc_kind"] = src_name, doc
+                listed.add(same["id"])
+                # an older reader saved it without its currency or USD value: the
+                # accounting workbook's are the record
+                fixed: dict[str, Any] = {}
+                if doc == "equity" and cur and cur != "USD" and same.get("currency") != cur:
+                    fixed["currency"] = cur
+                if doc == "equity" and c.get("amount_usd") and (
+                        same.get("amount_usd") is None or Decimal(str(same["amount_usd"])) != Decimal(c["amount_usd"])):
+                    fixed["amount_usd"] = str(Decimal(c["amount_usd"]))
+                if (fixed or not same.get("source")) and same.get("id"):
+                    # name its file (rows saved before sources were recorded have none)
+                    db.stamp_capital_call(same["id"], same.get("source") or src_name,
+                                          same.get("doc_kind") or doc, user=user, **fixed)
+                    same.update({"source": same.get("source") or src_name,
+                                 "doc_kind": same.get("doc_kind") or doc, **fixed})
                 continue
             twin = None if not d else next((x for x in on_file if x["call_date"] and (x.get("source") or "") != src_name
                                             and same_investment(
@@ -851,6 +892,7 @@ def apply_master(reading: dict[str, Any], user: str = "local", source: str = "")
                 d, new_usd)), None)
             if twin is not None:
                 if _DOC_RANK.get(twin.get("doc_kind") or "", 0) >= _DOC_RANK[doc] or doc != "equity":
+                    listed.add(twin["id"])
                     continue                                  # already on file from as good a source
                 db.delete_capital_call(twin["id"], user=user)  # the accounting workbook's row replaces it
                 on_file = [x for x in on_file if x["id"] != twin["id"]]
@@ -864,10 +906,20 @@ def apply_master(reading: dict[str, Any], user: str = "local", source: str = "")
             on_file.append({"id": cid, "call_date": d, "amount": str(amount), "currency": cur,
                             "amount_usd": c.get("amount_usd"), "doc_kind": doc,
                             "source": source or "master workbook"})
+            listed.add(cid)
             n_calls += 1
+        # the record up to its quarter: an accounting workbook's row this one no
+        # longer lists (an older reading of it, an earlier workbook) goes
+        if doc == "equity" and newest and rec.get("calls"):
+            for x in on_file:
+                if x.get("doc_kind") == "equity" and x["id"] not in listed:
+                    db.delete_capital_call(x["id"], user=user,
+                                           note=f"no longer listed in {source or 'the accounting workbook'}")
+                    n_removed += 1
         done.append({"entity": entity, "kind": rec["kind"], "fields": sorted(values),
                      "sheet": rec.get("sheet", ""), "currency": det.get("currency") or "USD"})
-    return {"updated": done, "errors": errors, "calls_added": n_calls, "calls_replaced": n_replaced}
+    return {"updated": done, "errors": errors, "calls_added": n_calls, "calls_replaced": n_replaced,
+            "calls_removed": n_removed}
 
 
 def period_from_name(filename: str) -> str:

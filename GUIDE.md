@@ -394,11 +394,13 @@ Investment Portfolio workbook never overwrites a figure, a rate or a dated inves
   *Value (USD) | FX Rate | Value (KRW)* table. A note that converts into shares is counted once, as
   the note's own funding — the conversion row is left out when that note is on file, and kept
   (dated at the conversion) when it is not; a note repaid in cash is no investment. A purchase row
-  with no date is dated from the investment date on file, and says so.
+  with no date is dated from the investment date on file, and says so; with none on file at all it
+  is listed as *no date* — counted in the total, left out of the IRR.
 - Each company's dated cash flows must add up to the summary's *Gross Investment / Funding* —
   within 5%, or exactly once the interest its notes accrued is added (the summary counts a
   converted note at its balance, interest included). A tab that doesn't is named under the upload
-  and left out.
+  and left out. The IRR applies the same rule: when the notes' interest explains the difference,
+  the dated cash flows stand.
 - **Closed investments**: one sold or otherwise disposed of is an *Exit*, dated by its
   *Disposition Date*; one written off with no disposition stays *Impaired*. A closed note that never
   converted comes in as its own investment. A line of another company's acquisition proceeds —
@@ -406,8 +408,26 @@ Investment Portfolio workbook never overwrites a figure, a rate or a dated inves
   groups' IRR (it has none of its own, having no investment).
 - **Fund distributions** are dated as the accounting tab dates them (in USD as the accounting team
   converted them); statements add only the quarters after the workbook's.
+- **The record up to its quarter.** For a fund or company whose cash flows the accounting workbook
+  lists, its rows are the record up to the workbook's quarter: any other row dated by then — an
+  Investment Portfolio workbook's, one an older version of the app saved, one typed in by hand —
+  isn't counted (in the Invested list, the IRR or the company history) and is listed under
+  *Not counted*, with a **Delete** button. What is added on top counts from the quarter after. A row
+  dated after the report's quarter is listed there too, so a mistyped date can be seen and deleted.
+- **Reading it again** makes its rows match it: a row an earlier reading saved that it no longer
+  lists is removed, and a row it lists again takes the currency and USD value it gives (audited).
+  Each stored workbook records which version of the reader read it; when the app starts after the
+  reader is updated, it reads the stored workbooks again — a fix reaches the figures already
+  uploaded without anyone pressing *Re-read*, and a reviewed file stays reviewed.
 
 **Currencies and exchange rates**
+- **The small box** beside each fund's and company's name, in the Investment Portfolio and the
+  Company history, names its own currency (grey for US dollars). Every figure is in US dollars;
+  **US dollars | Original currency** (remembered in this browser) shows each fund's and company's
+  own figures instead — the accounting tab's, its statements' and its calls' own amounts; a figure
+  known only in US dollars is converted at the quarter's rate and marked **≈**. Under US dollars,
+  hovering a figure shows the original. Totals and the IRR stay in US dollars. A row typed in by
+  hand is in the currency the form shows.
 - **Every figure is in USD**, the accounting workbook's currency — the Investment Portfolio, the
   IRR section, the Portfolio Summary and the history alike. A fund or company whose statements or
   tab are in another currency is tagged with it (*EUR→USD*), and the Portfolio Summary's last
@@ -432,10 +452,17 @@ Pick a fund or company: its investment facts (theme, status, round, first and la
 investments made, total invested, ownership, book and fair value, gain, multiple, impairment and
 exit — a fund's commitment, drawn, distributed, NAV, TVPI, DPI), what was invested and what the
 holding has been worth over time, its own quarterly figures (revenue, operating expense, cash
-flow, CapEx, ending cash, burn and runway — in the currency the company reports in) or a fund's
+flow, CapEx, ending cash, burn and runway — in US dollars at each quarter's rate, or as its
+statements give them under *Original currency*) or a fund's
 roll-forward, and every dated investment with the running total. **Period** narrows the charts and
 tables to a run of quarters; **Columns** picks which figures the table shows (remembered in this
 browser); **Print one-page summary** fits it all on one landscape page (or Save as PDF).
+
+**Sorting and filtering columns** (Investment Portfolio and Company history)
+Each column header has a **▾**: sort, tick the values to keep, or give a range — amounts in
+millions, as shown; dates from–to. **Columns** shows or hides the Investment Portfolio tables'
+columns (remembered in this browser), and *Showing N of M · Clear* undoes the filters. It all
+runs in the browser: nothing extra is computed or stored on the server.
 
 **Portfolio dashboard** (Overview) and **investment analysis** (Charts)
 KPI cards (TVPI, DPI, IRR, total gain with realized / unrealized, paid-in, total value), capital

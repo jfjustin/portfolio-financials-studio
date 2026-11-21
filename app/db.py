@@ -45,6 +45,7 @@ submissions = Table(
     Column("number_format", String(16)),                 # "1,234.56" | "1.234,56"
     Column("source_key", Text),                          # stored copy (for re-reading)
     Column("revision", Integer),                         # extraction revision (re-reads bump it)
+    Column("reader_version", String(32)),                # a workbook: the reader version that read it
 )
 
 facts = Table(
@@ -326,10 +327,12 @@ def _insert_facts(conn, sub_id: int, result: ExtractionResult, facts_: list) -> 
             note="; ".join(f.flags) if f.flags else None))
 
 
-def replace_extraction(sub_id: int, result: ExtractionResult, user: str = "local") -> dict:
+def replace_extraction(sub_id: int, result: ExtractionResult, user: str = "local",
+                       reason: str = "") -> dict:
     """Re-read of a stored file: refresh the submission in place. Values a
     reviewer confirmed or rejected stay; every other value is replaced by the
-    new reading (a confirmed field isn't duplicated). Audited."""
+    new reading (a confirmed field isn't duplicated). The file goes back to
+    pending only when the new reading has values to review. Audited."""
     eng = get_engine()
     with eng.begin() as conn:
         old = conn.execute(select(facts).where(facts.c.submission_id == sub_id)).mappings().all()
@@ -344,21 +347,24 @@ def replace_extraction(sub_id: int, result: ExtractionResult, user: str = "local
             entity_name=result.entity_name, period=result.period,
             period_start=result.period_start, period_end=result.period_end,
             updated_at=_now()))
-        rev = conn.execute(select(submissions.c.revision)
-                           .where(submissions.c.id == sub_id)).scalar() or 1
+        prev = conn.execute(select(submissions.c.revision, submissions.c.status)
+                            .where(submissions.c.id == sub_id)).mappings().first() or {}
+        rev = prev.get("revision") or 1
+        new = [f for f in result.facts if f.metric_key not in confirmed_keys]
         conn.execute(update(submissions).where(submissions.c.id == sub_id).values(
             revision=rev + 1,
             report_type=result.detected_report_type,
             report_type_confidence=result.report_type_confidence,
             entity_name=result.entity_name, period=result.period,
-            currency=result.currency, extractor=result.extractor, status="pending",
+            currency=result.currency, extractor=result.extractor,
+            status="pending" if new else (prev.get("status") or "pending"),
             number_format=result.number_format, warnings=json.dumps(result.warnings),
             unmapped=json.dumps([i.model_dump() for i in result.unmapped])))
-        new = [f for f in result.facts if f.metric_key not in confirmed_keys]
         _insert_facts(conn, sub_id, result, new)
         conn.execute(insert(audit).values(
             ts=_now(), submission_id=sub_id, action="reread", user=user,
-            note=(f"{result.extractor}: replaced {len(stale)} unreviewed values with "
+            note=((f"{reason} — " if reason else "")
+                  + f"{result.extractor}: replaced {len(stale)} unreviewed values with "
                   f"{len(new)}; kept {len(decided)} reviewed")))
     return {"replaced": len(stale), "added": len(new), "kept": len(decided)}
 
@@ -813,15 +819,39 @@ def add_capital_call(entity: str, call_date: str, amount: Decimal, description: 
     return cid
 
 
-def stamp_capital_call(call_id: int, source: str, doc_kind: str) -> None:
+def stamp_capital_call(call_id: int, source: str, doc_kind: str, user: str = "local",
+                       **fixed: Any) -> None:
     """Name the document a dated investment came from (rows saved before sources
-    were recorded have none)."""
+    were recorded have none), and correct what it now says of the row — its
+    `currency` and `amount_usd` (audited)."""
     with get_engine().begin() as conn:
+        row = conn.execute(select(capital_calls).where(capital_calls.c.id == call_id)).mappings().first()
         conn.execute(capital_calls.update().where(capital_calls.c.id == call_id)
-                     .values(source=source, doc_kind=doc_kind))
+                     .values(source=source, doc_kind=doc_kind, **fixed))
+        if row and fixed:
+            conn.execute(insert(audit).values(
+                ts=_now(), action="capital_call", user=user, field=row["entity_name"],
+                old_value=f"{row['call_date']} {row['amount']} " + " ".join(
+                    f"{k}={row[k]}" for k in fixed),
+                new_value=" ".join(f"{k}={v}" for k, v in fixed.items()), note=f"corrected from {source}"))
 
 
-def delete_capital_call(call_id: int, user: str = "local") -> bool:
+def set_reader_version(sub_id: int, version: str) -> None:
+    """Record which version of the workbook reader read a stored workbook."""
+    with get_engine().begin() as conn:
+        conn.execute(update(submissions).where(submissions.c.id == sub_id).values(reader_version=version))
+
+
+def workbooks_read_before(version: str) -> list[dict[str, Any]]:
+    """Stored workbooks (accounting, Investment Portfolio) that another version
+    of the reader read, oldest upload first."""
+    with get_engine().connect() as conn:
+        rows = conn.execute(select(submissions).where(submissions.c.report_type == "master_workbook")
+                            .order_by(submissions.c.id)).mappings().all()
+    return [dict(r) for r in rows if (r["reader_version"] or "") != version]
+
+
+def delete_capital_call(call_id: int, user: str = "local", note: Optional[str] = None) -> bool:
     with get_engine().begin() as conn:
         row = conn.execute(select(capital_calls).where(capital_calls.c.id == call_id)
                            ).mappings().first()
@@ -830,7 +860,8 @@ def delete_capital_call(call_id: int, user: str = "local") -> bool:
         conn.execute(capital_calls.delete().where(capital_calls.c.id == call_id))
         conn.execute(insert(audit).values(
             ts=_now(), action="capital_call_delete", user=user, field=row["entity_name"],
-            old_value=f"{row['call_date']} {row['amount']} {row['description'] or ''}".strip()))
+            old_value=f"{row['call_date']} {row['amount']} {row['description'] or ''}".strip(),
+            note=note))
     return True
 
 

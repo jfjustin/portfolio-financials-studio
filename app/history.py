@@ -11,9 +11,10 @@
                  those, money put in plus income less distributions; a fund's
                  roll-forward balances; and today's value
 
-Investment figures are in USD, like every other report (a figure on file in
-another currency is converted at the entity's rate for its date); a company's
-own financial statements stay in the currency it reports in.
+Every figure is in USD, like every other report: a figure on file in another
+currency is converted at the entity's rate for its date — a company's own
+statements at each quarter's. An entity with another currency also gets
+`native`: the same figures in its own currency, for viewing the originals.
 """
 from __future__ import annotations
 
@@ -34,20 +35,53 @@ def history(entity: str, as_of: Optional[str] = None) -> dict[str, Any]:
     row = next((r for r in rep["funds"] + rep["companies"] if r["entity"] == entity), None)
     if row is None:
         raise KeyError(entity)
-    ccy = row.get("currency") or "USD"
     det = row.get("details") or {}
+    own = row.get("native_currency") or "USD"
+    I = irr.report(rep["as_of"], base=rep)
+    e = next((x for x in I["entities"] if x["entity"] == entity), None)
+    out = {"entity": entity, "name": row["investment_name"], "kind": row["kind"],
+           "as_of": rep["as_of"], "as_of_label": rep["as_of_label"], "quarters": rep["quarters"],
+           "theme": row.get("theme") or row.get("region_sector") or "",
+           "status": "exited" if row.get("exited") else (row.get("operating_status") or ""),
+           "irr_pct": e["irr_pct"] if e else None, "irr_estimated": bool(e and e["estimated"]),
+           "native_currency": own,
+           "usd_rate": _f(portfolio.usd_rate_at(det, rep["as_of"])) if own != "USD" else 1.0,
+           **_figures(rep, row, det, "USD")}
+    if row.get("native"):
+        # the same history in its own currency, for "view the original figures"
+        out["native"] = _figures(rep, {**row, **row["native"]},
+                                 {**row["native"]["details"], "history": det.get("history")},
+                                 row["native"]["currency"])
+    return out
+
+
+_FIN_MONEY = direct_investments.BASE + ("gross_monthly_burn", "net_monthly_burn")
+_FACT_FIELD = {"Commitment": "commitment", "Drawn to date": "drawn_to_date", "Future draw": "future_draw",
+               "Distributed to date": "distribution_to_date", "Investment balance (NAV)": "investment_balance",
+               "Total invested": "total_invested", "Book value": "book_value", "Fair value": "total_value",
+               "Unrealized gain / (loss)": "total_value", "Impairment to date": "impairment",
+               "Exit proceeds": "exit_proceeds"}
+
+
+def _figures(rep: dict, row: dict, det: dict, ccy: str) -> dict[str, Any]:
+    """The history's figures in `ccy`: US dollars, or the entity's own currency
+    (its statements', accounting tab's and calls' own figures)."""
+    entity = row["entity"]
     as_of_end = quarter_bounds(rep["as_of"])[1]
     tab_ccy = (det.get("currency") or "USD").upper()      # the accounting tab's currency
 
-    def in_usd(e: dict) -> Optional[dict]:
-        if tab_ccy == "USD":
+    def in_ccy(e: dict) -> Optional[dict]:
+        if tab_ccy == ccy:
             return e
-        if e.get("amount_usd") is not None:                # as the accounting team converted it
+        if ccy == "USD" and e.get("amount_usd") is not None:   # as the accounting team converted it
             return {**e, "amount": e["amount_usd"]}
         r = portfolio.usd_rate_at(det, e["date"])
-        return {**e, "amount": str(Decimal(str(e["amount"])) * r)} if r else None
+        if not r:
+            return None
+        amt = Decimal(str(e["amount"]))
+        return {**e, "amount": str(amt * r if ccy == "USD" else amt / r)}
 
-    # ---- the company's own quarterly figures
+    # ---- the company's own quarterly figures, at each quarter's rate when in another currency
     actuals, _pending, _conflicts = direct_investments._actuals()
     quarters = sorted((q for (c, q) in actuals if c == entity), key=portfolio._order)
     financials = []
@@ -56,16 +90,24 @@ def history(entity: str, as_of: Optional[str] = None) -> dict[str, Any]:
             continue
         vals = {k: d["value"] for k, d in actuals[(entity, q)].items() if k in direct_investments.BASE}
         derived = direct_investments.derive(vals, 3)
-        financials.append({"period": q, "end": quarter_bounds(q)[1].isoformat(),
-                           "currency": next((d["currency"] for d in actuals[(entity, q)].values()), ccy),
-                           **{k: _f(v) for k, v in vals.items()},
-                           **{k: _f(v) if not isinstance(v, int) else v for k, v in derived.items()}})
+        fin = {"period": q, "end": quarter_bounds(q)[1].isoformat(),
+               "currency": (next((d["currency"] for d in actuals[(entity, q)].values()), None) or tab_ccy).upper(),
+               **{k: _f(v) for k, v in vals.items()},
+               **{k: _f(v) if not isinstance(v, int) else v for k, v in derived.items()}}
+        if fin["currency"] != ccy and tab_ccy != "USD" and fin["currency"] in (tab_ccy, "USD"):
+            r = portfolio.usd_rate_at(det, q)
+            if r:
+                k = float(r) if ccy == "USD" else 1 / float(r)
+                fin.update({m: fin[m] * k for m in _FIN_MONEY if fin.get(m) is not None})
+                fin["converted_from"], fin["currency"] = fin["currency"], ccy
+        financials.append(fin)
 
     # ---- a fund's roll-forward
     roll = []
     own_q = sorted((q for q in db.get_investments()["quarters"] if q["entity_name"] == entity),
                    key=lambda q: q["period_order"])
-    for q in portfolio.roll_forward_usd(own_q, det, (rep.get("statement_currency") or {}).get(entity, "USD")):
+    stmt = (rep.get("statement_currency") or {}).get(entity, "USD")
+    for q in (portfolio.roll_forward_usd(own_q, det, stmt) if ccy == "USD" else (own_q if stmt == ccy else [])):
         if portfolio._order(q["period_label"]) > portfolio._order(rep["as_of"]):
             continue
         roll.append({"period": q["period_label"],
@@ -82,10 +124,11 @@ def history(entity: str, as_of: Optional[str] = None) -> dict[str, Any]:
         investments.append({"date": c["date"], "description": c["description"], "amount": _f(c["amount"]),
                             "amount_usd": _f(c.get("amount_usd")), "cumulative": _f(running),
                             "document": c.get("document"), "also_in": c.get("also_in") or [],
+                            "date_note": c.get("date_note"),
                             "estimated": c["source"] != "entered"})
 
     # ---- carrying value over time
-    events = [x for x in (in_usd(e) for e in sorted(det.get("history") or [], key=lambda e: e["date"])) if x]
+    events = [x for x in (in_ccy(e) for e in sorted(det.get("history") or [], key=lambda e: e["date"])) if x]
     value_points: list[list[Any]] = []
     if any(e["kind"] == "value" for e in events):
         v = Decimal(0)
@@ -113,27 +156,22 @@ def history(entity: str, as_of: Optional[str] = None) -> dict[str, Any]:
         value_points.append([as_of_end.isoformat(), float(now), "value now"])
     value_points.sort(key=lambda p: p[0])
 
-    I = irr.report(rep["as_of"], base=rep)
-    e = next((x for x in I["entities"] if x["entity"] == entity), None)
     paid = row.get("drawn_to_date") if row["kind"] == "fund" else row.get("total_invested")
-    facts = _facts(row, det, investments, paid, now)
-    return {"entity": entity, "name": row["investment_name"], "kind": row["kind"], "currency": ccy,
-            "facts": facts,
-            "as_of": rep["as_of"], "as_of_label": rep["as_of_label"], "quarters": rep["quarters"],
-            "theme": row.get("theme") or row.get("region_sector") or "",
-            "status": "exited" if row.get("exited") else (row.get("operating_status") or ""),
-            "paid_in": _f(paid), "value_now": _f(now), "irr_pct": e["irr_pct"] if e else None,
-            "irr_estimated": bool(e and e["estimated"]),
+    # a figure known only in US dollars, converted into its own currency, says so
+    facts, converted = _facts(row, det, investments, paid, now), set(row.get("converted") or [])
+    for f in facts:
+        f["approx"] = _FACT_FIELD.get(f["label"]) in converted
+    return {"currency": ccy, "facts": facts,
+            "paid_in": _f(paid), "value_now": _f(now),
             "financials": financials, "roll_forward": roll, "investments": investments,
-            "value": value_points, "value_basis": basis,
-            "by_year": _by_year(events), "native_currency": row.get("native_currency") or ccy,
-            "usd_rate": _f(portfolio.usd_rate_at(det, rep["as_of"])) if ccy != "USD" else 1.0}
+            "value": value_points, "value_basis": basis, "by_year": _by_year(events),
+            "converted": row.get("converted") or []}
 
 
 def _facts(row: dict, det: dict, investments: list[dict], paid: Any, now: Any) -> list[dict[str, Any]]:
     """The one-page summary's investment facts, in order: [{label, value, kind}],
     kind money | pct | date | multiple | text; a fact with no value is left out."""
-    dates = sorted(i["date"] for i in investments)
+    dates = sorted(i["date"] for i in investments if i["date"])        # an undated purchase has none
     out: list[tuple[str, Any, str]]
     if row["kind"] == "fund":
         drawn, dist, nav = row.get("drawn_to_date"), row.get("distribution_to_date"), row.get("investment_balance")
