@@ -76,6 +76,11 @@ class Settings(BaseSettings):
     #   mssql+pyodbc://user:pass@server.database.windows.net/db?driver=ODBC+Driver+18+for+SQL+Server
     # Leave blank to use the SQLite db_path.
     database_url: str = ""
+    # Stored workbooks an older version of the reader read are read again this
+    # long after startup, in the background — not during startup: a deploy
+    # keeps the outgoing app on the same database for a minute or so, and SQLite
+    # on a network share (App Service's /home) can't keep two apps' writes apart.
+    reread_delay_seconds: float = 180
 
     # --- Object storage for uploaded source documents -----------------------
     #   local  -> keep copies under data/uploads (default)

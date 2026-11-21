@@ -2383,6 +2383,13 @@ def accounting_workbook_is_the_record() -> None:
           and [(c["call_date"], D(c["amount"])) for c in db.get_capital_calls("Company 72C")] == [("", D("74088.04"))]
           and refresh_master_workbooks() == [],
           "a workbook an older reader read is read again at startup (once), and stays reviewed")
+    from app.pipeline import refresh_master_workbooks_later
+    with db.get_engine().begin() as conn:
+        conn.execute(db.submissions.update().where(db.submissions.c.id == sid).values(reader_version=None))
+    worker = refresh_master_workbooks_later(0, attempts=1)
+    worker.join(timeout=60)
+    check(not worker.is_alive() and db.get_submission(sid)["reader_version"] == READER_VERSION,
+          "the startup re-read runs in the background, after its delay, and stamps the workbook")
 
 
 def repeated_rows() -> None:

@@ -70,8 +70,9 @@ def _flows(row: dict, quarters: list[dict], as_of_end: date, factor: Decimal) ->
     entered = [c for c in entered if c["date"]]
     if entered or rolled:
         if undated:
-            notes.append(f"{len(undated)} investment{'s' if len(undated) > 1 else ''} with no date on file "
-                         "left out — enter its date in the details")
+            n = len(undated)
+            notes.append(f"{n} investment{'s' if n > 1 else ''} with no date on file left out — enter "
+                         f"{'their dates' if n > 1 else 'its date'} in the details")
         for c in entered:
             add(_iso(c["date"]), -abs(Decimal(str(c["amount"]))), "call",
                 f"{c.get('description') or 'investment'} · {c.get('document') or 'entered by hand'}",

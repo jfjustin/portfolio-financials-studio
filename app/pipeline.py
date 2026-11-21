@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import logging
 import tempfile
+import threading
+import time
 from pathlib import Path
 from typing import Any, Optional
 
@@ -17,6 +19,8 @@ from . import carry_forward, db, lake, storage
 from .config import settings
 from .extractors.registry import extract_file
 from .validate import scale_checks, validate_facts
+
+log = logging.getLogger("pfs")
 
 
 def process_path(path: Path, *, save_copy: bool = True,
@@ -129,20 +133,39 @@ def reprocess_submission(sub_id: int, user: str = "local", reason: str = "") -> 
 def refresh_master_workbooks(user: str = "system") -> list[dict[str, Any]]:
     """Read again every stored workbook that another version of the reader read,
     so a fix to the reader reaches the figures and dated investments already on
-    file without anyone pressing Re-read (called at startup). One that fails —
-    its stored copy missing, say — is logged and tried again next time."""
+    file without anyone pressing Re-read. One that fails — its stored copy
+    missing, say — is logged and keeps its old stamp, so the next run tries again."""
     from .extractors.master import READER_VERSION
     done = []
-    for sub in db.workbooks_read_before(READER_VERSION):
+    for sub in db.workbooks_to_reread(READER_VERSION):
         try:
             r = reprocess_submission(sub["id"], user=user,
                                      reason=f"the workbook reader was updated ({READER_VERSION})")
             done.append({"submission_id": sub["id"], "status": r["status"]})
-        except Exception as e:                      # noqa: BLE001 — one file never stops the rest
-            logging.getLogger("pfs").warning("re-reading %s for the reader update failed: %s",
-                                             sub["filename"], e)
+        except Exception as e:                      # one file never stops the rest
+            log.exception("re-reading %s for the reader update failed", sub["filename"])
             done.append({"submission_id": sub["id"], "status": "error", "error": str(e)})
     return done
+
+
+def refresh_master_workbooks_later(delay: float, attempts: int = 3, pause: float = 60) -> threading.Thread:
+    """`refresh_master_workbooks` in a background thread, `delay` seconds from now
+    (settings.reread_delay_seconds says why not at once). A workbook that failed
+    is tried again `pause` seconds later, up to `attempts` runs in all."""
+    def run() -> None:
+        time.sleep(delay)
+        try:
+            for attempt in range(attempts):
+                if attempt:
+                    time.sleep(pause)
+                if not any(r["status"] == "error" for r in refresh_master_workbooks()):
+                    return
+        except Exception:                           # the app carries on without it
+            log.exception("re-reading the stored workbooks failed")
+
+    thread = threading.Thread(target=run, name="reread-workbooks", daemon=True)
+    thread.start()
+    return thread
 
 
 def process_upload(filename: str, raw_bytes: bytes,

@@ -20,7 +20,7 @@ from __future__ import annotations
 
 from datetime import date
 from decimal import Decimal
-from typing import Any, Optional
+from typing import Any, Collection, Optional
 
 from . import db, direct_investments, irr, portfolio
 from .extractors.base import quarter_bounds
@@ -48,19 +48,15 @@ def history(entity: str, as_of: Optional[str] = None) -> dict[str, Any]:
            "usd_rate": _f(portfolio.usd_rate_at(det, rep["as_of"])) if own != "USD" else 1.0,
            **_figures(rep, row, det, "USD")}
     if row.get("native"):
-        # the same history in its own currency, for "view the original figures"
+        # the same history in its own currency, for "view the original figures" (its
+        # dated events are on the row's own details, in the tab's currency)
         out["native"] = _figures(rep, {**row, **row["native"]},
                                  {**row["native"]["details"], "history": det.get("history")},
                                  row["native"]["currency"])
     return out
 
 
-_FIN_MONEY = direct_investments.BASE + ("gross_monthly_burn", "net_monthly_burn")
-_FACT_FIELD = {"Commitment": "commitment", "Drawn to date": "drawn_to_date", "Future draw": "future_draw",
-               "Distributed to date": "distribution_to_date", "Investment balance (NAV)": "investment_balance",
-               "Total invested": "total_invested", "Book value": "book_value", "Fair value": "total_value",
-               "Unrealized gain / (loss)": "total_value", "Impairment to date": "impairment",
-               "Exit proceeds": "exit_proceeds"}
+_FIN_MONEY = direct_investments.BASE + ("gross_monthly_burn", "net_monthly_burn")   # runways are months
 
 
 def _figures(rep: dict, row: dict, det: dict, ccy: str) -> dict[str, Any]:
@@ -94,11 +90,13 @@ def _figures(rep: dict, row: dict, det: dict, ccy: str) -> dict[str, Any]:
                "currency": (next((d["currency"] for d in actuals[(entity, q)].values()), None) or tab_ccy).upper(),
                **{k: _f(v) for k, v in vals.items()},
                **{k: _f(v) if not isinstance(v, int) else v for k, v in derived.items()}}
+        # its own currency into USD, or USD into its own, at the quarter's rate (an
+        # entity with no rates on file, or another currency, stays as reported)
         if fin["currency"] != ccy and tab_ccy != "USD" and fin["currency"] in (tab_ccy, "USD"):
             r = portfolio.usd_rate_at(det, q)
             if r:
-                k = float(r) if ccy == "USD" else 1 / float(r)
-                fin.update({m: fin[m] * k for m in _FIN_MONEY if fin.get(m) is not None})
+                factor = float(r) if ccy == "USD" else 1 / float(r)
+                fin.update({key: fin[key] * factor for key in _FIN_MONEY if fin.get(key) is not None})
                 fin["converted_from"], fin["currency"] = fin["currency"], ccy
         financials.append(fin)
 
@@ -107,7 +105,11 @@ def _figures(rep: dict, row: dict, det: dict, ccy: str) -> dict[str, Any]:
     own_q = sorted((q for q in db.get_investments()["quarters"] if q["entity_name"] == entity),
                    key=lambda q: q["period_order"])
     stmt = (rep.get("statement_currency") or {}).get(entity, "USD")
-    for q in (portfolio.roll_forward_usd(own_q, det, stmt) if ccy == "USD" else (own_q if stmt == ccy else [])):
+    if ccy == "USD":
+        roll_qs = portfolio.roll_forward_usd(own_q, det, stmt)
+    else:                                   # its own currency: the statements', when in it
+        roll_qs = own_q if stmt == ccy else []
+    for q in roll_qs:
         if portfolio._order(q["period_label"]) > portfolio._order(rep["as_of"]):
             continue
         roll.append({"period": q["period_label"],
@@ -157,10 +159,7 @@ def _figures(rep: dict, row: dict, det: dict, ccy: str) -> dict[str, Any]:
     value_points.sort(key=lambda p: p[0])
 
     paid = row.get("drawn_to_date") if row["kind"] == "fund" else row.get("total_invested")
-    # a figure known only in US dollars, converted into its own currency, says so
-    facts, converted = _facts(row, det, investments, paid, now), set(row.get("converted") or [])
-    for f in facts:
-        f["approx"] = _FACT_FIELD.get(f["label"]) in converted
+    facts = _facts(row, det, investments, paid, now, set(row.get("converted") or []))
     return {"currency": ccy, "facts": facts,
             "paid_in": _f(paid), "value_now": _f(now),
             "financials": financials, "roll_forward": roll, "investments": investments,
@@ -168,44 +167,53 @@ def _figures(rep: dict, row: dict, det: dict, ccy: str) -> dict[str, Any]:
             "converted": row.get("converted") or []}
 
 
-def _facts(row: dict, det: dict, investments: list[dict], paid: Any, now: Any) -> list[dict[str, Any]]:
-    """The one-page summary's investment facts, in order: [{label, value, kind}],
-    kind money | pct | date | multiple | text; a fact with no value is left out."""
+def _facts(row: dict, det: dict, investments: list[dict], paid: Any, now: Any,
+           converted: Collection[str] = ()) -> list[dict[str, Any]]:
+    """The one-page summary's investment facts, in order: [{label, value, kind,
+    approx}], kind money | pct | date | multiple | text; a fact with no value is
+    left out. `approx` marks a money figure whose field is in `converted` (in its
+    own currency, a figure the documents give only in US dollars)."""
     dates = sorted(i["date"] for i in investments if i["date"])        # an undated purchase has none
-    out: list[tuple[str, Any, str]]
+    out: list[tuple[str, Any, str, Optional[str]]]                     # label, value, kind, field shown
     if row["kind"] == "fund":
         drawn, dist, nav = row.get("drawn_to_date"), row.get("distribution_to_date"), row.get("investment_balance")
-        out = [("Vintage", row.get("vintage"), "text"), ("Region / sector", row.get("region_sector"), "text"),
-               ("Commitment", row.get("commitment"), "money"), ("Drawn to date", drawn, "money"),
-               ("Future draw", row.get("future_draw"), "money"),
-               ("Distributed to date", dist, "money"), ("Investment balance (NAV)", nav, "money"),
+        out = [("Vintage", row.get("vintage"), "text", None),
+               ("Region / sector", row.get("region_sector"), "text", None),
+               ("Commitment", row.get("commitment"), "money", "commitment"),
+               ("Drawn to date", drawn, "money", "drawn_to_date"),
+               ("Future draw", row.get("future_draw"), "money", "future_draw"),
+               ("Distributed to date", dist, "money", "distribution_to_date"),
+               ("Investment balance (NAV)", nav, "money", "investment_balance"),
                ("TVPI", (Decimal(str(nav or 0)) + Decimal(str(dist or 0))) / Decimal(str(drawn))
-                if drawn else None, "multiple"),
-               ("DPI", Decimal(str(dist or 0)) / Decimal(str(drawn)) if drawn else None, "multiple"),
-               ("First call", dates[0] if dates else None, "date"),
-               ("Ownership of the fund", det.get("ownership_pct"), "pct")]
+                if drawn else None, "multiple", None),
+               ("DPI", Decimal(str(dist or 0)) / Decimal(str(drawn)) if drawn else None, "multiple", None),
+               ("First call", dates[0] if dates else None, "date", None),
+               ("Ownership of the fund", det.get("ownership_pct"), "pct", None)]
     else:
         ex = row.get("exit") or {}
         gain = (Decimal(str(now)) - Decimal(str(paid))) if now is not None and paid is not None else None
-        out = [("Theme", row.get("theme"), "text"),
-               ("Status", det.get("holding_status") or ("Exit" if row.get("exited") else ""), "text"),
+        out = [("Theme", row.get("theme"), "text", None),
+               ("Status", det.get("holding_status") or ("Exit" if row.get("exited") else ""), "text", None),
                ("Round / security", row.get("current_round") if row.get("current_round") not in (None, "-")
-                else row.get("security"), "text"),
-               ("First investment", dates[0] if dates else det.get("initial_investment_date"), "date"),
-               ("Latest investment", dates[-1] if dates else det.get("last_investment_date"), "date"),
-               ("Investments made", len(investments) or None, "text"),
-               ("Total invested", paid, "money"), ("Ownership", det.get("ownership_pct"), "pct"),
-               ("Book value", det.get("book_value"), "money"),
-               ("Fair value", row.get("total_value") if not row.get("exited") else None, "money"),
-               ("Unrealized gain / (loss)", gain if not row.get("exited") else None, "money"),
+                else row.get("security"), "text", None),
+               ("First investment", dates[0] if dates else det.get("initial_investment_date"), "date", None),
+               ("Latest investment", dates[-1] if dates else det.get("last_investment_date"), "date", None),
+               ("Investments made", len(investments) or None, "text", None),
+               ("Total invested", paid, "money", "total_invested"),
+               ("Ownership", det.get("ownership_pct"), "pct", None),
+               ("Book value", det.get("book_value"), "money", "book_value"),
+               ("Fair value", row.get("total_value") if not row.get("exited") else None, "money", "total_value"),
+               ("Unrealized gain / (loss)", gain if not row.get("exited") else None, "money", "total_value"),
                ("Multiple (value ÷ invested)", Decimal(str(now)) / Decimal(str(paid))
-                if now is not None and paid else None, "multiple"),
-               ("Impairment to date", det.get("impairment"), "money"),
-               ("Impaired", det.get("impairment_date"), "date"),
-               ("Exit date", ex.get("date"), "date"), ("Exit proceeds", ex.get("proceeds"), "money"),
-               ("Accounting method", det.get("accounting_method"), "text")]
-    return [{"label": k, "value": float(v) if isinstance(v, Decimal) else v, "kind": t}
-            for k, v, t in out if v not in (None, "", 0) or (t == "money" and v == 0 and k == "Book value")]
+                if now is not None and paid else None, "multiple", None),
+               ("Impairment to date", det.get("impairment"), "money", "impairment"),
+               ("Impaired", det.get("impairment_date"), "date", None),
+               ("Exit date", ex.get("date"), "date", None),
+               ("Exit proceeds", ex.get("proceeds"), "money", "exit_proceeds"),
+               ("Accounting method", det.get("accounting_method"), "text", None)]
+    return [{"label": k, "value": float(v) if isinstance(v, Decimal) else v, "kind": t, "approx": field in converted}
+            for k, v, t, field in out
+            if v not in (None, "", 0) or (t == "money" and v == 0 and k == "Book value")]
 
 
 def entities(as_of: Optional[str] = None) -> list[dict[str, str]]:

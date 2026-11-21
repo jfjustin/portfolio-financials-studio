@@ -820,19 +820,21 @@ def add_capital_call(entity: str, call_date: str, amount: Decimal, description: 
 
 
 def stamp_capital_call(call_id: int, source: str, doc_kind: str, user: str = "local",
-                       **fixed: Any) -> None:
+                       currency: Optional[str] = None, amount_usd: Optional[str] = None) -> None:
     """Name the document a dated investment came from (rows saved before sources
-    were recorded have none), and correct what it now says of the row — its
-    `currency` and `amount_usd` (audited)."""
+    were recorded have none) and, when given, correct its currency and USD value
+    to what that document says (audited)."""
+    fixed = {k: v for k, v in (("currency", currency), ("amount_usd", amount_usd)) if v is not None}
     with get_engine().begin() as conn:
         row = conn.execute(select(capital_calls).where(capital_calls.c.id == call_id)).mappings().first()
+        if row is None:
+            return
         conn.execute(capital_calls.update().where(capital_calls.c.id == call_id)
                      .values(source=source, doc_kind=doc_kind, **fixed))
-        if row and fixed:
+        if fixed:
             conn.execute(insert(audit).values(
                 ts=_now(), action="capital_call", user=user, field=row["entity_name"],
-                old_value=f"{row['call_date']} {row['amount']} " + " ".join(
-                    f"{k}={row[k]}" for k in fixed),
+                old_value=f"{row['call_date']} {row['amount']} " + " ".join(f"{k}={row[k]}" for k in fixed),
                 new_value=" ".join(f"{k}={v}" for k, v in fixed.items()), note=f"corrected from {source}"))
 
 
@@ -842,7 +844,7 @@ def set_reader_version(sub_id: int, version: str) -> None:
         conn.execute(update(submissions).where(submissions.c.id == sub_id).values(reader_version=version))
 
 
-def workbooks_read_before(version: str) -> list[dict[str, Any]]:
+def workbooks_to_reread(version: str) -> list[dict[str, Any]]:
     """Stored workbooks (accounting, Investment Portfolio) that another version
     of the reader read, oldest upload first."""
     with get_engine().connect() as conn:

@@ -112,12 +112,10 @@ async def _unexpected(request: Request, exc: Exception):
 def _startup() -> None:
     auth.check_configuration()
     db.init_db()
-    # a workbook an older reader read is read again, so a fix reaches the data on file
-    from .pipeline import refresh_master_workbooks
-    try:
-        refresh_master_workbooks()
-    except Exception:                               # noqa: BLE001 — never block startup
-        logging.getLogger("pfs").exception("re-reading the stored workbooks failed")
+    # workbooks an older reader read are read again, so a fix reaches the data on
+    # file — in the background, a few minutes on (settings.reread_delay_seconds)
+    from .pipeline import refresh_master_workbooks_later
+    refresh_master_workbooks_later(settings.reread_delay_seconds)
 
 
 # --------------------------------------------------------------------------
@@ -537,7 +535,8 @@ async def add_portfolio_calls(entity: str, request: Request):
         if date_iso is None or amount is None:
             raise HTTPException(400, "date and amount are required")
         rows.append((date_iso, str(body.get("description") or ""), amount))
-    ids = [db.add_capital_call(entity, d, abs(a) * scale, desc, user=user, source="entered by hand", currency=ccy)
+    ids = [db.add_capital_call(entity, d, abs(a) * scale, desc, user=user, source="entered by hand",
+                               currency=ccy)
            for d, desc, a in rows]
     return {"added": len(ids), "ids": ids}
 

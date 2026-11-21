@@ -433,101 +433,17 @@
     await loadDirectInvestments(DIF.year);
   }
 
-  // ---------------- Investment Portfolio (Lam's quarterly report) ----------------
-  let PF = null, PF_ENTITY = null;
-  // in millions, as Lam's report prints them — in the entity's own currency
-  const CCY_SIGN = { USD: "$", EUR: "€", GBP: "£", JPY: "¥", CNY: "¥", KRW: "₩", TWD: "NT$", HKD: "HK$",
-                     SGD: "S$", CAD: "C$", AUD: "A$", CHF: "CHF ", SEK: "SEK ", NOK: "NOK ", DKK: "DKK " };
-  const sign = ccy => CCY_SIGN[(ccy || "USD").toUpperCase()] || ((ccy || "") + " ");
-  const mfmt = (v, d, ccy) => {
-    if (v == null || v === "") return '<span class="muted">—</span>';
-    const n = Number(v) / 1e6, s = sign(ccy) + Math.abs(n).toLocaleString("en-US", {
-      minimumFractionDigits: d == null ? 1 : d, maximumFractionDigits: d == null ? 1 : d });
-    return n < 0 ? `(${s})` : s;
-  };
-  const ccyTag = ccy => (ccy && ccy !== "USD") ? ` <span class="ccy-tag" title="Its statements are in ${ccy}: every figure shown is in USD, converted at the accounting workbook's rates">${esc(ccy)}→USD</span>` : "";
-  // amounts: every figure in US dollars, or each fund's and company's own currency
-  // (the "Original currency" switch, remembered in this browser)
-  const AMT = { orig: false };
-  try { AMT.orig = localStorage.getItem("pfs.amounts") === "orig"; } catch (e) { /* no storage: US dollars */ }
-  // the figures a row shows: its own-currency ones under "Original currency", when it has any
-  const shownRow = r => (AMT.orig && r && r.native) ? r.native : r;
-  // the tiny box naming a fund's or company's own currency
-  const ccyBox = (own, shown) => {
-    const c = (own || "USD").toUpperCase(), s = (shown || "USD").toUpperCase();
-    const t = c === "USD" ? "Its own currency is US dollars"
-      : s === c ? `Its own currency is ${c}: figures shown in ${c}, as its documents give them (≈ marks one converted from US dollars)`
-      : `Its own currency is ${c}: figures shown in US dollars, converted at the accounting workbook's rates — choose Original currency to see them in ${c}`;
-    return ` <span class="ccy-box${c !== "USD" ? " fx" : ""}" title="${esc(t)}">${esc(c)}</span>`;
-  };
-  const plainM = (v, d, ccy) => { const n = Number(v) / 1e6;
-    return (n < 0 ? "-" : "") + sign(ccy) + Math.abs(n).toLocaleString("en-US", { minimumFractionDigits: d == null ? 1 : d, maximumFractionDigits: d == null ? 1 : d }) + "M"; };
-  // under US dollars a hover gives the original figure; under Original currency ≈ marks a converted one
-  const origNote = (r, k, d) => (AMT.orig || !r.native || r.native[k] == null) ? ""
-    : "\nOriginal: " + plainM(r.native[k], d, r.native.currency);
-  const APPROX = '<span class="approx" title="Converted from US dollars at the quarter\'s rate — the documents on file give no original figure">≈</span>';
-  const approx = (r, k) => (AMT.orig && r.native && (r.native.converted || []).includes(k)) ? APPROX : "";
-  function wireAmountToggles() {
-    const sync = () => $$(".amt-toggle button").forEach(b => {
-      const on = (b.dataset.amt === "orig") === AMT.orig;
-      b.classList.toggle("on", on); b.setAttribute("aria-pressed", String(on)); });
-    $$(".amt-toggle").forEach(g => g.addEventListener("click", e => {
-      const b = e.target.closest("button[data-amt]");
-      if (!b) return;
-      AMT.orig = b.dataset.amt === "orig";
-      try { localStorage.setItem("pfs.amounts", AMT.orig ? "orig" : "usd"); } catch (err) { /* no storage */ }
-      sync();
-      if (PF) renderPortfolio();
-      if (PF_ENTITY && $("#pf-modal").classList.contains("show")) { entityTitle(PF_ENTITY); renderCalls(PF_ENTITY); }
-      drawHistory();
-    }));
-    sync();
-  }
-  const cmoney = (v, ccy) => v == null ? '<span class="muted">—</span>'
-    : (Number(v) < 0 ? "-" : "") + sign(ccy) + Math.abs(Number(v) / 1e6).toLocaleString("en-US", { minimumFractionDigits: 1, maximumFractionDigits: 1 }) + "M";
-  const srcTitle = (r, k) => esc((r.sources || {})[k] || "");
-  // a figure built only from the quarters on file, until a statement gives the since-inception one
-  const estMark = (r, k) => ((r.sources || {})[k] === "entered" || (r.sources || {})[k] === "fund parameters"
-      ? '<sup class="man" title="Entered by hand">✎</sup>' : "")
-    + ((r.estimated || []).includes(k)
-      ? '<sup class="est" title="Estimate — only the quarters on file">*</sup>' : "");
-
-  async function loadPortfolio(asOf) {
-    const qs = [];
-    if (asOf) qs.push("as_of=" + asOf);
-    if ($("#pf-vfrom").value) qs.push("vintage_from=" + $("#pf-vfrom").value);
-    if ($("#pf-vto").value) qs.push("vintage_to=" + $("#pf-vto").value);
-    if ($("#pf-from").value && $("#pf-to").value) qs.push("start=" + $("#pf-from").value, "end=" + $("#pf-to").value);
-    PF = await api("/api/portfolio" + (qs.length ? "?" + qs.join("&") : ""));
-    $("#pf-card .report-title").textContent = "Investment Portfolio"
-      + (PF.window ? ` — activity ${PF.window.start} to ${PF.window.end}` : "")
-      + (PF.vintage ? ` — first invested ${PF.vintage.from || "…"}–${PF.vintage.to || "…"}` : "");
-    $("#pf-card").classList.toggle("pf-windowed", !!PF.window);
-    for (const [id, cur] of [["#pf-from", PF.window && PF.window.start], ["#pf-to", PF.window && PF.window.end]])
-      $(id).innerHTML = '<option value="">—</option>' + PF.quarters.map(q => `<option value="${q}" ${q === cur ? "selected" : ""}>${q}</option>`).join("");
-    $("#pf-asof").innerHTML = PF.quarters.slice().reverse().map(q =>
-      `<option value="${q}" ${q === PF.as_of ? "selected" : ""}>${q}</option>`).join("");
-    $("#pf-export").href = "/api/exports/investment-portfolio.xlsx?as_of=" + PF.as_of;
-    renderPortfolio();
-    if (PF.summary) renderSummary(PF.summary); else loadSummary(PF.as_of);
-    renderAttention("#pf-attention", PF.funds.concat(PF.companies).flatMap(r =>
-      (r.issues || []).map(i => Object.assign({ who: r.investment_name, entity: r.entity }, i))),
-      i => openPortfolioEntity(i.entity));
-  }
-
   // ---------------- column filters, as in a spreadsheet — all in the browser ----------------
   // A ▾ on each header: sort, tick the values to keep (text), or give a range
   // (numbers and dates; amounts in millions, as shown). "Columns" shows or hides
   // columns (remembered in this browser). Nothing is sent to the server.
   const CF = {};
-  const cfStore = (id, v) => {
-    try {
-      if (v === undefined) return JSON.parse(localStorage.getItem("pfs.cf." + id) || "[]");
-      localStorage.setItem("pfs.cf." + id, JSON.stringify(v));
-    } catch (e) { /* no storage: every column shows */ }
-    return [];
-  };
-  const cfState = id => CF[id] || (CF[id] = { filters: {}, sort: null, hidden: new Set(cfStore(id)) });
+  // which columns a table hides, remembered in this browser
+  const cfLoadHidden = id => { try { return JSON.parse(localStorage.getItem("pfs.cf." + id) || "[]"); } catch (e) { return []; } };
+  const cfSaveHidden = (id, cols) => { try { localStorage.setItem("pfs.cf." + id, JSON.stringify(cols)); } catch (e) { /* no storage */ } };
+  const cfState = id => CF[id] || (CF[id] = { filters: {}, sort: null, hidden: new Set(cfLoadHidden(id)) });
+  // a table's filters and sort start over (another fund or company in the history)
+  const cfForget = (...ids) => ids.forEach(id => { delete CF[id]; });
   const cfVal = td => {
     if (!td) return "";
     if (td.dataset.v !== undefined) return td.dataset.v;
@@ -540,8 +456,11 @@
   function cfType(table, i) {
     const th = table.tHead.rows[0].cells[i];
     if (th.dataset.cf) return th.dataset.cf;
+    // a column without data-cf: guessed from its first value
     const v = cfRows(table).map(tr => cfVal(tr.cells[i])).find(x => x !== "");
-    return v === undefined ? "text" : /^\d{4}-\d{2}-\d{2}$/.test(v) ? "date" : !isNaN(Number(v)) ? "num" : "text";
+    if (v === undefined) return "text";
+    if (/^\d{4}-\d{2}-\d{2}$/.test(v)) return "date";
+    return isNaN(Number(v)) ? "text" : "num";
   }
   function cfClose() {
     const p = $(".cf-pop");
@@ -589,12 +508,15 @@
         return;
       }
       if (act === "clear") delete st.filters[i];
-      if (act === "apply" && type === "text") {
-        const boxes = $$(".cf-list input", pop), keep = boxes.filter(c => c.checked).map(c => c.value);
-        if (keep.length === boxes.length) delete st.filters[i]; else st.filters[i] = { type, values: keep };
-      } else if (act === "apply") {
-        const min = $(".cf-min", pop).value, max = $(".cf-max", pop).value;
-        if (min === "" && max === "") delete st.filters[i]; else st.filters[i] = { type, min, max };
+      if (act === "apply") {
+        // a filter that keeps everything is no filter
+        if (type === "text") {
+          const boxes = $$(".cf-list input", pop), keep = boxes.filter(c => c.checked).map(c => c.value);
+          if (keep.length === boxes.length) delete st.filters[i]; else st.filters[i] = { type, values: keep };
+        } else {
+          const min = $(".cf-min", pop).value, max = $(".cf-max", pop).value;
+          if (min === "" && max === "") delete st.filters[i]; else st.filters[i] = { type, min, max };
+        }
       }
       cfApply(table); cfClose(); btn.focus();
     });
@@ -663,7 +585,7 @@
         if (!c) return;
         const st = cfState(table.id), i = Number(c.dataset.col);
         if (c.checked) st.hidden.delete(i); else st.hidden.add(i);
-        cfStore(table.id, [...st.hidden]);
+        cfSaveHidden(table.id, [...st.hidden]);
         cfApply(table);
       });
     }
@@ -684,13 +606,110 @@
     cfApply(table);
   }
 
+  // ---------------- Investment Portfolio (Lam's quarterly report) ----------------
+  let PF = null, PF_ENTITY = null;
+  // in millions, as Lam's report prints them — in the entity's own currency
+  const CCY_SIGN = { USD: "$", EUR: "€", GBP: "£", JPY: "¥", CNY: "¥", KRW: "₩", TWD: "NT$", HKD: "HK$",
+                     SGD: "S$", CAD: "C$", AUD: "A$", CHF: "CHF ", SEK: "SEK ", NOK: "NOK ", DKK: "DKK " };
+  const sign = ccy => CCY_SIGN[(ccy || "USD").toUpperCase()] || ((ccy || "") + " ");
+  const mfmt = (v, d, ccy) => {
+    if (v == null || v === "") return '<span class="muted">—</span>';
+    const n = Number(v) / 1e6, s = sign(ccy) + Math.abs(n).toLocaleString("en-US", {
+      minimumFractionDigits: d == null ? 1 : d, maximumFractionDigits: d == null ? 1 : d });
+    return n < 0 ? `(${s})` : s;
+  };
+  const ccyTag = ccy => (ccy && ccy !== "USD") ? ` <span class="ccy-tag" title="Its statements are in ${ccy}: every figure shown is in USD, converted at the accounting workbook's rates">${esc(ccy)}→USD</span>` : "";
+  // amounts: every figure in US dollars, or each fund's and company's own currency
+  // (the "Original currency" switch, remembered in this browser)
+  const AMT = { orig: false };
+  try { AMT.orig = localStorage.getItem("pfs.amounts") === "orig"; } catch (e) { /* no storage: US dollars */ }
+  // the figures a row shows: its own-currency ones under "Original currency", when it has any
+  const shownRow = r => (AMT.orig && r && r.native) ? r.native : r;
+  // the tiny box naming a fund's or company's own currency
+  const ccyBox = (own, shown) => {
+    const c = (own || "USD").toUpperCase(), s = (shown || "USD").toUpperCase();
+    const t = c === "USD" ? "Its own currency is US dollars"
+      : s === c ? `Its own currency is ${c}: figures shown in ${c}, as its documents give them (≈ marks one converted from US dollars)`
+      : `Its own currency is ${c}: figures shown in US dollars, converted at the accounting workbook's rates — choose Original currency to see them in ${c}`;
+    return ` <span class="ccy-box${c !== "USD" ? " fx" : ""}" title="${esc(t)}">${esc(c)}</span>`;
+  };
+  // "$1.2M", "-€0.250M": an amount in millions as text, `d` decimals (1 when not given)
+  const moneyM = (v, d, ccy) => {
+    const n = Number(v) / 1e6, places = d == null ? 1 : d;
+    return (n < 0 ? "-" : "") + sign(ccy)
+      + Math.abs(n).toLocaleString("en-US", { minimumFractionDigits: places, maximumFractionDigits: places }) + "M";
+  };
+  // "figures in …": the currency a page's figures are in, and how to see the other
+  const figuresIn = (own, shown, someConverted) => own === "USD" ? "figures in US dollars"
+    : shown === own ? `figures in ${esc(own)}, its own currency${someConverted ? " (≈ marks one converted from US dollars)" : ""}`
+    : `figures in US dollars, converted from ${esc(own)} — choose Original currency for the ${esc(own)} figures`;
+  // under US dollars a hover gives the original figure; under Original currency ≈ marks a converted one
+  const origNote = (r, k, d) => (AMT.orig || !r.native || r.native[k] == null) ? ""
+    : "\nOriginal: " + moneyM(r.native[k], d, r.native.currency);
+  const APPROX = '<span class="approx" title="Converted from US dollars at the quarter\'s rate — the documents on file give no original figure">≈</span>';
+  const approx = (r, k) => (AMT.orig && r.native && (r.native.converted || []).includes(k)) ? APPROX : "";
+  function wireAmountToggles() {
+    const sync = () => $$(".amt-toggle button").forEach(b => {
+      const on = (b.dataset.amt === "orig") === AMT.orig;
+      b.classList.toggle("on", on);
+      b.setAttribute("aria-pressed", String(on));
+    });
+    $$(".amt-toggle").forEach(g => g.addEventListener("click", e => {
+      const b = e.target.closest("button[data-amt]");
+      if (!b) return;
+      AMT.orig = b.dataset.amt === "orig";
+      try { localStorage.setItem("pfs.amounts", AMT.orig ? "orig" : "usd"); } catch (err) { /* no storage */ }
+      sync();
+      if (PF) renderPortfolio();
+      if (PF_ENTITY && $("#pf-modal").classList.contains("show")) { entityTitle(PF_ENTITY); renderCalls(PF_ENTITY); }
+      drawHistory();
+    }));
+    sync();
+  }
+  const cmoney = (v, ccy) => v == null ? '<span class="muted">—</span>' : moneyM(v, 1, ccy);
+  const srcTitle = (r, k) => esc((r.sources || {})[k] || "");
+  // a figure built only from the quarters on file, until a statement gives the since-inception one
+  const estMark = (r, k) => ((r.sources || {})[k] === "entered" || (r.sources || {})[k] === "fund parameters"
+      ? '<sup class="man" title="Entered by hand">✎</sup>' : "")
+    + ((r.estimated || []).includes(k)
+      ? '<sup class="est" title="Estimate — only the quarters on file">*</sup>' : "");
+
+  async function loadPortfolio(asOf) {
+    const qs = [];
+    if (asOf) qs.push("as_of=" + asOf);
+    if ($("#pf-vfrom").value) qs.push("vintage_from=" + $("#pf-vfrom").value);
+    if ($("#pf-vto").value) qs.push("vintage_to=" + $("#pf-vto").value);
+    if ($("#pf-from").value && $("#pf-to").value) qs.push("start=" + $("#pf-from").value, "end=" + $("#pf-to").value);
+    PF = await api("/api/portfolio" + (qs.length ? "?" + qs.join("&") : ""));
+    $("#pf-card .report-title").textContent = "Investment Portfolio"
+      + (PF.window ? ` — activity ${PF.window.start} to ${PF.window.end}` : "")
+      + (PF.vintage ? ` — first invested ${PF.vintage.from || "…"}–${PF.vintage.to || "…"}` : "");
+    $("#pf-card").classList.toggle("pf-windowed", !!PF.window);
+    for (const [id, cur] of [["#pf-from", PF.window && PF.window.start], ["#pf-to", PF.window && PF.window.end]])
+      $(id).innerHTML = '<option value="">—</option>' + PF.quarters.map(q => `<option value="${q}" ${q === cur ? "selected" : ""}>${q}</option>`).join("");
+    $("#pf-asof").innerHTML = PF.quarters.slice().reverse().map(q =>
+      `<option value="${q}" ${q === PF.as_of ? "selected" : ""}>${q}</option>`).join("");
+    $("#pf-export").href = "/api/exports/investment-portfolio.xlsx?as_of=" + PF.as_of;
+    renderPortfolio();
+    if (PF.summary) renderSummary(PF.summary); else loadSummary(PF.as_of);
+    renderAttention("#pf-attention", PF.funds.concat(PF.companies).flatMap(r =>
+      (r.issues || []).map(i => Object.assign({ who: r.investment_name, entity: r.entity }, i))),
+      i => openPortfolioEntity(i.entity));
+  }
+
   // the two tables: every figure in US dollars, or each row's own currency under
   // "Original currency" (the small box names it); totals stay in US dollars
   function renderPortfolio() {
     const fb = $("#pf-funds"); fb.innerHTML = "";
     if (!PF.funds.length)
       fb.innerHTML = '<tr><td colspan="14" class="muted" style="text-align:left">No fund data yet — upload capital-account statements or JV workbooks.</td></tr>';
-    const money = (r, v, k, d, bold, mark = true) => `<td data-v="${v[k] == null ? "" : v[k]}" title="${srcTitle(r, k)}${esc(origNote(r, k, d))}">${approx(r, k)}${bold ? "<b>" : ""}${mfmt(v[k], d, v.currency)}${bold ? "</b>" : ""}${mark ? estMark(r, k) : ""}</td>`;
+    // a money cell: the shown row's figure `k` (in millions, `d` decimals), with its source
+    // and the original figure on hover; the USD row's ✎ / * marks unless `mark` is off
+    const money = (r, v, k, { d = null, bold = false, mark = true } = {}) => {
+      const fig = mfmt(v[k], d, v.currency);
+      return `<td data-v="${v[k] == null ? "" : v[k]}" title="${srcTitle(r, k)}${esc(origNote(r, k, d))}">`
+        + `${approx(r, k)}${bold ? `<b>${fig}</b>` : fig}${mark ? estMark(r, k) : ""}</td>`;
+    };
     PF.funds.forEach(f => {
       const v = shownRow(f), st = v.stats || {}, w = v.window;
       const parts = [st.as_of ? esc(st.as_of) : "", st.count != null ? st.count + " inv." : "",
@@ -698,16 +717,17 @@
         st.gain_pct != null ? `<span class="${st.gain_pct < 0 ? "is-neg" : "is-pos"}">${st.gain_pct >= 0 ? "+" : ""}${st.gain_pct.toFixed(1)}%</span>` : ""
       ].filter(Boolean);
       const stats = parts.length ? parts.join(" · ") : '<span class="muted">—</span>';
+      // Drawn / Commit of the figures shown
       const dc = v === f ? f.drawn_commit : (v.commitment && v.drawn_to_date != null ? v.drawn_to_date / v.commitment : null);
       const tr = document.createElement("tr");
       tr.innerHTML = `<td class="lbl" data-v="${esc(f.investment_name)}"><a href="#" class="pf-open" data-entity="${esc(f.entity)}">${esc(f.investment_name)}</a>${ccyBox(f.native_currency, v.currency)}` +
           (f.investment_name !== f.entity ? `<div class="small muted">${esc(f.entity)}</div>` : "") + `</td>
         <td class="lbl">${esc(f.investment_type)}</td><td class="lbl">${esc(f.region_sector) || '<span class="muted">—</span>'}</td>
         <td data-v="${f.vintage || ""}" title="${srcTitle(f, "vintage")}">${f.vintage || '<span class="muted">—</span>'}</td>
-        ${money(f, v, "fund_size", 3, false, false)}${money(f, v, "commitment", 3)}${money(f, v, "drawn_to_date", 3)}
-        ${money(f, v, "future_draw", 3)}${money(f, v, "distribution_to_date", 3)}
+        ${money(f, v, "fund_size", { d: 3, mark: false })}${money(f, v, "commitment", { d: 3 })}${money(f, v, "drawn_to_date", { d: 3 })}
+        ${money(f, v, "future_draw", { d: 3 })}${money(f, v, "distribution_to_date", { d: 3 })}
         <td data-v="${dc != null ? dc * 100 : ""}">${dc != null ? Math.round(dc * 100) + "%" : '<span class="muted">—</span>'}</td>
-        ${money(f, v, "investment_balance", 3, true)}
+        ${money(f, v, "investment_balance", { d: 3, bold: true })}
         <td class="small" title="${srcTitle(f, "stats")}">${stats}</td>
         <td class="pf-win">${w ? (w.drawn != null ? mfmt(w.drawn, 3, v.currency) : mfmt(w.invested, 3, v.currency) + (w.n_calls ? ` <span class="small muted">(${w.n_calls} call${w.n_calls === 1 ? "" : "s"})</span>` : "")) : ""}</td>
         <td class="pf-win">${w && w.distributed != null ? mfmt(w.distributed, 3, v.currency) : '<span class="muted">—</span>'}</td>`;
@@ -723,7 +743,7 @@
         <td class="lbl">${esc(c.theme) || '<span class="muted">—</span>'}</td>
         <td class="lbl">${esc(c.current_round) || '<span class="muted">—</span>'}</td>
         <td data-v="${esc(c.last_investment_date || "")}">${esc(c.last_investment_date || "") || '<span class="muted">—</span>'}</td>
-        ${money(c, v, "total_invested", null, false, false)}${money(c, v, "projected_investment", null, false, false)}${money(c, v, "total_value", null, false, false)}
+        ${money(c, v, "total_invested", { mark: false })}${money(c, v, "projected_investment", { mark: false })}${money(c, v, "total_value", { mark: false })}
         <td class="lbl" data-v="${esc((c.operating_status || "") + (c.exited ? " · exited" : ""))}">${esc(c.operating_status)}${c.exited ? ' <span class="small muted">· exited</span>' : ""}</td>
         <td class="pf-win">${w ? mfmt(w.invested, null, v.currency) + (w.n_calls ? ` <span class="small muted">(${w.n_calls})</span>` : "") : ""}</td>`;
       cb.appendChild(tr);
@@ -823,7 +843,7 @@
     const res = await fetch("/api/history/" + encodeURIComponent(entity));
     if (!res.ok) { toast("History not shown: " + (await failText(res))); return; }
     HIST = await res.json();
-    delete CF["hist-table"]; delete CF["hist-inv"];      // another fund or company: its own filters
+    cfForget("hist-table", "hist-inv");                 // another fund or company: its own filters
     drawHistory();
   }
   // the one-page summary's view: a period, and which table columns show (remembered per browser)
@@ -842,13 +862,11 @@
     const pane = $('.pane[data-pane="history"]');
     if (!HIST || !pane || pane.hidden) return;
     // under "Original currency", its own figures (a fund or company with another currency)
-    const h = (AMT.orig && HIST.native) ? { ...HIST, ...HIST.native } : HIST, C = window.Charts, cm = v => cmoney(v, h.currency);
-    const own = (h.native_currency || "USD").toUpperCase();
+    const h = (AMT.orig && HIST.native) ? { ...HIST, ...HIST.native } : HIST;
+    const C = window.Charts, cm = v => cmoney(v, h.currency), own = (h.native_currency || "USD").toUpperCase();
     $("#hist-title").innerHTML = esc(h.name + (h.name !== h.entity ? ` (${h.entity})` : "")) + ccyBox(own, h.currency);
-    $("#hist-sub").innerHTML = `${h.kind === "fund" ? "Fund" : "Direct investment"}${h.theme ? " · " + esc(h.theme) : ""}${h.status ? " · " + esc(h.status) : ""} · ` + (own === "USD" ? "figures in US dollars"
-        : h.currency === own ? `figures in ${esc(own)}, its own currency${(h.converted || []).length ? " (≈ marks one converted from US dollars)" : ""}`
-        : `figures in US dollars, converted from ${esc(own)} — choose Original currency for the ${esc(own)} figures`)
-      + ` · as of ${esc(h.as_of_label)}`;
+    $("#hist-sub").innerHTML = `${h.kind === "fund" ? "Fund" : "Direct investment"}${h.theme ? " · " + esc(h.theme) : ""}${h.status ? " · " + esc(h.status) : ""}`
+      + ` · ${figuresIn(own, h.currency, (h.converted || []).length > 0)} · as of ${esc(h.as_of_label)}`;
     const mult = h.paid_in ? (h.value_now || 0) / h.paid_in : null;
     $("#hist-tiles").innerHTML = [["Invested", cm(h.paid_in)], ["Value now", cm(h.value_now)],
       ["Multiple", mult == null ? "—" : mult.toFixed(2) + "x"], [h.currency === "USD" ? "IRR" : "IRR (in US dollars)", h.irr_pct == null ? "—" : h.irr_pct.toFixed(1) + "%" + (h.irr_estimated ? "*" : "")]]
@@ -934,13 +952,20 @@
     $("#hist-cols-list").innerHTML = cols.map(([key, label]) =>
       `<label><input type="checkbox" data-col="${key}"${HIST_VIEW.hide.has(key) ? "" : " checked"}> ${esc(label)}</label>`).join("");
     $("#hist-table").innerHTML = `<thead><tr><th class="lbl" data-cf="text">${first[0]}</th>`
-      + shown.map(([key, label]) => `<th data-cf="${key === "net_runway" ? "num" : "money"}">${esc(label)}</th>`).join("")
+      // every column an amount, but a runway (in months)
+      + shown.map(([key, label]) => `<th data-cf="${/runway/.test(key) ? "num" : "money"}">${esc(label)}</th>`).join("")
       + "</tr></thead><tbody>" + (rows.map(r => `<tr><td class="lbl" data-v="${esc(String(r.period || r.year || ""))}">${first[1](r)}</td>`
         + shown.map(([key, , f]) => `<td data-v="${r[key] == null ? "" : r[key]}">${f(r)}</td>`).join("") + "</tr>").join("")
         || `<tr><td colspan="${shown.length + 1}" class="muted" style="text-align:left">${empty}</td></tr>`) + "</tbody>";
     $("#hist-inv").innerHTML = '<thead><tr><th class="lbl" data-cf="date">Date</th><th class="lbl" data-cf="text">Investment</th><th data-cf="money">Amount</th>'
       + '<th data-cf="money">Total invested</th><th class="lbl" data-cf="text">Source</th></tr></thead><tbody>'
-      + (inv.map(i => `<tr><td class="lbl" data-v="${esc(i.date || "")}">${i.date ? esc(i.date) : `<span class="muted" title="${esc(i.date_note || "")}">no date</span>`}</td><td class="lbl" data-v="${esc(i.description || "")}">${esc(i.description || "—")}${i.estimated ? EST_MARK : ""}</td><td data-v="${i.amount == null ? "" : i.amount}">${cm(i.amount)}</td><td data-v="${i.cumulative == null ? "" : i.cumulative}">${cm(i.cumulative)}</td><td class="lbl small muted" data-v="${esc(i.document || "")}">${esc(i.document || "")}${i.also_in.length ? " · also listed in " + i.also_in.length + " other" : ""}</td></tr>`).join("")
+      + (inv.map(i => "<tr>"
+          + `<td class="lbl" data-v="${esc(i.date || "")}">${i.date ? esc(i.date) : `<span class="muted" title="${esc(i.date_note || "")}">no date</span>`}</td>`
+          + `<td class="lbl" data-v="${esc(i.description || "")}">${esc(i.description || "—")}${i.estimated ? EST_MARK : ""}</td>`
+          + `<td data-v="${i.amount == null ? "" : i.amount}">${cm(i.amount)}</td>`
+          + `<td data-v="${i.cumulative == null ? "" : i.cumulative}">${cm(i.cumulative)}</td>`
+          + `<td class="lbl small muted" data-v="${esc(i.document || "")}">${esc(i.document || "")}${i.also_in.length ? " · also listed in " + i.also_in.length + " other" : ""}</td>`
+          + "</tr>").join("")
          || `<tr><td colspan="5" class="muted" style="text-align:left">${h.investments.length ? "No investments in this period." : "No dated investments on file."}</td></tr>`) + "</tbody>";
     cfEnable($("#hist-table"));
     cfEnable($("#hist-inv"));
@@ -957,7 +982,7 @@
     });
     $("#hist-reset").addEventListener("click", () => {
       HIST_VIEW.from = HIST_VIEW.to = ""; HIST_VIEW.hide.clear(); saveHistHide();
-      delete CF["hist-table"]; delete CF["hist-inv"];
+      cfForget("hist-table", "hist-inv");
       redraw();
     });
     $("#hist-print").addEventListener("click", () => {
